@@ -1,0 +1,176 @@
+﻿{
+	"Colors": {
+		// 选择区域代码
+		"__DEFAULT_FRONTGROUND": [255, 255, 255],		// 默认文本颜色
+		"__DEFAULT_BACKGROUND": [39, 40, 34],			// 默认背景颜色
+		"表格标题前景": [163, 163, 148],
+		"表格标题背景": [56, 56, 48],
+		
+		// 代码颜色定义
+		"__CODE": [
+			{
+				"type": 1,
+				"name": "流程控制",
+				"en_name": "ELCODE_TYPE_CONTROL",
+				"color": [249, 38, 114]
+			},
+			{
+				"type": 2,
+				"name": "操作符",
+				"en_name": "ELCODE_TYPE_OPERATOR",
+				"color": [249, 38, 114]
+			},
+			{
+				"type": 10,
+				"name": "符号",
+				"en_name": "ELCODE_TYPE_SYMBOL",
+				"color": [236, 236, 236]
+			},
+			{
+				"type": 11,
+				"name": "起始符",
+				"en_name": "ELCODE_TYPE_SYMBOL_BEGIN",
+				"color": [236, 236, 236]
+			},
+			{
+				"type": 12,
+				"name": "结束符",
+				"en_name": "ELCODE_TYPE_SYMBOL_END",
+				"color": [236, 236, 236]
+			},
+			{
+				"type": 3,
+				"name": "变量",
+				"en_name": "ELCODE_TYPE_VAR",
+				"color": [168, 201, 144]
+			},
+			{
+				"type": 4,
+				"name": "整数",
+				"en_name": "ELCODE_TYPE_INT",
+				"color": "__DEFAULT_FRONTGROUND"
+			},
+			{
+				"type": 5,
+				"name": "长整数",
+				"en_name": "ELCODE_TYPE_LONG",
+				"color": "__DEFAULT_FRONTGROUND"
+			},
+			{
+				"type": 6,
+				"name": "双精度小数",
+				"en_name": "ELCODE_TYPE_DOUBLE",
+				"color": "__DEFAULT_FRONTGROUND"
+			},
+			{
+				"type": 7,
+				"name": "文本",
+				"en_name": "ELCODE_TYPE_STRING",
+				"color": [230, 219, 116]
+			},
+			{
+				"type": 8,
+				"name": "字节集",
+				"en_name": "ELCODE_TYPE_BINARY",
+				"color": "__DEFAULT_FRONTGROUND"
+			},
+			{
+				"type": 9,
+				"name": "常量",
+				"en_name": "ELCODE_TYPE_CONST",
+				"color": [207, 233, 219]
+			},
+			{
+				"type": 16,
+				"name": "备注",
+				"en_name": "ELCODE_TYPE_DESC",
+				"color": [128, 128, 128]
+			},
+			{
+				"type": 19,
+				"name": "函数",
+				"en_name": "ELCODE_TYPE_ACTION",
+				"color": [102, 217, 239]
+			},
+			{
+				"type": 20,
+				"name": "子程序指针",
+				"en_name": "ELCODE_TYPE_SUBPTR",
+				"color": [159, 165, 181]
+			}
+		]
+	},
+    "Templates": {
+        // 基础(所有模板的父样式)
+        "__BASE": {
+			"font": {
+				"name":		"微软雅黑",							// 字体名称
+				"size":		18,									// 字体宽度
+				"bold":		false,								// 是否粗体
+				"italic":	false,								// 是否斜体
+				"underline": false,								// 是否下划线
+				"strikeout": false,								// 是否中划线
+				"blank":	0									// 空白
+			}
+        },
+        // 单元格
+        "__COLUMN": {
+			"border": {
+				"wide":	1,
+				"circle": 0,
+				"color": [89, 89, 79]
+			},
+			"color": "表格标题前景",
+			"background": "__DEFAULT_BACKGROUND",
+            "padding": [6, 4]
+        },
+        // 公共_表格_标题
+        "NL_GLOBAL_TABLE_TITLE": {
+            "color": [166, 226, 46]
+        },
+        // 公共_表格_变量标题
+        "NL_GLOBAL_TABLE_VAR_TITLE": {
+            "color": "__DEFAULT_FRONTGROUND"
+        },
+        // 公共_表格_普通
+        "NL_GLOBAL_TABLE_TEXT": {
+            "color": "__DEFAULT_FRONTGROUND"
+        },
+        // 公共_表格_类型
+        "NL_GLOBAL_TABLE_TYPE": {
+            "color": [102, 217, 239]
+        },
+        // 公共_表格_数组
+        "NL_GLOBAL_TABLE_ARRAY": {
+            "color": [174, 129, 255]
+        },
+        // 公共_表格_注释
+        "NL_GLOBAL_TABLE_DESC": {
+            "color": [127, 127, 127]
+        },
+        // 公共_表格_复选
+        "NL_GLOBAL_TABLE_CHECK": {
+            "color": "__DEFAULT_FRONTGROUND"
+        },
+
+        // 程序集_表格标题
+        "NL_FORMFUNC_TABLE_TITLE": {
+            "color": "表格标题前景",
+            "background": "表格标题背景"
+        },
+        // 函数_表格标题
+        "NL_FUNC_TABLE_TITLE": {
+            "color": "表格标题前景",
+            "background": "表格标题背景"
+        },
+        // 局部变量_表格标题
+        "NL_LOCALVAR_TABLE_TITLE": {
+            "color": "表格标题前景",
+            "background": "表格标题背景"
+        },
+		
+        // 表格：局部变量
+        "LocalVar": {
+        }
+    }
+}

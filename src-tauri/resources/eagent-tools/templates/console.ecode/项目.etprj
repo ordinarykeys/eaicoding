@@ -1,0 +1,16 @@
+{
+    "AsyncFile": false,
+    "Dest": "D:\\pingfan\\Downloads\\eaicoding\\tauri-app\\release\\compile-smoke\\e2txt-direct\\console.recover.e",
+    "E2TXT-EFile": "",
+    "E2TXT-InSourceDir": false,
+    "E2TXT-IsCreateE": true,
+    "Encoding": "UTF-8",
+    "Level": 0,
+    "NameStyle": 2,
+    "Password": "",
+    "ResetNames": [],
+    "Source": "../console.e",
+    "TXT2E-CreateLog": true,
+    "TXT2E-EFile": "",
+    "TXT2E-InSourceDir": true
+}

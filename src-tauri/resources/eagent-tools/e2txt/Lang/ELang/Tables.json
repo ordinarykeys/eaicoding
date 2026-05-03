@@ -1,0 +1,768 @@
+{
+	/**********************************************
+	
+		// 数据类型
+		enum ELDataType {
+			DataType_Any	= 0,
+			DataType_Class	= 1,
+			DataType_Frame	= 2,
+			DataType_Func	= 3,
+			DataType_Global = 4,
+			DataType_Const	= 5,
+			DataType_Struct = 6,
+			DataType_Dll	= 7,
+			DataType_Resource	= 9,
+			DataType_Local	= 10,
+			DataType_Param	= 11
+		};
+
+		// 文档类型
+		enum ELDocType {
+			DT_Any		= 0,			// 任意
+			DT_Frame	= 1,			// 程序集
+			DT_Class	= 2,			// 类
+			DT_Const	= 10,			// 常量
+			DT_Dll		= 11,			// DLL定义
+			DT_GlobalVar = 12,			// 全局变量
+			DT_Struct	= 13,			// 自定义数据
+			DT_Resource	= 19			// 资源
+		};
+
+		// 单元格类型：[0] 静态 [1] 可编辑 [2] 复选 [3] 代码 [100] 类型名 [100] 函数名 [101] 参数名 [110] 类名称 [201] 整数录入
+		enum ELColType {
+			BT_Static	= 0,			// 静态：只读
+			BT_Name		= 1,			// 名称
+			BT_Checkbox = 2,			// 复选
+			BT_Code		= 3,			// 代码
+			BT_Array	= 4,			// 数组定义
+			BT_Const	= 5,			// 常量定义
+			BT_String	= 6				// 文本型
+			BT_TypeName = 100,			// 类型名
+			BT_ClassName = 101,			// 类名称
+			BT_Num		= 200,			// 数值
+			BT_Int		= 201,			// 整数
+			BT_Bool		= 202,			// 逻辑型
+		};
+		
+		// 表格作用域
+		enum ELTableScope {
+			TS_Global		= 1,		// 全局：唯一
+			TS_Every		= 9,		// 私有：每个独立
+			TS_Class		= 3,		// 类
+			TS_Func			= 5,		// 函数
+		};
+
+	 *********************************************/
+	"Class": {
+		"Name": "程序集",
+		"RowInfo": [
+            { "title": "类名", "content_type": 0, "min_width": 100, "template": "NL_FORMFUNC_TABLE_TITLE" },
+            { "title": "基 类", "content_type": 0, "min_width": 70, "template": "NL_FORMFUNC_TABLE_TITLE" },
+            { "title": "公开", "content_type": 0, "min_width": 50, "template": "NL_FORMFUNC_TABLE_TITLE" },
+            { "title": "备 注", "content_type": 0, "min_width": 150, "template": "NL_FORMFUNC_TABLE_TITLE" },
+
+            { "title": "", "content_type": 1, "min_width": 100, "template": "NL_GLOBAL_TABLE_TITLE" },
+            { "title": "", "content_type": 101, "min_width": 70, "template": "NL_GLOBAL_TABLE_TITLE" },
+            { "title": "", "content_type": 2, "min_width": 50, "template": "NL_GLOBAL_TABLE_TITLE" },
+            { "title": "", "content_type": 6, "min_width": 150, "template": "NL_GLOBAL_TABLE_DESC" },
+
+            { "title": "私有成员名", "content_type": 0, "min_width": 100, "template": "NL_FORMFUNC_TABLE_TITLE" },
+            { "title": "类 型", "content_type": 0, "min_width": 70, "template": "NL_FORMFUNC_TABLE_TITLE" },
+            { "title": "数组", "content_type": 0, "min_width": 50, "template": "NL_FORMFUNC_TABLE_TITLE" },
+            { "title": "备 注", "content_type": 0, "min_width": 150, "template": "NL_FORMFUNC_TABLE_TITLE" },
+
+            { "title": "", "content_type": 1, "min_width": 100, "template": "NL_GLOBAL_TABLE_VAR_TITLE" },
+            { "title": "", "content_type": 100, "min_width": 70, "template": "NL_GLOBAL_TABLE_TYPE" },
+            { "title": "", "content_type": 4, "min_width": 50, "template": "NL_GLOBAL_TABLE_ARRAY" },
+            { "title": "", "content_type": 6, "min_width": 150, "template": "NL_GLOBAL_TABLE_DESC" }
+		],
+		"Layout": [
+			0, 1, 2, 3,
+			4, 5, 6, 7,
+			8, 9, 10, 11,
+			12, 13, 14, 15
+		],
+		"Col": 4,
+		"Row": 4,
+		"InsertLastRow": true,
+		"DocType": 1,
+		"DataType": 1,
+		"ParseAction": [
+			/*
+			.程序集 类1, class2, 公开, abcdef
+			*/
+			{
+				"Row": 2,
+				"Keywords": "程序集",
+				"Mapping": [
+					{
+						"Action": "Source",
+						"Col": 1
+					},
+					{
+						"Action": "Source",
+						"Col": 2
+					},
+					{
+						"Action": "Select",
+						"Col": 3,
+						"Options": [
+							{
+								"Keywords": "公开"
+							}
+						]
+					},
+					{
+						"Action": "Source",
+						"Col": 4
+					}
+				]
+			},
+			/*
+			.程序集变量 good, 整数型, , "2,2", sadfas
+			*/
+			{
+				"Row": 4,
+				"Keywords": "程序集变量",
+				"Mapping": [
+					{
+						"Action": "Source",
+						"Col": 1
+					},
+					{
+						"Action": "Source",
+						"Col": 2
+					},
+					{
+						"Action": "Skip"
+					},
+					{
+						"Action": "WrapString",
+						"Col": 3
+					},
+					{
+						"Action": "Source",
+						"Col": 4
+					}
+				]
+			}
+		],
+		"Scope": 1,
+		"BindScope": 3
+	},
+	"Frame": {
+		"Name": "程序集",
+		"RowInfo": [
+            { "title": "程序集名", "content_type": 0, "min_width": 100, "template": "NL_FORMFUNC_TABLE_TITLE" },
+            { "title": "保 留", "content_type": 0, "min_width": 70, "template": "NL_FORMFUNC_TABLE_TITLE" },
+            { "title": "保 留", "content_type": 0, "min_width": 50, "template": "NL_FORMFUNC_TABLE_TITLE" },
+            { "title": "备 注", "content_type": 0, "min_width": 150, "template": "NL_FORMFUNC_TABLE_TITLE" },
+
+            { "title": "", "content_type": 1, "min_width": 100, "template": "NL_GLOBAL_TABLE_TITLE" },
+            { "title": "", "content_type": 0, "min_width": 70, "template": "NL_GLOBAL_TABLE_TITLE" },
+            { "title": "", "content_type": 0, "min_width": 50, "template": "NL_GLOBAL_TABLE_TITLE" },
+            { "title": "", "content_type": 6, "min_width": 150, "template": "NL_GLOBAL_TABLE_DESC" },
+
+            { "title": "变量名", "content_type": 0, "min_width": 100, "template": "NL_FORMFUNC_TABLE_TITLE" },
+            { "title": "类 型", "content_type": 0, "min_width": 70, "template": "NL_FORMFUNC_TABLE_TITLE" },
+            { "title": "数 组", "content_type": 0, "min_width": 50, "template": "NL_FORMFUNC_TABLE_TITLE" },
+            { "title": "备 注", "content_type": 0, "min_width": 150, "template": "NL_FORMFUNC_TABLE_TITLE" },
+
+            { "title": "", "content_type": 1, "min_width": 100, "template": "NL_GLOBAL_TABLE_VAR_TITLE" },
+            { "title": "", "content_type": 100, "min_width": 70, "template": "NL_GLOBAL_TABLE_TYPE" },
+            { "title": "", "content_type": 4, "min_width": 50, "template": "NL_GLOBAL_TABLE_ARRAY" },
+            { "title": "", "content_type": 6, "min_width": 150, "template": "NL_GLOBAL_TABLE_DESC" }
+		],
+		"Layout": [
+			0, 1, 2, 3,
+			4, 5, 6, 7,
+			8, 9, 10, 11,
+			12, 13, 14, 15
+		],
+		"Col": 4,
+		"Row": 4,
+		"InsertLastRow": true,
+		"DocType": [0, 2],
+		"DataType": 2,
+		"ParseAction": [
+			/*
+			.程序集 窗口程序集_启动窗口, , , abc
+			*/
+			{
+				"Row": 2,
+				"Keywords": "程序集",
+				"Mapping": [
+					{
+						"Action": "Source",
+						"Col": 1
+					},
+					{
+						"Action": "Skip"
+					},
+					{
+						"Action": "Skip"
+					},
+					{
+						"Action": "Source",
+						"Col": 4
+					}
+				]
+			},
+			/*
+			.程序集变量 a, 整数型, , "2,2", abc
+			*/
+			{
+				"Row": 4,
+				"Keywords": "程序集变量",
+				"Mapping": [
+					{
+						"Action": "Source",
+						"Col": 1
+					},
+					{
+						"Action": "Source",
+						"Col": 2
+					},
+					{
+						"Action": "Skip"
+					},
+					{
+						"Action": "WrapString",
+						"Col": 3
+					},
+					{
+						"Action": "Source",
+						"Col": 4
+					}
+				]
+			}
+		],
+		"Scope": 1,
+		"BindScope": 3
+	},
+	"Func": {
+		"Name": "子程序",
+		"RowInfo": [
+			{ "title": "子程序名", "content_type": 0, "min_width": 80, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "返回值类型", "content_type": 0, "min_width": 80, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "公开", "content_type": 0, "min_width": 30, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "易包", "content_type": 0, "min_width": 30, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "备 注", "content_type": 0, "min_width": 100, "template": "NL_FUNC_TABLE_TITLE" },
+
+			{ "title": "", "content_type": 1, "min_width": 80, "template": "NL_GLOBAL_TABLE_TITLE" },
+			{ "title": "", "content_type": 100, "min_width": 80, "template": "NL_GLOBAL_TABLE_TYPE" },
+			{ "title": "", "content_type": 2, "min_width": 30, "template": "NL_GLOBAL_TABLE_CHECK" },
+			{ "title": "", "content_type": 0, "min_width": 30, "template": "NL_GLOBAL_TABLE_TITLE" },
+			{ "title": "", "content_type": 6, "min_width": 100, "template": "NL_GLOBAL_TABLE_DESC" },
+
+			{ "title": "参数名", "content_type": 0, "min_width": 80, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "类 型", "content_type": 0, "min_width": 80, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "参考", "content_type": 0, "min_width": 30, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "可空", "content_type": 0, "min_width": 30, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "数组", "content_type": 0, "min_width": 30, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "备 注", "content_type": 0, "min_width": 70, "template": "NL_FUNC_TABLE_TITLE" },
+
+			{ "title": "", "content_type": 1, "min_width": 80, "template": "NL_GLOBAL_TABLE_VAR_TITLE" },
+			{ "title": "", "content_type": 100, "min_width": 80, "template": "NL_GLOBAL_TABLE_TYPE" },
+			{ "title": "", "content_type": 2, "min_width": 30, "template": "NL_GLOBAL_TABLE_CHECK" },
+			{ "title": "", "content_type": 2, "min_width": 30, "template": "NL_GLOBAL_TABLE_CHECK" },
+			{ "title": "", "content_type": 2, "min_width": 30, "template": "NL_GLOBAL_TABLE_CHECK" },
+			{ "title": "", "content_type": 6, "min_width": 80, "template": "NL_GLOBAL_TABLE_DESC" }
+		],
+		"Layout": [
+			0, 1, 2, 3, 4, 4,
+			5, 6, 7, 8, 9, 9,
+			10, 11, 12, 13, 14, 15,
+			16, 17, 18, 19, 20, 21
+		],
+		"Col": 6,
+		"Row": 4,
+		"InsertLastRow": true,
+		"ContainsCodes": true,
+		"DocType": [0, 1, 2],
+		"DataType": 3,
+		"ParseAction": [
+			/*
+			.子程序 子程序1, 文本型, 公开, 备注
+			*/
+			{
+				"Row": 2,
+				"Keywords": "子程序",
+				"Mapping": [
+					{
+						"Action": "Source",
+						"Col": 1
+					},
+					{
+						"Action": "Source",
+						"Col": 2
+					},
+					{
+						"Action": "Select",
+						"Col": 3,
+						"Options": [
+							{
+								"Keywords": "公开"
+							}
+						]
+					},
+					{
+						"Action": "Source",
+						"Col": 5
+					}
+				]
+			},
+			/*
+			.参数 参数名, 类型, 参考 可空 数组, 备注
+			*/
+			{
+				"Row": 4,
+				"Keywords": "参数",
+				"Mapping": [
+					{
+						"Action": "Source",
+						"Col": 1
+					},
+					{
+						"Action": "Source",
+						"Col": 2
+					},
+					{
+						"Action": "Select",
+						"Options": [
+							{
+								"Keywords": "参考",
+								"Col": 3
+							},
+							{
+								"Keywords": "可空",
+								"Col": 4
+							},
+							{
+								"Keywords": "数组",
+								"Col": 5
+							}
+						]
+					},
+					{
+						"Action": "Source",
+						"Col": 6
+					}
+				]
+			}
+		],
+		"Scope": 9,
+		"BindScope": 5
+	},
+	"Local": {
+		"Name": "局部变量",
+		"RowInfo": [
+			{ "title": "变量名", "content_type": 0, "min_width": 80, "template": "NL_LOCALVAR_TABLE_TITLE" },
+			{ "title": "类型", "content_type": 0, "min_width": 80, "template": "NL_LOCALVAR_TABLE_TITLE" },
+			{ "title": "静态", "content_type": 0, "min_width": 30, "template": "NL_LOCALVAR_TABLE_TITLE" },
+			{ "title": "数组", "content_type": 0, "min_width": 30, "template": "NL_LOCALVAR_TABLE_TITLE" },
+			{ "title": "备注", "content_type": 0, "min_width": 100, "template": "NL_LOCALVAR_TABLE_TITLE" },
+
+			{ "title": "", "content_type": 1, "min_width": 80, "template": "NL_GLOBAL_TABLE_VAR_TITLE" },
+			{ "title": "", "content_type": 100, "min_width": 80, "template": "NL_GLOBAL_TABLE_TYPE" },
+			{ "title": "", "content_type": 2, "min_width": 30, "template": "NL_GLOBAL_TABLE_CHECK" },
+			{ "title": "", "content_type": 4, "min_width": 30, "template": "NL_GLOBAL_TABLE_ARRAY" },
+			{ "title": "", "content_type": 6, "min_width": 100, "template": "NL_GLOBAL_TABLE_DESC" }
+		],
+		"Layout": [
+			0, 1, 2, 3, 4,
+			5, 6, 7, 8, 9
+		],
+		"Col": 5,
+		"Row": 2,
+		"Parent": "Function",
+		"InsertLastRow": true,
+		"ContainsCodes": false,
+		"DocType": [0, 1, 2],
+		"DataType": 10,
+		"ParseAction": [
+			/*
+			.局部变量 变量名, 类型, 静态, "2,2", 备注
+			*/
+			{
+				"Row": 2,
+				"Keywords": "局部变量",
+				"Mapping": [
+					{
+						"Action": "Source",
+						"Col": 1
+					},
+					{
+						"Action": "Source",
+						"Col": 2
+					},
+					{
+						"Action": "Select",
+						"Col": 3,
+						"Options": [
+							{
+								"Keywords": "静态"
+							}
+						]
+					},
+					{
+						"Action": "WrapString",
+						"Col": 4
+					},
+					{
+						"Action": "Source",
+						"Col": 5
+					}
+				]
+			}
+		],
+		"Scope": 5
+	},
+	"Dll": {
+		"Name": "DLL命令",
+		"RowInfo": [
+			{ "title": "DLL命令名", "content_type": 0, "min_width": 80, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "返回值类型", "content_type": 0, "min_width": 80, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "公开", "content_type": 0, "min_width": 30, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "备 注", "content_type": 0, "min_width": 100, "template": "NL_FUNC_TABLE_TITLE" },
+
+			{ "title": "", "content_type": 1, "min_width": 80, "template": "NL_GLOBAL_TABLE_TITLE" },
+			{ "title": "", "content_type": 100, "min_width": 80, "template": "NL_GLOBAL_TABLE_TYPE" },
+			{ "title": "", "content_type": 2, "min_width": 30, "template": "NL_GLOBAL_TABLE_CHECK" },
+			{ "title": "", "content_type": 6, "min_width": 100, "template": "NL_GLOBAL_TABLE_DESC" },
+
+			{ "title": "库文件名", "content_type": 0, "min_width": 80, "template": "NL_FUNC_TABLE_TITLE" },
+
+			{ "title": "", "content_type": 6, "min_width": 80, "template": "NL_GLOBAL_TABLE_TEXT" },
+
+			{ "title": "在库中对应命令名", "content_type": 0, "min_width": 80, "template": "NL_FUNC_TABLE_TITLE" },
+
+			{ "title": "", "content_type": 1, "min_width": 80, "template": "NL_GLOBAL_TABLE_TITLE" },
+
+			{ "title": "参数名", "content_type": 0, "min_width": 80, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "类 型", "content_type": 0, "min_width": 80, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "传址", "content_type": 0, "min_width": 30, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "数组", "content_type": 0, "min_width": 30, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "备注", "content_type": 0, "min_width": 70, "template": "NL_FUNC_TABLE_TITLE" },
+
+			{ "title": "", "content_type": 1, "min_width": 80, "template": "NL_GLOBAL_TABLE_VAR_TITLE" },
+			{ "title": "", "content_type": 100, "min_width": 80, "template": "NL_GLOBAL_TABLE_TYPE" },
+			{ "title": "", "content_type": 2, "min_width": 30, "template": "NL_GLOBAL_TABLE_CHECK" },
+			{ "title": "", "content_type": 2, "min_width": 30, "template": "NL_GLOBAL_TABLE_CHECK" },
+			{ "title": "", "content_type": 6, "min_width": 70, "template": "NL_GLOBAL_TABLE_DESC" }
+		],
+		"Layout": [
+			0, 1, 2, 3, 3,
+			4, 5, 6, 7, 7,
+			8, 8, 8, 8, 8,
+			9, 9, 9, 9, 9,
+			10, 10, 10, 10, 10,
+			11, 11, 11, 11, 11,
+			12, 13, 14, 15, 16,
+			17, 18, 19, 20, 21
+		],
+		"Col": 5,
+		"Row": 8,
+		"InsertLastRow": true,
+		"DocType": [0, 11],
+		"DataType": 7,
+		"ParseAction": [
+			/*
+			.DLL命令 DLL命令1, 类型, "库文件名", "库对应命令名", 公开, 备注
+			*/
+			{
+				"Row": 2,
+				"Keywords": "DLL命令",
+				"Mapping": [
+					{
+						"Action": "Source",
+						"Col": 1
+					},
+					{
+						"Action": "Source",
+						"Col": 2
+					},
+					{
+						"Action": "WrapString",
+						"Row": 4,
+						"Col": 1
+					},
+					{
+						"Action": "WrapString",
+						"Row": 6,
+						"Col": 1
+					},
+					{
+						"Action": "Select",
+						"Col": 3,
+						"Options": [
+							{
+								"Keywords": "公开"
+							}
+						]
+					},
+					{
+						"Action": "Source",
+						"Col": 4
+					}
+				]
+			},
+			/*
+			.参数 参数名, 类型, 传址 数组, 备注
+			*/
+			{
+				"Row": 8,
+				"Keywords": "参数",
+				"Mapping": [
+					{
+						"Action": "Source",
+						"Col": 1
+					},
+					{
+						"Action": "Source",
+						"Col": 2
+					},
+					{
+						"Action": "Select",
+						"Options": [
+							{
+								"Keywords": "传址",
+								"Col": 3
+							},
+							{
+								"Keywords": "数组",
+								"Col": 4
+							}
+						]
+					},
+					{
+						"Action": "Source",
+						"Col": 5
+					}
+				]
+			}
+		],
+		"Scope": 9
+	},
+	"Struct": {
+		"Name": "数据类型",
+		"RowInfo": [
+			{ "title": "数据类型名", "content_type": 0, "min_width": 100, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "公开", "content_type": 0, "min_width": 30, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "备 注", "content_type": 0, "min_width": 120, "template": "NL_FUNC_TABLE_TITLE" },
+
+			{ "title": "", "content_type": 1, "min_width": 100, "template": "NL_GLOBAL_TABLE_TITLE" },
+			{ "title": "", "content_type": 2, "min_width": 30, "template": "NL_GLOBAL_TABLE_CHECK" },
+			{ "title": "", "content_type": 6, "min_width": 120, "template": "NL_GLOBAL_TABLE_DESC" },
+
+			{ "title": "成员名", "content_type": 0, "min_width": 100, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "类 型", "content_type": 0, "min_width": 30, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "传址", "content_type": 0, "min_width": 30, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "数组", "content_type": 0, "min_width": 30, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "备 注", "content_type": 0, "min_width": 60, "template": "NL_FUNC_TABLE_TITLE" },
+
+			{ "title": "", "content_type": 1, "min_width": 100, "template": "NL_GLOBAL_TABLE_VAR_TITLE" },
+			{ "title": "", "content_type": 100, "min_width": 30, "template": "NL_GLOBAL_TABLE_TYPE" },
+			{ "title": "", "content_type": 2, "min_width": 30, "template": "NL_GLOBAL_TABLE_CHECK" },
+			{ "title": "", "content_type": 4, "min_width": 30, "template": "NL_GLOBAL_TABLE_ARRAY" },
+			{ "title": "", "content_type": 1, "min_width": 60, "template": "NL_GLOBAL_TABLE_DESC" }
+		],
+		"Layout": [
+			0, 1, 2, 2, 2,
+			3, 4, 5, 5, 5,
+			6, 7, 8, 9, 10,
+			11, 12, 13, 14, 15
+		],
+		"Col": 5,
+		"Row": 4,
+		"InsertLastRow": true,
+		"DocType": [0, 13],
+		"DataType": 6,
+		"ParseAction": [
+			/*
+			.数据类型 数据类型名, 公开, 备注
+			*/
+			{
+				"Row": 2,
+				"Keywords": "数据类型",
+				"Mapping": [
+					{
+						"Action": "Source",
+						"Col": 1
+					},
+					{
+						"Action": "Select",
+						"Col": 2,
+						"Options": [
+							{
+								"Keywords": "公开"
+							}
+						]
+					},
+					{
+						"Action": "Source",
+						"Col": 3
+					}
+				]
+			},
+			/*
+			.成员 成员名, 类型, 传址, "1,1", 备注
+			*/
+			{
+				"Row": 4,
+				"Keywords": "成员",
+				"Mapping": [
+					{
+						"Action": "Source",
+						"Col": 1
+					},
+					{
+						"Action": "Source",
+						"Col": 2
+					},
+					{
+						"Action": "Select",
+						"Col": 3,
+						"Options": [
+							{
+								"Keywords": "传址"
+							}
+						]
+					},
+					{
+						"Action": "WrapString",
+						"Col": 4
+					},
+					{
+						"Action": "Source",
+						"Col": 5
+					}
+				]
+			}
+		],
+		"Scope": 9
+	},
+	"Global": {
+		"Name": "全局变量",
+		"RowInfo": [
+			{ "title": "全局变量名", "content_type": 0, "min_width": 80, "template": "NL_LOCALVAR_TABLE_TITLE" },
+			{ "title": "类型", "content_type": 0, "min_width": 80, "template": "NL_LOCALVAR_TABLE_TITLE" },
+			{ "title": "数组", "content_type": 0, "min_width": 30, "template": "NL_LOCALVAR_TABLE_TITLE" },
+			{ "title": "公开", "content_type": 0, "min_width": 30, "template": "NL_LOCALVAR_TABLE_TITLE" },
+			{ "title": "备注", "content_type": 0, "min_width": 100, "template": "NL_LOCALVAR_TABLE_TITLE" },
+
+			{ "title": "", "content_type": 1, "min_width": 80, "template": "NL_GLOBAL_TABLE_VAR_TITLE" },
+			{ "title": "", "content_type": 100, "min_width": 80, "template": "NL_GLOBAL_TABLE_TYPE" },
+			{ "title": "", "content_type": 4, "min_width": 30, "template": "NL_GLOBAL_TABLE_ARRAY" },
+			{ "title": "", "content_type": 2, "min_width": 30, "template": "NL_GLOBAL_TABLE_CHECK" },
+			{ "title": "", "content_type": 6, "min_width": 100, "template": "NL_GLOBAL_TABLE_DESC" }
+		],
+		"Layout": [
+			0, 1, 2, 3, 4,
+			5, 6, 7, 8, 9
+		],
+		"Col": 5,
+		"Row": 2,
+		"InsertLastRow": true,
+		"ContainsCodes": false,
+		"DocType": [0, 12],
+		"DataType": 4,
+		"ParseAction": [
+			/*
+			.全局变量 变量名, 类型, 公开, "2,2", 备注
+			*/
+			{
+				"Row": 2,
+				"Keywords": "全局变量",
+				"Mapping": [
+					{
+						"Action": "Source",
+						"Col": 1
+					},
+					{
+						"Action": "Source",
+						"Col": 2
+					},
+					{
+						"Action": "Select",
+						"Col": 4,
+						"Options": [
+							{
+								"Keywords": "公开"
+							}
+						]
+					},
+					{
+						"Action": "WrapString",
+						"Col": 3
+					},
+					{
+						"Action": "Source",
+						"Col": 5
+					}
+				]
+			}
+		],
+		"Scope": 1
+	},
+	"Const": {
+		"Name": "常量",
+		"RowInfo": [
+			{ "title": "常量名称", "content_type": 0, "min_width": 50, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "常量值", "content_type": 0, "min_width": 40, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "公开", "content_type": 0, "min_width": 30, "template": "NL_FUNC_TABLE_TITLE" },
+			{ "title": "备 注", "content_type": 0, "min_width": 30, "template": "NL_FUNC_TABLE_TITLE" },
+
+			{ "title": "", "content_type": 1, "min_width": 50, "template": "NL_GLOBAL_TABLE_VAR_TITLE" },
+			{ "title": "", "content_type": 5, "min_width": 40, "template": "NL_GLOBAL_TABLE_TEXT" },
+			{ "title": "", "content_type": 2, "min_width": 30, "template": "NL_GLOBAL_TABLE_CHECK" },
+			{ "title": "", "content_type": 6, "min_width": 30, "template": "NL_GLOBAL_TABLE_DESC" }
+		],
+		"Layout": [
+			0, 1, 2, 3,
+			4, 5, 6, 7
+		],
+		"Col": 4,
+		"Row": 2,
+		"InsertLastRow": true,
+		"DocType": [0, 10],
+		"DataType": 5,
+		"ParseAction": [
+			/*
+			.常量 名称, "1", 公开, 备注
+			.常量 名称2, "1.2", 公开, 备注
+			.常量 名称3, "真", 公开, 备注
+			.常量 名称4, "“文本”", 公开, 备注
+			.常量 名称5, "[2019年1月1日]", 公开, 备注
+			*/
+			{
+				"Row": 2,
+				"Keywords": "常量",
+				"Mapping": [
+					{
+						"Action": "Source",
+						"Col": 1
+					},
+					{
+						"Action": "WrapString",
+						"Col": 2
+					},
+					{
+						"Action": "Select",
+						"Col": 3,
+						"Options": [
+							{
+								"Keywords": "公开"
+							}
+						]
+					},
+					{
+						"Action": "Source",
+						"Col": 4
+					}
+				]
+			}
+		],
+		"Scope": 1
+	}
+}

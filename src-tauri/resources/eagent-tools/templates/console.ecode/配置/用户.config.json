@@ -1,0 +1,23 @@
+﻿{
+    "Address": "",
+    "Author": "",
+    "BuilderVersion": {
+        "Major": 0,
+        "Minor": 0
+    },
+    "CompilePlugins": "",
+    "Copyright": "",
+    "Description": "",
+    "Email": "",
+    "ExportPublicClassMethod": false,
+    "FaxNumber": "",
+    "Homepage": "",
+    "Name": "",
+    "ReleaseVersion": {
+        "Major": 1,
+        "Minor": 0
+    },
+    "TelephoneNumber": "",
+    "WriteVersion": true,
+    "ZipCode": ""
+}

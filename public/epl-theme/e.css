@@ -1,0 +1,1640 @@
+#codecolor {
+    background: url(e.gif) no-repeat 0 0;
+    overflow: hidden;
+    background-position: 9px 4px;
+}
+
+.b2r #codecolor {
+    background-position: 0px 1px;
+}
+
+#codecolor:hover {
+    background-color: #fff;
+}
+
+.frame_out {
+    width: 100%;
+    border: 1px dashed #CCCCCC;
+}
+
+.frame_up {
+    border-bottom: 1px dashed #CCCCCC;
+    text-align: left;
+    padding: 10px;
+    font-size: 20px;
+    font-weight: bold;
+}
+
+.frame_show {
+    margin: 5px 5px 5px 5px;
+}
+
+.codeshow {
+    width: 99%;
+    height: 250px;
+}
+
+#e_button .b2r #code_color {
+    background: url(e.gif) no-repeat 2px 2px;
+}
+
+#return_code_color {
+    background: url(e.gif) no-repeat 0 50%;
+    padding-left: 22px;
+}
+
+#return_code_color a {
+    color: #999;
+    font-weight: normal;
+    font-size: 12px;
+    text-decoration: none;
+    margin-left: 10px;
+}
+
+#code_color_form {
+    width: 599px;
+}
+
+#code_color_form .c {
+    padding: 0 10px 10px 10px;
+}
+
+#code_color_message {
+    width: 569px;
+    height: 120px;
+    margin-bottom: 10px;
+}
+
+.code_color i {
+    font-weight: 700;
+    font-family: Microsoft Yahei, Arial;
+    font-style: normal;
+    text-align: center;
+    display: inline-block;
+}
+
+.code_color1 i {
+    font-size: 16px;
+    padding-right: 2px;
+    float: left;
+}
+
+.code_color1 i.e1 {
+    color: #FF0000;
+}
+
+.code_color1 i.e2 {
+    color: #00FF00;
+}
+
+.code_color1 i.e3 {
+    color: #0000FF;
+}
+
+.code_color1 i.e4 {
+    color: #FFCC00;
+}
+
+.code_color1 i.e5 {
+    color: #00CCFF;
+}
+
+.code_color1 i.e6 {
+    color: #FF00FF;
+}
+
+.code_color1 i.e7 {
+    color: #6600FF;
+}
+
+.code_color2 i {
+    color: #0000CC;
+    font-size: 14px;
+    line-height: 20px;
+    width: 22px;
+    height: 22px;
+    background: url(2.jpg);
+    margin: 0 5px 5px 0;
+}
+
+.code_color3 i {
+    color: #fff;
+    font-size: 14px;
+    width: 27px;
+    height: 24px;
+    line-height: 26px;
+    background: url(3.gif);
+    margin: 0 3px 3px 0;
+}
+
+.code_color4 i {
+    color: #fff;
+    font-size: 12px;
+    width: 18px;
+    height: 25px;
+    line-height: 18px;
+    background: url(4.jpg);
+    margin: 0 3px 3px 0;
+}
+
+.code_color5 i {
+    color: #fff;
+    font-size: 14px;
+    width: 40px;
+    height: 18px;
+    line-height: 18px;
+    padding: 10px 0 9px 0;
+    background: url(5.jpg);
+    margin: 0 3px 3px 0;
+}
+
+.code_color6 i {
+    color: #934105;
+    font-size: 14px;
+    width: 34px;
+    height: 20px;
+    line-height: 20px;
+    padding-top: 9px;
+    background: url(6.jpg);
+    margin: 0 3px 3px 0;
+}
+
+.code_color7 i {
+    color: #00a4d9;
+    font-size: 12px;
+    width: 34px;
+    height: 28px;
+    line-height: 22px;
+    background: url(7.jpg);
+    margin: 0 3px 3px 0;
+}
+
+.code_color8 i {
+    color: #ff5474;
+    font-size: 14px;
+    width: 25px;
+    height: 27px;
+    line-height: 27px;
+    background: url(8.jpg);
+    margin: 0 3px 3px 0;
+}
+
+.code_color_bar {
+    background: #f8f8f8;
+    border: 1px solid #e6e8eb;
+    height: 96px;
+    margin: 0 auto;
+    width: 577px;
+    zoom: 1;
+    float: left;
+    position: relative;
+    z-index: 20;
+}
+
+.code_color_pager {
+    position: relative;
+    z-index: 3;
+}
+
+.code_color_nav {
+    background: url(props.png) repeat scroll -9px 0;
+    cursor: pointer;
+    height: 17px;
+    left: 5px;
+    position: absolute;
+    top: 32px;
+    width: 9px;
+    z-index: 3;
+    display: block;
+}
+
+.code_color_next {
+    background-position: 0 0;
+    left: 563px;
+    z-index: 3;
+}
+
+.code_color_wrap {
+    height: 78px;
+    margin: 9px 0 0 18px;
+    visibility: visible;
+    overflow: hidden;
+    position: relative;
+    z-index: 2;
+    width: 550px;
+}
+
+#code_color_ul {
+    margin: 0px;
+    padding: 0px;
+    position: relative;
+    z-index: 1;
+}
+
+#code_color_ul li {
+    position: relative;
+    float: left;
+    margin-right: 10px;
+    width: 100px;
+    height: 81px;
+    overflow: hidden;
+    cursor: pointer;
+}
+
+#code_color_ul li a {
+    display: inline-block;
+    float: left;
+}
+
+#code_color_ul li img {
+    width: 90px;
+    height: 55px;
+    padding: 2px 4px;
+    border: 1px solid #ddd;
+    background: #fff;
+}
+
+#code_color_ul li .a img {
+    border: 2px solid #477CCC;
+    padding: 1px 3px;
+}
+
+#code_color_ul li p {
+    color: #999999;
+    line-height: 20px;
+    text-align: center;
+    margin: 0;
+}
+
+.ebackcolor1 {
+    background: #FFFFFF;
+    color: #000000;
+}
+
+.ebackcolor2 {
+    background: #008284;
+    color: #FFFFFF;
+}
+
+.ebackcolor3 {
+    background: #0061C6;
+    color: #FFFFFF;
+}
+
+.ebackcolor4 {
+    background: #FFF7EF;
+    color: #000000;
+}
+
+.ebackcolor5 {
+    background: #FFFFFF;
+    color: #000000;
+}
+
+.ebackcolor6 {
+    background: #BDDFFF;
+    color: #000000;
+}
+
+.ebackcolor7 {
+    background: #EFEFEF;
+    color: #000000;
+}
+
+.ebackcolor8 {
+    background: #FFEBF7;
+    color: #000000;
+}
+
+.ebackcolor9 {
+    background: #EFF8F5;
+    color: #000000;
+}
+
+.ebackcolor10 {
+    background: #DEEFFF;
+    color: #000000;
+}
+
+.ebackcolor1 textarea {
+    background-color: #FFFFFF;
+    color: #000000;
+}
+
+.ebackcolor1 .eunderimg {
+    background: url(../image/code1/01.png) no-repeat 0 0;
+}
+
+.ebackcolor1 .ecenterimg {
+    background: url(../image/code1/02.png) no-repeat 0 0;
+}
+
+.ebackcolor1 .comecolor {
+    color: #0000FF
+}
+
+.ebackcolor1 .conscolor {
+    color: #000080
+}
+
+.ebackcolor1 .funccolor {
+    color: #800000
+}
+
+.ebackcolor1 .cometwolr {
+    color: #800000
+}
+
+.ebackcolor1 .eTxtcolor {
+    color: #008080
+}
+
+.ebackcolor1 .eTickcolor {
+    color: #800000;
+    font-weight: bold;
+}
+
+.ebackcolor1 .gou {
+    width: 32px;
+    color: #800000;
+    text-align: center;
+    background: url("../image/gou.png") no-repeat center center;
+}
+
+.ebackcolor1 .Rowheight {
+    font-size: 10px;
+    line-height: 12px;
+    border: 1px solid #888888;
+}
+
+.ebackcolor1 .eHeadercolor {
+    color: #000000;
+    background-color: #E6EDE4;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor1 .eVariableheadcolor {
+    color: #000000;
+    background-color: #D9E3F0;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor1 .eAssemblycolor {
+    color: #000000;
+    background-color: #ECECEC;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor1 .Variablescolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor1 .eTypecolor {
+    color: #0000FF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor1 .Remarkscolor {
+    color: #008000;
+    /*white-space: nowrap;*/
+    padding: 5px;
+}
+
+.ebackcolor1 .Wrongcolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor1 .Constanttext {
+    color: #008080;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor1 .eArraycolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor1 .eProcolor {
+    color: #000080;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor1 .eAPIcolor {
+    color: #800000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor1 .eOthercolor {
+    color: #000080;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor2 textarea {
+    background-color: #008284;
+    color: #FFFFFF;
+}
+
+.ebackcolor2 .eunderimg {
+    background: url(code2/01.png) no-repeat 0 0;
+}
+
+.ebackcolor2 .ecenterimg {
+    background: url(code2/02.png) no-repeat 0 0;
+}
+
+.ebackcolor2 .comecolor {
+    color: #00FF00
+}
+
+.ebackcolor2 .conscolor {
+    color: #00FFFF
+}
+
+.ebackcolor2 .funccolor {
+    color: #FFFF00
+}
+
+.ebackcolor2 .cometwolr {
+    color: #FFFFFF
+}
+
+.ebackcolor2 .eTxtcolor {
+    color: #00FFFF
+}
+
+.ebackcolor2 .eTickcolor {
+    color: #FFFFFF;
+    font-weight: bold;
+}
+
+.ebackcolor2 .Rowheight {
+    font-size: 10px;
+    line-height: 12px;
+    border: 1px solid #41BEBE;
+}
+
+.ebackcolor2 .eHeadercolor {
+    color: #ECECEC;
+    background-color: #0E979A;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor2 .eVariableheadcolor {
+    color: #ECECEC;
+    background-color: #0E979A;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor2 .eAssemblycolor {
+    color: #ECECEC;
+    background-color: #0E979A;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor2 .Variablescolor {
+    color: #FFFFFF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor2 .eTypecolor {
+    color: #00E080;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor2 .Remarkscolor {
+    color: #000080;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor2 .Wrongcolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor2 .Constanttext {
+    color: #00FFFF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor2 .eArraycolor {
+    color: #FFFF00;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor2 .eProcolor {
+    color: #00FF00;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor2 .eAPIcolor {
+    color: #D8D800;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor2 .eOthercolor {
+    color: #00FFFF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor3 textarea {
+    background-color: #0061C6;
+    color: #FFFFFF;
+}
+
+.ebackcolor3 .eunderimg {
+    background: url(code3/01.png) no-repeat 0 0;
+}
+
+.ebackcolor3 .ecenterimg {
+    background: url(code3/02.png) no-repeat 0 0;
+}
+
+.ebackcolor3 .comecolor {
+    color: #00E080
+}
+
+.ebackcolor3 .conscolor {
+    color: #ECECEC
+}
+
+.ebackcolor3 .funccolor {
+    color: #00FFFF
+}
+
+.ebackcolor3 .cometwolr {
+    color: #F9E6AA
+}
+
+.ebackcolor3 .eTxtcolor {
+    color: #ECECEC
+}
+
+.ebackcolor3 .eTickcolor {
+    color: #FFFFFF;
+    font-weight: bold;
+}
+
+.ebackcolor3 .Rowheight {
+    font-size: 10px;
+    line-height: 12px;
+    border: 1px solid #5AA4CB;
+}
+
+.ebackcolor3 .eHeadercolor {
+    color: #ECECEC;
+    background-color: #0079E8;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor3 .eVariableheadcolor {
+    color: #ECECEC;
+    background-color: #4E83D1;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor3 .eAssemblycolor {
+    color: #ECECEC;
+    background-color: #0079E8;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor3 .Variablescolor {
+    color: #80E000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor3 .eTypecolor {
+    color: #8FBCFE;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor3 .Remarkscolor {
+    color: #00FF00;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor3 .Wrongcolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor3 .Constanttext {
+    color: #ECECEC;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor3 .eArraycolor {
+    color: #00FFFF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor3 .eProcolor {
+    color: #FFFF00;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor3 .eAPIcolor {
+    color: #D8D800;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor3 .eOthercolor {
+    color: #ECECEC;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor4 textarea {
+    background-color: #FFF7EF;
+    color: #000000;
+}
+
+.ebackcolor4 .eunderimg {
+    background: url(code4/01.png) no-repeat 0 0;
+}
+
+.ebackcolor4 .ecenterimg {
+    background: url(code4/02.png) no-repeat 0 0;
+}
+
+.ebackcolor4 .comecolor {
+    color: #0000FF
+}
+
+.ebackcolor4 .conscolor {
+    color: #000080
+}
+
+.ebackcolor4 .funccolor {
+    color: #A80000
+}
+
+.ebackcolor4 .cometwolr {
+    color: #9000FF
+}
+
+.ebackcolor4 .eTxtcolor {
+    color: #FF00FF
+}
+
+.ebackcolor4 .eTickcolor {
+    color: #800080;
+    font-weight: bold;
+}
+
+.ebackcolor4 .Rowheight {
+    font-size: 10px;
+    line-height: 12px;
+    border: 1px solid #CE766F;
+}
+
+.ebackcolor4 .eHeadercolor {
+    color: #000000;
+    background-color: #F4C299;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor4 .eVariableheadcolor {
+    color: #000000;
+    background-color: #ECECEC;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor4 .eAssemblycolor {
+    color: #000000;
+    background-color: #CFA06D;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor4 .Variablescolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor4 .eTypecolor {
+    color: #0088FF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor4 .Remarkscolor {
+    color: #008000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor4 .Wrongcolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor4 .Constanttext {
+    color: #FF00FF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor4 .eArraycolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor4 .eProcolor {
+    color: #0000FF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor4 .eAPIcolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor4 .eOthercolor {
+    color: #000080;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor5 textarea {
+    background-color: #FFFFFF;
+    color: #000000;
+}
+
+.ebackcolor5 .eunderimg {
+    background: url(code5/01.png) no-repeat 0 0;
+}
+
+.ebackcolor5 .ecenterimg {
+    background: url(code5/02.png) no-repeat 0 0;
+}
+
+.ebackcolor5 .comecolor {
+    color: #0000FF
+}
+
+.ebackcolor5 .conscolor {
+    color: #000080
+}
+
+.ebackcolor5 .funccolor {
+    color: #800000
+}
+
+.ebackcolor5 .cometwolr {
+    color: #800000
+}
+
+.ebackcolor5 .eTxtcolor {
+    color: #008080
+}
+
+.ebackcolor5 .eTickcolor {
+    color: #000000;
+    font-weight: bold;
+}
+
+.ebackcolor5 .Rowheight {
+    font-size: 10px;
+    line-height: 12px;
+    border: 1px solid #606060;
+}
+
+.ebackcolor5 .eHeadercolor {
+    color: #0000A8;
+    background-color: #ECECEC;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor5 .eVariableheadcolor {
+    color: #0000A8;
+    background-color: #ECECEC;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor5 .eAssemblycolor {
+    color: #0000A8;
+    background-color: #ECECEC;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor5 .Variablescolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor5 .eTypecolor {
+    color: #0000FF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor5 .Remarkscolor {
+    color: #008000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor5 .Wrongcolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor5 .Constanttext {
+    color: #008080;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor5 .eArraycolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor5 .eProcolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor5 .eAPIcolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor5 .eOthercolor {
+    color: #000080;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor6 textarea {
+    background-color: #BDDFFF;
+    color: #000000;
+}
+
+.ebackcolor6 .eunderimg {
+    background: url(code6/01.png) no-repeat 0 0;
+}
+
+.ebackcolor6 .ecenterimg {
+    background: url(code6/02.png) no-repeat 0 0;
+}
+
+.ebackcolor6 .comecolor {
+    color: #000000
+}
+
+.ebackcolor6 .conscolor {
+    color: #000000
+}
+
+.ebackcolor6 .funccolor {
+    color: #000000
+}
+
+.ebackcolor6 .cometwolr {
+    color: #000000
+}
+
+.ebackcolor6 .eTxtcolor {
+    color: #000000
+}
+
+.ebackcolor6 .eTickcolor {
+    color: #000000;
+    font-weight: bold;
+}
+
+.ebackcolor6 .Rowheight {
+    font-size: 10px;
+    line-height: 12px;
+    border: 1px solid #000000;
+}
+
+.ebackcolor6 .eHeadercolor {
+    color: #000000;
+    background-color: #A2D0FF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor6 .eVariableheadcolor {
+    color: #000000;
+    background-color: #A2D0FF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor6 .eAssemblycolor {
+    color: #000000;
+    background-color: #A2D0FF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor6 .Variablescolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor6 .eTypecolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor6 .Remarkscolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor6 .Wrongcolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor6 .Constanttext {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor6 .eArraycolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor6 .eProcolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor6 .eAPIcolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor6 .eOthercolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor7 textarea {
+    background-color: #EFEFEF;
+    color: #000000;
+}
+
+.ebackcolor7 .eunderimg {
+    background: url(code7/01.png) no-repeat 0 0;
+}
+
+.ebackcolor7 .ecenterimg {
+    background: url(code7/02.png) no-repeat 0 0;
+}
+
+.ebackcolor7 .comecolor {
+    color: #800080
+}
+
+.ebackcolor7 .conscolor {
+    color: #9000FF
+}
+
+.ebackcolor7 .funccolor {
+    color: #0000FF
+}
+
+.ebackcolor7 .cometwolr {
+    color: #0060C0
+}
+
+.ebackcolor7 .eTxtcolor {
+    color: #800000
+}
+
+.ebackcolor7 .eTickcolor {
+    color: #FF5080;
+    font-weight: bold;
+}
+
+.ebackcolor7 .Rowheight {
+    font-size: 10px;
+    line-height: 12px;
+    border: 1px solid #808080;
+}
+
+.ebackcolor7 .eHeadercolor {
+    color: #000000;
+    background-color: #E0CEE6;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor7 .eVariableheadcolor {
+    color: #000000;
+    background-color: #E4E4E4;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor7 .eAssemblycolor {
+    color: #000000;
+    background-color: #C1D8D9;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor7 .Variablescolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor7 .eTypecolor {
+    color: #606060;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor7 .Remarkscolor {
+    color: #008000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor7 .Wrongcolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor7 .Constanttext {
+    color: #800000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor7 .eArraycolor {
+    color: #800000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor7 .eProcolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor7 .eAPIcolor {
+    color: #0000FF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor7 .eOthercolor {
+    color: #9000FF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor8 textarea {
+    background-color: #FFEBF7;
+    color: #000000;
+}
+
+.ebackcolor8 .eunderimg {
+    background: url(code8/01.png) no-repeat 0 0;
+}
+
+.ebackcolor8 .ecenterimg {
+    background: url(code8/02.png) no-repeat 0 0;
+}
+
+.ebackcolor8 .comecolor {
+    color: #5830E0
+}
+
+.ebackcolor8 .conscolor {
+    color: #000080
+}
+
+.ebackcolor8 .funccolor {
+    color: #FF0000
+}
+
+.ebackcolor8 .cometwolr {
+    color: #F200E0
+}
+
+.ebackcolor8 .eTxtcolor {
+    color: #000080
+}
+
+.ebackcolor8 .eTickcolor {
+    color: #800080;
+    font-weight: bold;
+}
+
+.ebackcolor8 .Rowheight {
+    font-size: 10px;
+    line-height: 12px;
+    border: 1px solid #A67192;
+}
+
+.ebackcolor8 .eHeadercolor {
+    color: #000000;
+    background-color: #FDBFB3;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor8 .eVariableheadcolor {
+    color: #F200E0;
+    background-color: #ECECEC;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor8 .eAssemblycolor {
+    color: #000000;
+    background-color: #FDBFB3;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor8 .Variablescolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor8 .eTypecolor {
+    color: #0088FF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor8 .Remarkscolor {
+    color: #008000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor8 .Wrongcolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor8 .Constanttext {
+    color: #000080;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor8 .eArraycolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor8 .eProcolor {
+    color: #0000FF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor8 .eAPIcolor {
+    color: #000080;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor8 .eOthercolor {
+    color: #000080;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor9 textarea {
+    background-color: #EFF8F5;
+    color: #000000;
+}
+
+.ebackcolor9 .eunderimg {
+    background: url(code9/01.png) no-repeat 0 0;
+}
+
+.ebackcolor9 .ecenterimg {
+    background: url(code9/02.png) no-repeat 0 0;
+}
+
+.ebackcolor9 .comecolor {
+    color: #008000
+}
+
+.ebackcolor9 .conscolor {
+    color: #800000
+}
+
+.ebackcolor9 .funccolor {
+    color: #0000FF
+}
+
+.ebackcolor9 .cometwolr {
+    color: #800080
+}
+
+.ebackcolor9 .eTxtcolor {
+    color: #800000
+}
+
+.ebackcolor9 .eTickcolor {
+    color: #008000;
+    font-weight: bold;
+}
+
+.ebackcolor9 .Rowheight {
+    font-size: 10px;
+    line-height: 12px;
+    border: 1px solid #628662;
+}
+
+.ebackcolor9 .eHeadercolor {
+    color: #FFFFFF;
+    background-color: #6C936C;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor9 .eVariableheadcolor {
+    color: #FFFFFF;
+    background-color: #68BFBF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor9 .eAssemblycolor {
+    color: #FFFFFF;
+    background-color: #008080;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor9 .Variablescolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor9 .eTypecolor {
+    color: #C06000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor9 .Remarkscolor {
+    color: #808080;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor9 .Wrongcolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor9 .Constanttext {
+    color: #800000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor9 .eArraycolor {
+    color: #5830E0;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor9 .eProcolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor9 .eAPIcolor {
+    color: #800000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor9 .eOthercolor {
+    color: #800000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor10 textarea {
+    background-color: #DEEFFF;
+    color: #000000;
+}
+
+.ebackcolor10 .eunderimg {
+    background: url(../image/code10/01.png) no-repeat 0 0;
+}
+
+.ebackcolor10 .ecenterimg {
+    background: url(../image/code10/02.png) no-repeat 0 0;
+}
+
+.ebackcolor10 .comecolor {
+    color: #0000FF
+}
+
+.ebackcolor10 .conscolor {
+    color: #5830E0
+}
+
+.ebackcolor10 .funccolor {
+    color: #000000
+}
+
+.ebackcolor10 .cometwolr {
+    color: #FF0080
+}
+
+.ebackcolor10 .eTxtcolor {
+    color: #5830E0
+}
+
+.ebackcolor10 .eTickcolor {
+    color: #0000FF;
+    font-weight: bold;
+}
+
+.ebackcolor10 .Rowheight {
+    font-size: 10px;
+    line-height: 12px;
+    border: 1px solid #20669F;
+}
+
+.ebackcolor10 .eHeadercolor {
+    color: #000080;
+    background-color: #ACDBD6;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor10 .eVariableheadcolor {
+    color: #000080;
+    background-color: #ECDDFF;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor10 .eAssemblycolor {
+    color: #000080;
+    background-color: #ACDBD6;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor10 .Variablescolor {
+    color: #000000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor10 .eTypecolor {
+    color: #606060;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor10 .Remarkscolor {
+    color: #008000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor10 .Wrongcolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor10 .Constanttext {
+    color: #5830E0;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor10 .eArraycolor {
+    color: #800000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor10 .eProcolor {
+    color: #FF0000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor10 .eAPIcolor {
+    color: #800000;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+.ebackcolor10 .eOthercolor {
+    color: #5830E0;
+    white-space: nowrap;
+    padding: 5px;
+}
+
+/*  表格样式    */
+
+.etable {
+    font-size: 9pt;
+    color: #000000;
+    max-width: 1100px;
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 1px;
+    border-color: #999999;
+    background-color: #999999;
+}
+
+.etable tr {
+    background: #FFFFFF;
+    height: 18px;
+}
+
+.etable td {
+    padding-left: 5px;
+    height: 18px;
+    padding: 2px 2px;
+}
+
+.etable td.rvalue {
+    width: 70px;
+}
+
+.etable td.public {
+    width: 32px;
+}
+
+.etable .shuzi {
+    /*数字颜色*/
+    color: #800000;
+}
+
+.etable .wuben {
+    /*文本颜色*/
+    color: #008080;
+}
+
+.etable .beizhu {
+    /*备注颜色*/
+    color: #008000;
+}
+
+.etable .type {
+    /*类型颜色*/
+    color: blue;
+    width: auto;
+}
+
+.etable .gou {
+    /*钩*/
+    width: 32px;
+    color: #800000;
+    text-align: center;
+    background: url("../image/gou.png") no-repeat center center;
+}
+
+/* 变量表格 */
+
+.variable {
+    font-size: 9pt;
+    color: #000000;
+    max-width: 960px;
+    border-left: 1px solid #999999;
+    border-top: 1px solid #999999;
+    margin-top: 8px;
+}
+
+.variable th {
+    border-right: 1px solid #999999;
+    border-bottom: 1px solid #999999;
+}
+
+.variable th.center {
+    text-align: center;
+}
+
+.variable th.width_35 {
+    width: 35px;
+}
+
+.variable td {
+    border-right: 1px solid #999999;
+    border-bottom: 1px solid #999999;
+    height: 20px;
+    padding-left: 5px;
+    height: 18px;
+    background: white;
+}
+
+.variable td.beizhu {
+    color: #008000;
+}
+
+.variable .shuzi {
+    /*数字颜色*/
+    color: #800000;
+}
+
+.variable .wuben {
+    /*文本颜色*/
+    color: #008080;
+}
+
+.variable .beizhu {
+    /*备注颜色*/
+    color: #008000;
+}
+
+.variable .type {
+    /*类型颜色*/
+    color: blue;
+}
+
+.variable .gou {
+    /*钩*/
+    width: 32px;
+    color: #800000;
+    text-align: center;
+    background: url("../image/gou.png") no-repeat center center;
+}

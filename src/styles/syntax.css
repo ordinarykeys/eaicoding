@@ -1,0 +1,42 @@
+/* ---- EPL (易语言) syntax highlighting theme ---- */
+.shiki {
+  background-color: var(--secondary) !important;
+  border-radius: var(--radius);
+  padding: 1rem;
+  overflow-x: auto;
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+.shiki code {
+  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "Consolas", monospace;
+}
+
+/* EPL pseudo-tokens - custom class names we apply */
+.epl-keyword { color: #569cd6; font-weight: bold; }
+.epl-command { color: #dcdcaa; }
+.epl-string  { color: #ce9178; }
+.epl-comment { color: #6a9955; font-style: italic; }
+.epl-number  { color: #b5cea8; }
+.epl-type    { color: #4ec9b0; }
+.epl-module  { color: #c586c0; }
+
+/* Message bubble animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.message-enter {
+  animation: fadeIn 0.2s ease-out;
+}
+
+/* Streaming cursor blink */
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+.streaming-cursor::after {
+  content: "▊";
+  animation: blink 0.8s step-end infinite;
+  color: var(--primary);
+  margin-left: 2px;
+}

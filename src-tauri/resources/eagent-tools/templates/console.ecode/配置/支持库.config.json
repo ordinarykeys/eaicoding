@@ -1,0 +1,14 @@
+﻿[
+    {
+        "CmdCount": 579,
+        "Guid": "d09f2340818511d396f6aaf844c7e325",
+        "Key": "krnln",
+        "MaxRefConstPos": 0,
+        "MaxRefObjectPos": 0,
+        "Name": "系统核心支持库",
+        "Version": {
+            "Major": 5,
+            "Minor": 7
+        }
+    }
+]

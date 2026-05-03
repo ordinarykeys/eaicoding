@@ -1,0 +1,53 @@
+﻿{
+	"Colors": {
+	},
+	"Templates": {
+        // 基础(所有模板的父样式)
+        "__BASE": {
+			"font": {
+				"name":		"宋体",
+				"size":		12,
+				"bold":		false
+			}
+        },
+        // 单元格
+        "__COLUMN": {
+			"border": {
+				"wide":	0,
+				"circle": 4
+			},
+            "padding": [6, 8],
+			"margin": [1, 1],
+			"background": [245, 245, 245]
+        },
+        // 表格
+        "__TABLE": {
+            "padding": 1,
+			"border": {
+				"wide":	1,
+				"circle": 6,
+				"color": [0, 0, 0]
+			},
+			"background": [255, 255, 255]
+        },
+
+        // 程序集_表格标题
+        "NL_FORMFUNC_TABLE_TITLE": {
+			"__PARENT": "__COLUMN",
+            "padding": [6, 6],
+			"font": {
+				"bold": true
+			}
+        },
+        // 函数_表格标题
+        "NL_FUNC_TABLE_TITLE": {
+			"__PARENT": "NL_FORMFUNC_TABLE_TITLE",
+			"background": [0, 0, 0],
+			"color": [255, 255, 255]
+        },
+        // 局部变量_表格标题
+        "NL_LOCALVAR_TABLE_TITLE": {
+			"__PARENT": "NL_FORMFUNC_TABLE_TITLE"
+        }
+	}
+}
