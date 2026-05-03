@@ -1,6 +1,8 @@
 # EAiCoding 桌面端
 
-<h3 align="center">开源不易，觉得项目有帮助的话，记得点个 Star。</h3>
+<p align="center">
+  <img src="./assets/star-note.svg" width="100%" alt="开源不易，觉得项目有帮助的话，记得点个 Star。" />
+</p>
 
 EAiCoding 桌面端是一款面向易语言开发者的本地 AI Coding Agent。它把大模型对话、易语言源码解析、精易模块知识库、代码展示、`.e/.ec` 工程处理和编译验证整合到一个 Windows 桌面应用中，目标是让易语言项目也能拥有类似现代 AI Coding 工具的工作流。
 

@@ -1,0 +1,10 @@
+<svg width="960" height="72" viewBox="0 0 960 72" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="960" height="72" rx="12" fill="#f8fafc"/>
+  <path d="M24 58C118 18 193 52 290 24C388 -4 468 37 557 20C669 -1 755 31 936 14" stroke="#0f766e" stroke-width="2" stroke-linecap="round" opacity=".26"/>
+  <path d="M38 20H922" stroke="#2563eb" stroke-width="1" stroke-dasharray="4 8" opacity=".18"/>
+  <text x="480" y="44" text-anchor="middle" font-family="Microsoft YaHei, PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="24" font-weight="700" fill="#0f172a">
+    开源不易，觉得项目有帮助的话，记得点个 Star。
+  </text>
+  <circle cx="210" cy="36" r="4" fill="#0f766e"/>
+  <circle cx="750" cy="36" r="4" fill="#2563eb"/>
+</svg>
