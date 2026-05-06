@@ -1,6 +1,7 @@
 import type { ChatMessage, StreamCallbacks, StreamOptions } from "@/types/llm";
 import { BaseLLMProvider, LLMError } from "./base";
-import { postJsonViaTauri } from "./tauri-proxy";
+import { streamJsonViaTauri } from "./tauri-proxy";
+import { createSseJsonEventParser } from "./openai-shared";
 
 // ── Minimal shapes for the Messages API (the provider) SSE events ────────── //
 
@@ -84,16 +85,34 @@ export class MessagesProvider extends BaseLLMProvider {
     if (systemContent) body.system = systemContent;
     if (this.config.temperature !== undefined) body.temperature = this.config.temperature;
 
+    let fullText = "";
+    let sawSseEvent = false;
+    const sseParser = createSseJsonEventParser((json) => {
+      sawSseEvent = true;
+      const event = json as MessagesSSEEvent;
+      if (event.type !== "content_block_delta") return;
+      const deltaEvent = event as ContentBlockDeltaEvent;
+      if (
+        deltaEvent.delta.type === "text_delta" &&
+        typeof deltaEvent.delta.text === "string" &&
+        deltaEvent.delta.text.length > 0
+      ) {
+        fullText += deltaEvent.delta.text;
+        callbacks.onToken(deltaEvent.delta.text);
+      }
+    });
+
     let response;
     try {
-      response = await postJsonViaTauri(
-        `${this.config.baseUrl}/messages`,
+      response = await streamJsonViaTauri(
+        buildMessagesEndpoint(this.config.baseUrl),
         {
           "Content-Type": "application/json",
           "x-api-key": this.config.apiKey,
           "anthropic-version": "2023-06-01",
         },
         body,
+        (chunk) => sseParser.feed(chunk),
       );
     } catch (err) {
       if ((err as Error).name === "AbortError") return;
@@ -101,6 +120,7 @@ export class MessagesProvider extends BaseLLMProvider {
       return;
     }
     if (this.abortController.signal.aborted) return;
+    sseParser.flush();
     if (response.status < 200 || response.status >= 300) {
       const text = response.text;
       callbacks.onError(
@@ -112,34 +132,8 @@ export class MessagesProvider extends BaseLLMProvider {
       return;
     }
 
-    let fullText = "";
-
     try {
-      const lines = response.text.split(/\r?\n/);
-      for (const line of lines) {
-        const trimmed = line.trimEnd();
-        if (!trimmed.startsWith("data: ")) continue;
-        const payload = trimmed.slice("data: ".length);
-        if (!payload) continue;
-
-        let event: MessagesSSEEvent;
-        try {
-          event = JSON.parse(payload) as MessagesSSEEvent;
-        } catch {
-          continue;
-        }
-
-        if (event.type === "content_block_delta") {
-          const deltaEvent = event as ContentBlockDeltaEvent;
-          if (
-            deltaEvent.delta.type === "text_delta" &&
-            typeof deltaEvent.delta.text === "string" &&
-            deltaEvent.delta.text.length > 0
-          ) {
-            fullText += deltaEvent.delta.text;
-          }
-        }
-      }
+      if (!sawSseEvent) fullText = parseMessagesSseText(response.text);
       if (!fullText) {
         const json = JSON.parse(response.text) as {
           content?: Array<{ type?: string; text?: string }>;
@@ -150,11 +144,35 @@ export class MessagesProvider extends BaseLLMProvider {
         callbacks.onError(new Error("LLM 返回为空：Messages API 成功响应但未包含文本内容"));
         return;
       }
-      callbacks.onToken(fullText);
+      if (!sawSseEvent) callbacks.onToken(fullText);
       callbacks.onComplete(fullText);
     } catch (err) {
       if ((err as Error).name === "AbortError") return;
       callbacks.onError(err instanceof Error ? err : new Error(String(err)));
     }
   }
+}
+
+function parseMessagesSseText(text: string): string {
+  let fullText = "";
+  const parser = createSseJsonEventParser((json) => {
+    const event = json as MessagesSSEEvent;
+    if (event.type !== "content_block_delta") return;
+    const deltaEvent = event as ContentBlockDeltaEvent;
+    if (
+      deltaEvent.delta.type === "text_delta" &&
+      typeof deltaEvent.delta.text === "string"
+    ) {
+      fullText += deltaEvent.delta.text;
+    }
+  });
+  parser.feed(text);
+  parser.flush();
+  return fullText;
+}
+
+function buildMessagesEndpoint(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/, "") || "https://api.anthropic.com/v1";
+  if (trimmed.toLowerCase().endsWith("/messages")) return trimmed;
+  return `${trimmed}/messages`;
 }

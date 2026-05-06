@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import type { ToolDefinition, ToolResult } from "@/types/llm";
+import type { AgentChoiceOption, ToolDefinition, ToolResult } from "@/types/llm";
 import type { EasyLanguageEnvScan } from "@/services/easy-language-env";
 import { useSettingsStore } from "@/stores/settings";
 import { JINGYI_ITEMS, type JingyiSearchItem } from "@/services/agent/knowledge/jingyi-data";
@@ -273,6 +273,47 @@ function readStringArray(args: Record<string, unknown>, key: string): string[] {
     .filter(Boolean);
 }
 
+function readChoiceOptions(args: Record<string, unknown>, key: string): AgentChoiceOption[] {
+  const raw = args[key];
+  const items = Array.isArray(raw)
+    ? raw
+    : typeof raw === "string"
+      ? raw.split(/[\n,，;；]+/)
+      : [];
+
+  return items
+    .map((item, index): AgentChoiceOption | null => {
+      if (typeof item === "string") {
+        const label = item.trim();
+        return label ? { id: `choice_${index + 1}`, label, value: label } : null;
+      }
+      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+      const obj = item as Record<string, unknown>;
+      const label = typeof obj.label === "string"
+        ? obj.label.trim()
+        : typeof obj.name === "string"
+          ? obj.name.trim()
+          : typeof obj.value === "string"
+            ? obj.value.trim()
+            : "";
+      if (!label) return null;
+      return {
+        id: typeof obj.id === "string" && obj.id.trim()
+          ? obj.id.trim()
+          : `choice_${index + 1}`,
+        label,
+        value: typeof obj.value === "string" && obj.value.trim()
+          ? obj.value.trim()
+          : label,
+        description: typeof obj.description === "string" && obj.description.trim()
+          ? obj.description.trim()
+          : undefined,
+      };
+    })
+    .filter((item): item is AgentChoiceOption => Boolean(item))
+    .slice(0, 6);
+}
+
 function normalizeSearchText(text: string): string {
   return text.trim().toLowerCase();
 }
@@ -295,15 +336,17 @@ function splitCjkNgrams(text: string, min = 2, max = 6): string[] {
 
 function segmentCjkText(text: string): string[] {
   if (!/[\u4e00-\u9fff]/.test(text)) return [];
+  const grams = splitCjkNgrams(text, 2, 4);
   const segmenter = typeof Intl !== "undefined" && "Segmenter" in Intl
     ? new Intl.Segmenter("zh", { granularity: "word" })
     : null;
-  if (!segmenter) return splitCjkNgrams(text, 2, 4);
+  if (!segmenter) return grams;
 
-  return [...segmenter.segment(text)]
+  const words = [...segmenter.segment(text)]
     .filter((segment) => segment.isWordLike)
     .map((segment) => segment.segment.trim().toLowerCase())
     .filter((segment) => segment.length >= 2);
+  return uniqueOrdered([...words, ...grams]);
 }
 
 function tokenizeJingyiText(text: string): string[] {
@@ -403,26 +446,75 @@ function scoreJingyiItem(item: JingyiSearchItem, query: string, tokens: string[]
   return score;
 }
 
-const JINGYI_QUERY_INTENT_WORDS = new Set([
-  "案例",
-  "案列",
-  "例子",
-  "示例",
-  "代码",
-  "写个",
-  "写一个",
-  "帮我",
-  "怎么",
-  "如何",
-  "怎样",
-  "实现",
-  "使用",
-  "用法",
-]);
+function jingyiItemEvidenceText(item: JingyiSearchItem): string {
+  return normalizeSearchText(jingyiSearchText(item));
+}
+
+function queryAsciiAnchors(query: string): string[] {
+  return uniqueOrdered(
+    [...normalizeSearchText(query).matchAll(/[a-z][a-z0-9_+-]*/g)]
+      .map((match) => match[0])
+      .filter((token) => token.length >= 2),
+  );
+}
+
+function scoreJingyiAnchorAlignment(item: JingyiSearchItem, query: string): number {
+  const anchors = queryAsciiAnchors(query);
+  if (anchors.length === 0) return 0;
+  const evidence = jingyiItemEvidenceText(item);
+  let hits = 0;
+  for (const anchor of anchors) {
+    if (evidence.includes(anchor)) hits += 1;
+  }
+  if (hits === anchors.length) return 28 + hits * 6;
+  if (hits > 0) return 10 + hits * 4;
+  return -26;
+}
+
+function scoreJingyiGraphCentrality(item: JingyiSearchItem, candidates: JingyiSearchItem[]): number {
+  let score = 0;
+  const namespace = deriveJingyiNamespace(item);
+  const className = item.class_name;
+  const returnType = item.return_type;
+
+  for (const other of candidates) {
+    if (jingyiItemKey(other) === jingyiItemKey(item)) continue;
+    if (namespace && deriveJingyiNamespace(other) === namespace) score += 1.8;
+    if (className && other.class_name === className) score += 2.2;
+    if (returnType && returnType !== "无返回值" && other.return_type === returnType) score += 1.2;
+    if (item.name && deriveJingyiFamilyRoots(other.name).some((root) => isInJingyiFamily(item, root))) {
+      score += 2.4;
+    }
+  }
+
+  return Math.min(24, score);
+}
 
 function meaningfulJingyiQueryTokens(tokens: string[]): string[] {
-  const meaningful = tokens.filter((token) => !JINGYI_QUERY_INTENT_WORDS.has(token));
-  return meaningful.length > 0 ? meaningful : tokens;
+  const meaningful = tokens
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2 && !/^\d+$/.test(token));
+  return meaningful.length > 0 ? uniqueOrdered(meaningful) : tokens;
+}
+
+function filterJingyiTokensByCorpus(
+  tokens: string[],
+  index: JingyiLexicalIndex,
+): string[] {
+  const totalDocs = Math.max(1, index.docs.length);
+  const filtered = meaningfulJingyiQueryTokens(tokens)
+    .map(normalizeSearchText)
+    .filter((token) => {
+      const df = jingyiTermDocumentFrequency(index, token);
+      if (df <= 0) return false;
+      return df <= totalDocs * 0.55;
+    })
+    .sort((left, right) => {
+      const idfDiff = jingyiTermIdf(index, right) - jingyiTermIdf(index, left);
+      return idfDiff !== 0 ? idfDiff : left.localeCompare(right, "zh-CN");
+    });
+
+  return uniqueOrdered(filtered).slice(0, 60);
 }
 
 function jingyiFieldHitScore(text: string, token: string): number {
@@ -431,6 +523,17 @@ function jingyiFieldHitScore(text: string, token: string): number {
   if (normalized === token) return 3;
   if (normalized.startsWith(token)) return 2;
   return normalized.includes(token) ? 1 : 0;
+}
+
+function splitJingyiApiNameParts(item: JingyiSearchItem): string[] {
+  return uniqueOrdered(
+    [
+      ...item.name.split(/[_\s]+/),
+      ...item.class_name.split(/[_\s]+/),
+    ]
+      .map((part) => normalizeSearchText(part))
+      .filter((part) => part.length >= 2),
+  );
 }
 
 function scoreJingyiFunctionalCandidate(
@@ -469,6 +572,7 @@ function scoreJingyiFunctionalCandidate(
       jingyiFieldHitScore(item.description, token),
       jingyiFieldHitScore(item.signature, token),
       jingyiFieldHitScore(paramText, token),
+      jingyiFieldHitScore(detailText, token),
     );
 
     if (nameHit > 0 || classHit > 0 || returnHit > 0 || detailHit > 0) {
@@ -486,39 +590,31 @@ function scoreJingyiFunctionalCandidate(
     weightedHits +
     coverageRatio * 36 +
     scoreJingyiItem(item, query, terms) * 0.04 +
-    categoryPrior(item, exactCommandQuery);
+    categoryPrior(item, exactCommandQuery) +
+    scoreJingyiAnchorAlignment(item, query);
 
   if (item.category === "子程序") score += 10;
   if (item.category === "全局变量" && item.return_type.startsWith("类_")) score += 6;
   if (item.category === "类" && item.class_name && nameHits === 0) score -= 8;
 
-  const normalizedQuery = normalizeSearchText(query);
-  const normalizedName = normalizeSearchText(item.name);
-  const normalizedClass = normalizeSearchText(item.class_name);
-  const normalizedReturn = normalizeSearchText(item.return_type);
-  const normalizedDetails = normalizeSearchText(detailText);
-  const executableHttpApi =
-    /网页_访问/.test(item.name) ||
-    /http/i.test(item.class_name) ||
-    /访问方式|提交信息|提交cookies|返回cookies|返回状态代码|附加协议头|content-type|post专用/i.test(detailText);
+  const namespace = deriveJingyiNamespace(item);
+  if (namespace) {
+    score += scoreJingyiNamespaceAgainstQuery(namespace, query, tokens) * 2;
+  }
 
-  if (/(post|请求|http|网页|接口|访问)/i.test(normalizedQuery) && executableHttpApi) {
-    score += 38;
+  const namePartText = item.name.split(/[_\s]+/).join(" ");
+  const classPartText = item.class_name.split(/[_\s]+/).join(" ");
+  const structuredText = `${namePartText} ${classPartText} ${item.return_type} ${paramText}`;
+  let structuredTermHits = 0;
+  for (const token of terms) {
+    if (!token) continue;
+    const hit = jingyiFieldHitScore(structuredText, token);
+    if (hit > 0) structuredTermHits += hit;
   }
-  if (/post/i.test(normalizedQuery) && /post|提交信息|字节集提交/i.test(`${normalizedName} ${normalizedDetails}`)) {
-    score += 30;
-  }
-  if (/请求|接口|http/i.test(normalizedQuery) && /请求|http|winhttp|wininet|访问方式/i.test(`${normalizedClass} ${normalizedDetails}`)) {
-    score += 18;
-  }
-  if (/网页/.test(normalizedQuery) && normalizedName.startsWith("网页_访问")) {
-    score += 28;
-  }
-  if (/post|请求|http|接口|网页/.test(normalizedQuery) && /保存|查看|排序|快捷方式|浏览器句柄/.test(normalizedName + normalizedDetails)) {
-    score -= 55;
-  }
-  if (/post|请求|http|接口/.test(normalizedQuery) && item.category === "全局变量" && normalizedReturn.startsWith("类_")) {
-    score += 16;
+  score += Math.min(24, structuredTermHits * 3);
+
+  if (item.category === "全局变量" && item.return_type.startsWith("类_") && detailHits > 0) {
+    score += 8;
   }
 
   return { item, score, coverage, nameHits, detailHits };
@@ -529,6 +625,7 @@ function rankJingyiFunctionalCandidates(
   query: string,
   tokens: string[],
   limit: number,
+  mode: "strict" | "relaxed" = "strict",
 ): JingyiSearchItem[] {
   const terms = meaningfulJingyiQueryTokens(tokens);
   const minCoverage = Math.min(2, Math.max(1, terms.length));
@@ -537,6 +634,9 @@ function rankJingyiFunctionalCandidates(
     .filter((entry) => {
       if (entry.score <= 0) return false;
       if (isExactJingyiCommandQuery(query)) return entry.coverage > 0;
+      if (mode === "relaxed") {
+        return entry.coverage > 0 || entry.nameHits > 0 || entry.detailHits > 0;
+      }
       return entry.coverage >= minCoverage || (terms.length <= 1 && entry.coverage > 0);
     })
     .sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name, "zh-CN"))
@@ -661,7 +761,11 @@ function rankJingyiLexicalMatches(
     .map((doc) => {
       const structured = scoreJingyiItem(doc.item, query, tokens);
       const bm25 = scoreJingyiBm25(doc, tokens, index);
-      const score = structured + bm25 * 8 + categoryPrior(doc.item, exactCommandQuery);
+      const score =
+        structured +
+        bm25 * 8 +
+        categoryPrior(doc.item, exactCommandQuery) +
+        scoreJingyiAnchorAlignment(doc.item, query);
       return {
         item: doc.item,
         score,
@@ -694,7 +798,8 @@ function rerankJingyiCandidates(
   rrfScores: Map<string, number>,
 ): JingyiSearchItem[] {
   const exactCommandQuery = isExactJingyiCommandQuery(query);
-  return uniqueJingyiItems(items)
+  const candidates = uniqueJingyiItems(items);
+  return candidates
     .map((item) => {
       const key = jingyiItemKey(item);
       const functional = scoreJingyiFunctionalCandidate(item, query, tokens);
@@ -703,12 +808,138 @@ function rerankJingyiCandidates(
         scoreJingyiItem(item, query, tokens) * 0.03 +
         functional.score * 0.35 +
         functional.coverage * 4 +
-        (relatedKeys.has(key) ? 12 : 0) +
-        categoryPrior(item, exactCommandQuery);
+        (relatedKeys.has(key) ? 20 : 0) +
+        categoryPrior(item, exactCommandQuery) +
+        scoreJingyiAnchorAlignment(item, query) +
+        scoreJingyiGraphCentrality(item, candidates);
       return { item, score };
     })
     .sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name, "zh-CN"))
     .map((entry) => entry.item);
+}
+
+function jingyiTermDocumentFrequency(index: JingyiLexicalIndex, token: string): number {
+  return index.documentFrequency.get(token) ?? 0;
+}
+
+function jingyiTermIdf(index: JingyiLexicalIndex, token: string): number {
+  const totalDocs = Math.max(1, index.docs.length);
+  const df = jingyiTermDocumentFrequency(index, token);
+  if (df <= 0) return 0;
+  return Math.log(1 + (totalDocs - df + 0.5) / (df + 0.5));
+}
+
+function addJingyiFeedbackToken(
+  scores: Map<string, number>,
+  index: JingyiLexicalIndex,
+  token: string,
+  weight: number,
+): void {
+  const normalized = normalizeSearchText(token);
+  if (normalized.length < 2 || /^\d+$/.test(normalized)) return;
+  const df = jingyiTermDocumentFrequency(index, normalized);
+  if (df <= 0 || df > index.docs.length * 0.45) return;
+  scores.set(normalized, (scores.get(normalized) ?? 0) + weight * jingyiTermIdf(index, normalized));
+}
+
+function collectJingyiPseudoFeedbackTerms(
+  seedItems: JingyiSearchItem[],
+  index: JingyiLexicalIndex,
+  queryTokens: string[],
+  limit = 24,
+): string[] {
+  const querySet = new Set(queryTokens.map(normalizeSearchText));
+  const scores = new Map<string, number>();
+  const seeds = uniqueJingyiItems(seedItems).slice(0, 36);
+  const queryNamespaces = collectNamespacesFromJingyiItems(seeds.slice(0, 12));
+  const queryClasses = collectClassesFromJingyiItems(seeds.slice(0, 12));
+
+  seeds.forEach((item, rank) => {
+    const namespace = deriveJingyiNamespace(item);
+    const sameNamespace = namespace !== null && queryNamespaces.has(namespace);
+    const sameClass = item.class_name !== "" && queryClasses.has(item.class_name);
+    if (!sameNamespace && !sameClass && rank >= 12) return;
+
+    const rankWeight = 1 / Math.sqrt(rank + 1);
+    for (const part of splitJingyiApiNameParts(item)) {
+      addJingyiFeedbackToken(scores, index, part, rankWeight * 8);
+    }
+    if (namespace) addJingyiFeedbackToken(scores, index, namespace, rankWeight * 7);
+    if (item.return_type && item.return_type !== "无返回值") {
+      for (const token of tokenizeJingyiText(item.return_type)) {
+        addJingyiFeedbackToken(scores, index, token, rankWeight * 2.5);
+      }
+    }
+    for (const param of item.params.slice(0, 10)) {
+      addJingyiFeedbackToken(scores, index, param.name, rankWeight * 4);
+      addJingyiFeedbackToken(scores, index, param.type, rankWeight * 2);
+      for (const token of tokenizeJingyiText(param.description ?? "").slice(0, 8)) {
+        addJingyiFeedbackToken(scores, index, token, rankWeight * 1.2);
+      }
+    }
+    for (const token of tokenizeJingyiText(item.description).slice(0, 10)) {
+      addJingyiFeedbackToken(scores, index, token, rankWeight);
+    }
+  });
+
+  return [...scores.entries()]
+    .filter(([token]) => !querySet.has(token))
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "zh-CN"))
+    .slice(0, limit)
+    .map(([token]) => token);
+}
+
+function collectNamespacesFromJingyiItems(items: JingyiSearchItem[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    const namespace = deriveJingyiNamespace(item);
+    if (!namespace) continue;
+    counts.set(namespace, (counts.get(namespace) ?? 0) + 1);
+  }
+  return new Set(
+    [...counts.entries()]
+      .filter(([, count]) => count >= 2)
+      .map(([namespace]) => namespace),
+  );
+}
+
+function collectClassesFromJingyiItems(items: JingyiSearchItem[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    if (!item.class_name) continue;
+    counts.set(item.class_name, (counts.get(item.class_name) ?? 0) + 1);
+  }
+  return new Set(
+    [...counts.entries()]
+      .filter(([, count]) => count >= 2)
+      .map(([className]) => className),
+  );
+}
+
+function itemHasAnyJingyiTokenEvidence(item: JingyiSearchItem, tokens: string[]): boolean {
+  const terms = meaningfulJingyiQueryTokens(tokens);
+  if (terms.length === 0) return true;
+  const evidence = jingyiItemEvidenceText(item);
+  return terms.some((token) => evidence.includes(normalizeSearchText(token)));
+}
+
+function itemMatchesAsciiAnchors(item: JingyiSearchItem, query: string): boolean {
+  const anchors = queryAsciiAnchors(query);
+  if (anchors.length === 0) return true;
+  const evidence = jingyiItemEvidenceText(item);
+  return anchors.some((anchor) => evidence.includes(anchor));
+}
+
+function pruneJingyiCandidatesByOriginalIntent(
+  items: JingyiSearchItem[],
+  query: string,
+  tokens: string[],
+): JingyiSearchItem[] {
+  if (isExactJingyiCommandQuery(query)) return items;
+  const pruned = items.filter((item) =>
+    itemMatchesAsciiAnchors(item, query) && itemHasAnyJingyiTokenEvidence(item, tokens),
+  );
+  return pruned.length >= Math.min(3, items.length) ? pruned : items;
 }
 
 function uniqueJingyiItems(items: JingyiSearchItem[]): JingyiSearchItem[] {
@@ -775,6 +1006,185 @@ function deriveJingyiConceptRoots(item: JingyiSearchItem, query: string, tokens:
   return [...roots].filter((root) => root.length >= 4 && root.includes("_"));
 }
 
+function isExpandableJingyiApiItem(item: JingyiSearchItem): boolean {
+  return !(
+    item.category === "常量" ||
+    item.category === "图片资源" ||
+    item.category === "数据类型"
+  );
+}
+
+function deriveJingyiNamespace(item: JingyiSearchItem): string | null {
+  const clean = item.name.trim();
+  if (!clean.includes("_")) return null;
+  const namespace = clean.split("_")[0]?.trim();
+  return namespace && namespace.length >= 2 ? namespace : null;
+}
+
+function scoreJingyiNamespaceAgainstQuery(namespace: string, query: string, tokens: string[]): number {
+  const normalizedNamespace = normalizeSearchText(namespace);
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedNamespace) return 0;
+
+  let score = 0;
+  if (normalizedQuery === normalizedNamespace) score += 12;
+  else if (normalizedQuery.includes(normalizedNamespace)) score += 8;
+
+  for (const token of meaningfulJingyiQueryTokens(tokens)) {
+    if (!token) continue;
+    if (token === normalizedNamespace) score += 10;
+    else if (token.includes(normalizedNamespace)) score += 7;
+    else if (normalizedNamespace.includes(token)) score += 4;
+  }
+
+  return score;
+}
+
+function collectQueryMatchedJingyiNamespaces(
+  allItems: JingyiSearchItem[],
+  query: string,
+  tokens: string[],
+  limit: number,
+): string[] {
+  if (isExactJingyiCommandQuery(query)) return [];
+
+  const scores = new Map<string, number>();
+  for (const item of allItems) {
+    if (!isExpandableJingyiApiItem(item)) continue;
+    const namespace = deriveJingyiNamespace(item);
+    if (!namespace) continue;
+    const score = scoreJingyiNamespaceAgainstQuery(namespace, query, tokens);
+    if (score <= 0) continue;
+    scores.set(namespace, Math.max(scores.get(namespace) ?? 0, score));
+  }
+
+  return [...scores.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "zh-CN"))
+    .slice(0, limit)
+    .map(([namespace]) => namespace);
+}
+
+function buildNamespaceJingyiImplementationGroups(
+  allItems: JingyiSearchItem[],
+  query: string,
+  tokens: string[],
+  limit: number,
+): Array<{
+  family: string;
+  summary: string;
+  items: JingyiSearchItem[];
+}> {
+  const groups: Array<{
+    family: string;
+    score: number;
+    summary: string;
+    items: JingyiSearchItem[];
+  }> = [];
+
+  const namespaces = collectQueryMatchedJingyiNamespaces(allItems, query, tokens, 4);
+  for (const namespace of namespaces) {
+    const familyItems = allItems.filter((item) =>
+      isExpandableJingyiApiItem(item) && deriveJingyiNamespace(item) === namespace,
+    );
+    const candidates = rankJingyiFunctionalCandidates(
+      familyItems,
+      query,
+      tokens,
+      Math.max(3, Math.min(limit, 12)),
+      "relaxed",
+    );
+    if (candidates.length < 2) continue;
+
+    const familyScore = candidates.reduce(
+      (total, item) => total + scoreJingyiFunctionalCandidate(item, query, tokens).score,
+      0,
+    );
+    groups.push({
+      family: `${namespace}_*`,
+      score: familyScore,
+      summary:
+        `查询语义命中了“${namespace}”命名空间；已按命令名、说明、返回值和参数重排同域 API，回答时应优先比较这些候选的签名、关键参数和适用场景。`,
+      items: candidates,
+    });
+  }
+
+  return groups
+    .sort((a, b) => b.score - a.score || a.family.localeCompare(b.family, "zh-CN"))
+    .map(({ family, summary, items }) => ({ family, summary, items }));
+}
+
+function buildCapabilityJingyiImplementationGroups(
+  allItems: JingyiSearchItem[],
+  query: string,
+  tokens: string[],
+  limit: number,
+): Array<{
+  family: string;
+  summary: string;
+  items: JingyiSearchItem[];
+}> {
+  if (isExactJingyiCommandQuery(query)) return [];
+
+  const candidates = rankJingyiFunctionalCandidates(
+    allItems.filter(isExpandableJingyiApiItem),
+    query,
+    tokens,
+    Math.max(4, Math.min(limit, 12)),
+    "relaxed",
+  );
+  const distinctFamilies = new Set(
+    candidates.map((item) => item.class_name || deriveJingyiNamespace(item) || item.name),
+  );
+  if (candidates.length < 2 || distinctFamilies.size < 2) return [];
+
+  return [{
+    family: "功能候选",
+    summary:
+      "这是按自然语言意图从全量知识库里选出的跨族候选；它不是固定模板，排序依据来自命令名、类名、返回值、签名、参数名和参数说明。",
+    items: candidates,
+  }];
+}
+
+function selectJingyiKeyParams(
+  item: JingyiSearchItem,
+  query: string,
+  tokens: string[],
+  limit = 10,
+): JingyiSearchItem["params"] {
+  if (item.params.length <= limit) return item.params;
+
+  const terms = meaningfulJingyiQueryTokens(tokens);
+  const queryTokens = tokenizeJingyiText(query);
+  const scored = item.params.map((param, index) => {
+    const text = `${param.name} ${param.type} ${param.attributes ?? ""} ${param.description ?? ""}`;
+    let score = 0;
+    for (const token of uniqueOrdered([...terms, ...queryTokens])) {
+      if (!token) continue;
+      score += jingyiFieldHitScore(text, token) * 5;
+      if (token.length >= 3 && normalizeSearchText(text).includes(token)) score += 2;
+    }
+    if (!param.attributes?.includes("可空")) score += 1.5;
+    score += Math.max(0, 1 - index * 0.05);
+    return { param, index, score };
+  });
+
+  const relevant = scored
+    .filter((entry) => entry.score > 1.2)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, limit)
+    .map((entry) => entry.param);
+
+  if (relevant.length >= Math.min(3, limit)) return relevant;
+
+  const selected = [...relevant];
+  for (const entry of scored.slice(0, limit)) {
+    if (selected.includes(entry.param)) continue;
+    selected.push(entry.param);
+    if (selected.length >= limit) break;
+  }
+  return selected;
+}
+
 function buildFunctionalJingyiImplementationGroups(
   seeds: JingyiSearchItem[],
   allItems: JingyiSearchItem[],
@@ -801,9 +1211,7 @@ function buildFunctionalJingyiImplementationGroups(
 
       const candidates = rankJingyiFunctionalCandidates(
         allItems.filter((item) => {
-          if (item.category === "常量" || item.category === "图片资源" || item.category === "数据类型") {
-            return false;
-          }
+          if (!isExpandableJingyiApiItem(item)) return false;
           return isInJingyiFamily(item, family);
         }),
         query,
@@ -865,6 +1273,297 @@ function uniqueRelatedJingyiGroups(
   return [...byFamily.values()];
 }
 
+function scoreRelatedJingyiGroup(
+  group: {
+    family: string;
+    items: JingyiSearchItem[];
+  },
+  query: string,
+  tokens: string[],
+  rrfScores: Map<string, number>,
+): number {
+  const itemScores = group.items.map((item) => {
+    const key = jingyiItemKey(item);
+    return (
+      scoreJingyiFunctionalCandidate(item, query, tokens).score +
+      scoreJingyiAnchorAlignment(item, query) +
+      (rrfScores.get(key) ?? 0) * 800
+    );
+  });
+  const topItems = itemScores.sort((a, b) => b - a).slice(0, 6);
+  const meanTop = topItems.reduce((total, score) => total + score, 0) / Math.max(1, topItems.length);
+  const diversity = new Set(
+    group.items.map((item) => item.class_name || deriveJingyiNamespace(item) || item.name),
+  ).size;
+  return meanTop + Math.min(18, group.items.length * 2) + Math.min(10, diversity * 2);
+}
+
+type JingyiImplementationRouteType =
+  | "function_family"
+  | "object_workflow"
+  | "namespace_overview"
+  | "candidate_pool";
+
+interface JingyiImplementationRoute {
+  family: string;
+  route_type: JingyiImplementationRouteType;
+  score: number;
+  summary: string;
+  evidence: string[];
+  items: JingyiSearchItem[];
+  primaryItems: JingyiSearchItem[];
+  supportingItems: JingyiSearchItem[];
+}
+
+function isJingyiGenericCandidateGroup(family: string): boolean {
+  return family === "功能候选";
+}
+
+function isJingyiNamespaceOverviewGroup(family: string): boolean {
+  return family.endsWith("_*");
+}
+
+function isJingyiObjectWorkflowGroup(family: string, items: JingyiSearchItem[]): boolean {
+  return family.startsWith("类_") || items.some((item) => item.class_name === family);
+}
+
+function classifyJingyiImplementationRoute(
+  group: {
+    family: string;
+    items: JingyiSearchItem[];
+  },
+): JingyiImplementationRouteType {
+  if (isJingyiGenericCandidateGroup(group.family)) return "candidate_pool";
+  if (isJingyiObjectWorkflowGroup(group.family, group.items)) return "object_workflow";
+  if (isJingyiNamespaceOverviewGroup(group.family)) return "namespace_overview";
+  return "function_family";
+}
+
+function isJingyiFamilyRootItem(item: JingyiSearchItem, family: string): boolean {
+  if (!family || isJingyiGenericCandidateGroup(family) || isJingyiNamespaceOverviewGroup(family)) {
+    return false;
+  }
+  if (family.startsWith("类_")) return false;
+  return item.name === family;
+}
+
+function scoreJingyiWorkflowItem(
+  item: JingyiSearchItem,
+  family: string,
+  query: string,
+  tokens: string[],
+  rrfScores: Map<string, number>,
+): number {
+  const key = jingyiItemKey(item);
+  const requiredParamCount = item.params.filter((param) =>
+    !param.attributes?.includes("可空"),
+  ).length;
+  const referenceParamCount = item.params.filter((param) =>
+    param.attributes?.includes("参考"),
+  ).length;
+  const paramShapeScore =
+    Math.min(18, requiredParamCount * 4 + item.params.length * 1.4 + referenceParamCount);
+  const resultShapeScore = item.return_type && item.return_type !== "无返回值" ? 6 : 0;
+  const categoryScore =
+    item.category === "子程序"
+      ? 9
+      : item.category === "类" && item.class_name
+        ? 5
+        : item.category === "全局变量" && item.return_type.startsWith("类_")
+          ? 3
+          : -4;
+  const rootScore = isJingyiFamilyRootItem(item, family) ? 28 : 0;
+  const emptyShapePenalty = item.params.length === 0 && item.return_type === "无返回值" ? -12 : 0;
+
+  return (
+    scoreJingyiFunctionalCandidate(item, query, tokens).score * 0.32 +
+    (rrfScores.get(key) ?? 0) * 700 +
+    scoreJingyiGraphCentrality(item, [item]) +
+    categoryScore +
+    rootScore +
+    paramShapeScore +
+    resultShapeScore +
+    emptyShapePenalty
+  );
+}
+
+function rankJingyiWorkflowItems(
+  items: JingyiSearchItem[],
+  family: string,
+  query: string,
+  tokens: string[],
+  rrfScores: Map<string, number>,
+): JingyiSearchItem[] {
+  return uniqueJingyiItems(items)
+    .map((item) => ({
+      item,
+      score: scoreJingyiWorkflowItem(item, family, query, tokens, rrfScores),
+    }))
+    .sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name, "zh-CN"))
+    .map((entry) => entry.item);
+}
+
+function makeJingyiRouteEvidence(
+  routeType: JingyiImplementationRouteType,
+  family: string,
+  primaryItems: JingyiSearchItem[],
+  supportingItems: JingyiSearchItem[],
+): string[] {
+  const primaryNames = primaryItems.slice(0, 3).map((item) => item.name).join(" / ");
+  const supportNames = supportingItems.slice(0, 4).map((item) => item.name).join(" / ");
+  const evidence = [
+    `route_type=${routeType}`,
+    primaryNames ? `primary=${primaryNames}` : "",
+    supportNames ? `supporting=${supportNames}` : "",
+  ].filter(Boolean);
+
+  if (routeType === "function_family") {
+    evidence.push(`同族函数 ${family} 按签名形状、参数完整度和族内根节点重排`);
+  } else if (routeType === "object_workflow") {
+    evidence.push(`同一对象/类的变量与方法按调用链证据组合`);
+  } else if (routeType === "namespace_overview") {
+    evidence.push(`同命名空间候选，仅用于补充比较，不直接当作唯一方案`);
+  } else {
+    evidence.push("跨族候选池，仅用于召回和发现可能路线");
+  }
+
+  return evidence;
+}
+
+function scoreJingyiImplementationRoute(
+  group: {
+    family: string;
+    items: JingyiSearchItem[];
+  },
+  routeType: JingyiImplementationRouteType,
+  primaryItems: JingyiSearchItem[],
+  query: string,
+  tokens: string[],
+  rrfScores: Map<string, number>,
+): number {
+  const base = scoreRelatedJingyiGroup(group, query, tokens, rrfScores);
+  const primaryScores = primaryItems.slice(0, 4).map((item) =>
+    scoreJingyiWorkflowItem(item, group.family, query, tokens, rrfScores),
+  );
+  const meanPrimary =
+    primaryScores.reduce((total, score) => total + score, 0) / Math.max(1, primaryScores.length);
+  const routeTypeScore =
+    routeType === "function_family"
+      ? 42
+      : routeType === "object_workflow"
+        ? 30
+        : routeType === "namespace_overview"
+          ? 8
+          : -18;
+  const rootBonus = primaryItems.some((item) => isJingyiFamilyRootItem(item, group.family)) ? 18 : 0;
+  const sizePenalty = group.items.length > 10 ? Math.min(18, group.items.length - 10) : 0;
+
+  return base + meanPrimary * 0.58 + routeTypeScore + rootBonus - sizePenalty;
+}
+
+function buildJingyiImplementationRoutes(
+  groups: Array<{
+    family: string;
+    summary: string;
+    items: JingyiSearchItem[];
+  }>,
+  query: string,
+  tokens: string[],
+  rrfScores: Map<string, number>,
+  limit: number,
+): JingyiImplementationRoute[] {
+  const ranked = uniqueRelatedJingyiGroups(groups)
+    .map((group) => {
+      const routeType = classifyJingyiImplementationRoute(group);
+      const rankedItems = rankJingyiWorkflowItems(
+        group.items,
+        group.family,
+        query,
+        tokens,
+        rrfScores,
+      );
+      const primaryItems = rankedItems.slice(0, routeType === "object_workflow" ? 4 : 3);
+      const primaryKeys = new Set(primaryItems.map(jingyiItemKey));
+      const supportingItems = rankedItems.filter((item) => !primaryKeys.has(jingyiItemKey(item))).slice(0, 8);
+      const score = scoreJingyiImplementationRoute(
+        group,
+        routeType,
+        primaryItems,
+        query,
+        tokens,
+        rrfScores,
+      );
+
+      return {
+        family: group.family,
+        route_type: routeType,
+        score,
+        summary: group.summary,
+        evidence: makeJingyiRouteEvidence(routeType, group.family, primaryItems, supportingItems),
+        items: rankedItems,
+        primaryItems,
+        supportingItems,
+      };
+    })
+    .sort((a, b) => b.score - a.score || a.family.localeCompare(b.family, "zh-CN"));
+
+  const selected: JingyiImplementationRoute[] = [];
+  const selectedNamespaces = new Set<string>();
+  const delayed: JingyiImplementationRoute[] = [];
+
+  for (const route of ranked) {
+    const namespace = route.family.endsWith("_*")
+      ? route.family.slice(0, -2)
+      : route.family.includes("_")
+        ? route.family.split("_")[0]
+        : route.family;
+    const isBroadDuplicate =
+      route.route_type === "namespace_overview" && selectedNamespaces.has(namespace);
+    const isGeneric = route.route_type === "candidate_pool";
+
+    if (isBroadDuplicate || isGeneric) {
+      delayed.push(route);
+      continue;
+    }
+
+    selected.push(route);
+    if (namespace) selectedNamespaces.add(namespace);
+    if (selected.length >= limit) break;
+  }
+
+  for (const route of delayed) {
+    if (selected.length >= limit) break;
+    selected.push(route);
+  }
+
+  return selected.slice(0, limit);
+}
+
+function rankRelatedJingyiGroups(
+  groups: Array<{
+    family: string;
+    summary: string;
+    items: JingyiSearchItem[];
+  }>,
+  query: string,
+  tokens: string[],
+  rrfScores: Map<string, number>,
+  limit: number,
+): Array<{
+  family: string;
+  summary: string;
+  items: JingyiSearchItem[];
+}> {
+  return uniqueRelatedJingyiGroups(groups)
+    .map((group) => ({
+      group,
+      score: scoreRelatedJingyiGroup(group, query, tokens, rrfScores),
+    }))
+    .sort((a, b) => b.score - a.score || a.group.family.localeCompare(b.group.family, "zh-CN"))
+    .slice(0, limit)
+    .map(({ group }) => group);
+}
+
 function buildRelatedJingyiImplementationGroups(
   seeds: JingyiSearchItem[],
   allItems: JingyiSearchItem[],
@@ -891,12 +1590,13 @@ function buildRelatedJingyiImplementationGroups(
       const family = seed.class_name;
       if (!seenFamilies.has(family)) {
         seenFamilies.add(family);
-        const candidates = rankJingyiFunctionalCandidates(
-          allItems.filter((item) => item.class_name === seed.class_name),
+        const candidates = rankJingyiWorkflowItems(
+          [seed, ...allItems.filter((item) => item.class_name === seed.class_name)],
+          family,
           query,
           tokens,
-          Math.max(2, Math.min(limit, 10)),
-        );
+          new Map(),
+        ).slice(0, Math.max(2, Math.min(limit, 10)));
 
         if (candidates.length >= 2) {
           const familyScore = candidates.reduce(
@@ -919,12 +1619,13 @@ function buildRelatedJingyiImplementationGroups(
       if (!seenFamilies.has(family)) {
         seenFamilies.add(family);
         const className = seed.return_type;
-        const candidates = rankJingyiFunctionalCandidates(
+        const candidates = rankJingyiWorkflowItems(
           [seed, ...allItems.filter((item) => item.class_name === className)],
+          family,
           query,
           tokens,
-          Math.max(2, Math.min(limit, 10)),
-        );
+          new Map(),
+        ).slice(0, Math.max(2, Math.min(limit, 10)));
 
         if (candidates.length >= 2) {
           const familyScore = candidates.reduce(
@@ -1572,10 +2273,12 @@ export async function searchJingyiKnowledge(query: string, limit = 8) {
   const tokens = expandJingyiQuery(query);
   const allItems = await getEnrichedJingyiItems();
   const lexicalIndex = await getJingyiLexicalIndex();
-  const lexicalMatches = rankJingyiLexicalMatches(lexicalIndex, query, tokens, safeLimit * 3);
+  const evidenceTokens = filterJingyiTokensByCorpus(tokens, lexicalIndex);
+  const retrievalTokens = evidenceTokens.length > 0 ? evidenceTokens : tokens;
+  const lexicalMatches = rankJingyiLexicalMatches(lexicalIndex, query, retrievalTokens, safeLimit * 3);
 
   const exactMatches = JINGYI_ITEMS
-    .map((item) => ({ item, score: scoreJingyiItem(item, query, tokens) }))
+    .map((item) => ({ item, score: scoreJingyiItem(item, query, retrievalTokens) }))
     .filter((entry) => entry.score > 0)
     .sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name, "zh-CN"))
     .slice(0, safeLimit)
@@ -1596,7 +2299,7 @@ export async function searchJingyiKnowledge(query: string, limit = 8) {
   const functionalMatches = rankJingyiFunctionalCandidates(
     allItems,
     query,
-    tokens,
+    retrievalTokens,
     safeLimit * 3,
   );
   const rrfScores = new Map<string, number>();
@@ -1622,17 +2325,70 @@ export async function searchJingyiKnowledge(query: string, limit = 8) {
     ...semantic.matches.map((hit) => hit.item),
     ...functionalMatches,
   ];
-  const relatedGroups = uniqueRelatedJingyiGroups([
-    ...buildFunctionalJingyiImplementationGroups(seedItems, allItems, query, tokens, safeLimit),
-    ...buildRelatedJingyiImplementationGroups(seedItems, allItems, query, tokens, safeLimit),
-  ]).slice(0, 5);
+  const feedbackTerms = collectJingyiPseudoFeedbackTerms(
+    seedItems,
+    lexicalIndex,
+    retrievalTokens,
+    Math.max(12, safeLimit * 2),
+  );
+  const expandedCandidateTokens = uniqueOrdered([...retrievalTokens, ...feedbackTerms]).slice(0, 140);
+  const feedbackMatches = feedbackTerms.length > 0
+    ? rankJingyiFunctionalCandidates(
+      allItems,
+      `${query} ${feedbackTerms.join(" ")}`,
+      expandedCandidateTokens,
+      safeLimit * 4,
+      "relaxed",
+    )
+    : [];
+  addRrfVotes(rrfScores, feedbackMatches, 1.8);
+  const expandedSeedItems = [
+    ...seedItems,
+    ...feedbackMatches,
+  ];
+  const rawRelatedGroups = [
+    ...buildNamespaceJingyiImplementationGroups(allItems, query, expandedCandidateTokens, safeLimit),
+    ...buildCapabilityJingyiImplementationGroups(allItems, query, expandedCandidateTokens, safeLimit),
+    ...buildFunctionalJingyiImplementationGroups(
+      expandedSeedItems,
+      allItems,
+      query,
+      expandedCandidateTokens,
+      safeLimit,
+    ),
+    ...buildRelatedJingyiImplementationGroups(
+      expandedSeedItems,
+      allItems,
+      query,
+      expandedCandidateTokens,
+      safeLimit,
+    ),
+  ];
+  const implementationRoutes = buildJingyiImplementationRoutes(
+    rawRelatedGroups,
+    query,
+    retrievalTokens,
+    rrfScores,
+    5,
+  );
+  const relatedGroups = rankRelatedJingyiGroups(
+    implementationRoutes.map((route) => ({
+      family: route.family,
+      summary: route.summary,
+      items: route.items,
+    })),
+    query,
+    retrievalTokens,
+    rrfScores,
+    5,
+  );
   const relatedKeys = new Set<string>();
-  for (const item of functionalMatches) {
+  for (const item of uniqueJingyiItems([...functionalMatches, ...feedbackMatches])) {
     merged.set(jingyiItemKey(item), item);
     if (merged.size >= safeLimit * 4) break;
   }
-  for (const group of relatedGroups) {
-    for (const item of group.items) {
+  for (const route of implementationRoutes) {
+    for (const item of [...route.primaryItems, ...route.supportingItems]) {
       relatedKeys.add(jingyiItemKey(item));
       if (merged.size >= safeLimit * 4) break;
       merged.set(jingyiItemKey(item), item);
@@ -1642,35 +2398,70 @@ export async function searchJingyiKnowledge(query: string, limit = 8) {
   const matches = rerankJingyiCandidates(
     [...merged.values()],
     query,
-    tokens,
+    expandedCandidateTokens,
     relatedKeys,
     rrfScores,
   ).slice(0, safeLimit);
   const enrichedMatches = await enrichJingyiItemsWithDocs(matches);
-  const relatedImplementations = await Promise.all(
-    relatedGroups.map(async (group) => ({
-      family: group.family,
-      summary: group.summary,
-      count: group.items.length,
-      items: await enrichJingyiItemsWithDocs(group.items),
-    })),
+  const enrichedRoutes = await Promise.all(
+    implementationRoutes.map(async (route) => {
+      const enrichedItems = await enrichJingyiItemsWithDocs(route.items);
+      const enrichedByKey = new Map(enrichedItems.map((item) => [jingyiItemKey(item), item]));
+      const primaryItems = route.primaryItems
+        .map((item) => enrichedByKey.get(jingyiItemKey(item)) ?? item)
+        .slice(0, 5);
+      const supportingItems = route.supportingItems
+        .map((item) => enrichedByKey.get(jingyiItemKey(item)) ?? item)
+        .slice(0, 8);
+      return {
+        ...route,
+        items: enrichedItems,
+        primaryItems,
+        supportingItems,
+      };
+    }),
   );
-  const implementationOptions = relatedImplementations.map((group) => ({
-    family: group.family,
-    summary: group.summary,
-    options: group.items.map((item) => ({
+  const relatedImplementations = enrichedRoutes.map((route) => ({
+    family: route.family,
+    route_type: route.route_type,
+    summary: route.summary,
+    evidence: route.evidence,
+    count: route.items.length,
+    primary_items: route.primaryItems,
+    supporting_items: route.supportingItems,
+    items: route.items,
+  }));
+  const implementationOptions = enrichedRoutes.map((route) => ({
+    family: route.family,
+    route_type: route.route_type,
+    summary: route.summary,
+    evidence: route.evidence,
+    primary_options: route.primaryItems.map((item) => ({
       name: item.name,
       category: item.category,
       class_name: item.class_name,
       return_type: item.return_type,
       signature: item.signature,
       description: item.description,
-      key_params: item.params
-        .filter((param) => {
-          const text = `${param.name} ${param.description ?? ""}`;
-          return /网址|访问方式|提交|cookie|协议头|状态|超时|数据|内容|编码|代理|请求|响应|返回/i.test(text);
-        })
-        .slice(0, 10),
+      key_params: selectJingyiKeyParams(item, query, tokens, 10),
+    })),
+    supporting_options: route.supportingItems.map((item) => ({
+      name: item.name,
+      category: item.category,
+      class_name: item.class_name,
+      return_type: item.return_type,
+      signature: item.signature,
+      description: item.description,
+      key_params: selectJingyiKeyParams(item, query, tokens, 8),
+    })),
+    options: route.items.map((item) => ({
+      name: item.name,
+      category: item.category,
+      class_name: item.class_name,
+      return_type: item.return_type,
+      signature: item.signature,
+      description: item.description,
+      key_params: selectJingyiKeyParams(item, query, tokens, 10),
     })),
   }));
   const semanticItems = await enrichJingyiItemsWithDocs(
@@ -1681,6 +2472,8 @@ export async function searchJingyiKnowledge(query: string, limit = 8) {
     module: "精易模块",
     query,
     expanded_terms: tokens,
+    evidence_terms: retrievalTokens,
+    retrieval_feedback_terms: feedbackTerms,
     count: enrichedMatches.length,
     matches: enrichedMatches,
     related_implementations: relatedImplementations,
@@ -1689,7 +2482,7 @@ export async function searchJingyiKnowledge(query: string, limit = 8) {
     lexical_search: {
       enabled: true,
       indexed_count: lexicalIndex.items.length,
-      method: "BM25 + structured field scoring; fused with exact and semantic retrieval by RRF",
+      method: "BM25 + structured field scoring + pseudo relevance feedback; fused with exact and semantic retrieval by RRF, then grouped into evidence routes by API graph shape.",
       matches: lexicalMatches.slice(0, safeLimit).map((hit) => ({
         score: Number(hit.score.toFixed(4)),
         bm25: Number(hit.bm25.toFixed(4)),
@@ -1708,7 +2501,7 @@ export async function searchJingyiKnowledge(query: string, limit = 8) {
       ...semanticItems[index],
     })),
     note:
-      "matches 已合并精确检索、BM25/结构化字段检索、本地向量检索、功能候选重排和通用 API 关系展开。回答自然语言功能问题时，如果 implementation_options 或 related_implementations 非空，应先列多个可用实现，比较返回值、关键参数、对象调用链和适用场景，再给默认推荐与代码；不要只因为第一条能用就只写一种。生成代码时以实际签名为准。如果用到这些命令，生成 .e 时需要通过 module_paths 引用精易模块，compile_efile 也会自动使用用户消息中的 .ec 路径。",
+      "matches 已合并精确检索、BM25/结构化字段检索、本地向量检索、伪相关反馈和 API 关系展开。implementation_options 是按实现路线分组后的证据：route_type=function_family 表示可直接比较的同族函数，object_workflow 表示对象/类调用链，namespace_overview/candidate_pool 只作补充召回。回答自然语言功能问题时，应优先根据 primary_options 比较多个可用实现，说明返回值、关键参数、对象调用链和适用场景，再给默认推荐或调用 ask_user_choice 让用户选择。生成代码时以实际签名为准。如果用到这些命令，生成 .e 时需要通过 module_paths 引用精易模块，compile_efile 也会自动使用用户消息中的 .ec 路径。",
   };
 }
 
@@ -1839,6 +2632,64 @@ const searchJingyiModule: RegisteredTool = {
     if (!query) throw new Error("缺少必填参数 query");
     const limit = Math.max(1, Math.min(typeof args.limit === "number" ? args.limit : 8, 20));
     return searchJingyiKnowledge(query, limit);
+  },
+};
+
+const askUserChoice: RegisteredTool = {
+  definition: {
+    name: "ask_user_choice",
+    description:
+      "当工具证据显示存在多种都可行的实现路线、库/API/修复方案，且用户偏好会影响最终代码时，暂停并让用户选择。" +
+      "这是通用交互工具，适用于任何需要用户决策的场景；不要把它用于可以自行明确推荐的普通说明。",
+    parameters: {
+      type: "object",
+      properties: {
+        question: {
+          type: "string",
+          description: "要问用户的简短问题。",
+        },
+        options: {
+          type: "array",
+          description: "2 到 6 个可选方案。每项可为字符串，或 {label,value,description}。",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", nullable: true },
+              label: { type: "string" },
+              value: { type: "string", nullable: true },
+              description: { type: "string", nullable: true },
+            },
+          },
+        },
+        allow_custom: {
+          type: "boolean",
+          description: "是否允许用户自己输入其他方案，默认 true。",
+          nullable: true,
+        },
+        context: {
+          type: "string",
+          description: "可选，给用户看的极简上下文，比如为什么需要选择。",
+          nullable: true,
+        },
+      },
+      required: ["question", "options"],
+    },
+  },
+  executor: async (args) => {
+    const question = readString(args, "question") ?? "请选择一个方案";
+    const options = readChoiceOptions(args, "options");
+    if (options.length < 2) {
+      throw new Error("ask_user_choice 至少需要 2 个可选方案");
+    }
+    return {
+      needs_user_choice: true,
+      question,
+      options,
+      allow_custom: readBoolean(args, "allow_custom", true),
+      context: readString(args, "context") ?? undefined,
+      instruction:
+        "已暂停等待用户选择。用户选择后会以新消息继续本轮任务，下一步应基于用户选择继续调用工具或输出最终答案。",
+    };
   },
 };
 
@@ -2652,6 +3503,7 @@ const pickSavePath: RegisteredTool = {
 export const TOOL_REGISTRY: Record<string, RegisteredTool> = {
   [scanEasyLanguageEnv.definition.name]: scanEasyLanguageEnv,
   [searchJingyiModule.definition.name]: searchJingyiModule,
+  [askUserChoice.definition.name]: askUserChoice,
   [readFile.definition.name]: readFile,
   [parseEFile.definition.name]: parseEFile,
   [exportECode.definition.name]: exportECode,
@@ -2685,6 +3537,7 @@ export async function executeTool(
   ctx: ToolExecContext,
 ): Promise<ToolResult> {
   const startedAt = Date.now();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const entry = TOOL_REGISTRY[toolName];
   if (!entry) {
     return {
@@ -2700,7 +3553,7 @@ export async function executeTool(
     const content = await Promise.race([
       entry.executor(args, ctx),
       new Promise<never>((_, reject) => {
-        setTimeout(
+        timeoutId = setTimeout(
           () => reject(new Error(`工具 ${toolName} 执行超时（${TOOL_EXEC_TIMEOUT_MS / 1000}s）`)),
           TOOL_EXEC_TIMEOUT_MS,
         );
@@ -2723,5 +3576,9 @@ export async function executeTool(
       error: message,
       durationMs: Date.now() - startedAt,
     };
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
   }
 }

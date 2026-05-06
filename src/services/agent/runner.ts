@@ -2,6 +2,8 @@ import { nanoid } from "nanoid";
 import type {
   AgentStep,
   AgentTrace,
+  AgentChoiceOption,
+  AgentUserChoiceRequest,
   ChatMessage,
   LLMConfig,
   ToolCall,
@@ -18,6 +20,12 @@ import {
   makeAgentMemoryMessage,
   summarizeTraceForHistory,
 } from "@/services/agent/memory";
+import {
+  answerContainsEplCode,
+  findEplAnswerDiagnostics,
+  formatEplDiagnostics,
+} from "@/services/agent/epl-syntax";
+import { createJingyiImplementationChoiceRequestFromToolResults } from "@/services/agent/implementation-choice";
 import { JINGYI_MODULE_SUMMARY } from "@/services/agent/knowledge/jingyi-module";
 
 // ---------------------------------------------------------------------------
@@ -59,6 +67,8 @@ export interface AgentRunHandle {
   providerRef: { current: BaseLLMProvider | null };
 }
 
+type AgentToolTransport = "text-json" | "native-openai-tools";
+
 const LLM_STEP_TIMEOUT_MS = 180_000;
 const TOOL_TEXT_PROMPT_LIMIT = 6_000;
 const LLM_MAX_RETRIES = 5;
@@ -66,6 +76,18 @@ const LLM_RETRY_BASE_MS = 1_000;
 const DEFAULT_AGENT_MAX_STEPS = 32;
 const HARD_AGENT_MAX_STEPS = 64;
 const AGENT_STEP_EXTENSION_STEPS = 8;
+const ANSWER_SELF_CHECK_TIMEOUT_MS = 90_000;
+const ANSWER_SELF_CHECK_MAX_REVISIONS = 2;
+const ANSWER_SELF_CHECK_EXTRA_STEP_BUDGET = 6;
+const CHOICE_EVIDENCE_SEARCH_LIMIT = 12;
+
+function selectAgentToolTransport(_config: LLMConfig): AgentToolTransport {
+  // Vibe-coding providers are not equivalent even when they expose an
+  // OpenAI-compatible endpoint. Use the runner's text JSON ReAct protocol as
+  // the stable cross-provider tool transport; native tool calls can be enabled
+  // later from explicit model capability metadata instead of guessed fallbacks.
+  return "text-json";
+}
 
 // ---------------------------------------------------------------------------
 // System prompt
@@ -82,8 +104,7 @@ const AGENT_SYSTEM_PROMPT = `你是 易语言 AI Coding Agent 的多轮推理内
 ${ENGLISH_LIKE_TOOL_BLOCK}
 
 【工具调用协议】
-如果当前模型通道提供原生 function/tool_calls 能力，优先直接调用已注册工具；不要把工具调用写成给用户看的文字。
-如果当前模型通道只能输出文本，则你的每一轮回答必须严格满足以下两种 JSON 格式之一，且**只输出一个 JSON 对象**，外面不要套 markdown：
+当前 Agent 使用跨服务商文本 JSON ReAct 协议，不使用原生 function/tool_calls。你的每一轮回答必须严格满足以下两种 JSON 格式之一，且**只输出一个 JSON 对象**，外面不要套 markdown：
 
 1) 调工具：
 {
@@ -103,6 +124,12 @@ ${ENGLISH_LIKE_TOOL_BLOCK}
 若工具失败，继续推理并尝试更小的步骤；不要重复完全相同的失败调用。
 所有路径必须由用户提供或上一步工具返回，禁止编造路径。
 提到易语言源码时优先使用 \`\`\`epl 代码块。
+
+【易语言语法硬约束】
+- 控制结构必须使用真实易语言配对：如果/如果结束，如果真/如果真结束，判断开始/判断结束，判断循环首/判断循环尾，计次循环首/计次循环尾，变量循环首/变量循环尾，循环判断首/循环判断尾。
+- 不允许把控制结构的开始语句自行拼接成结束语句；结束语句必须来自真实配对表。
+- 不要连续复制同一条可执行语句来表示“多次执行”。需要执行固定次数时使用计次循环首/计次循环尾；需要并发多个任务时为每个线程准备不同参数或任务队列。
+- 示例代码中的精易模块命令名、参数和返回值必须以 search_jingyi_module 返回结果为准；没有查到签名时，不要凭记忆编造对象名或参数个数。
 
 【强制工具使用规则 — 违反即为错误】
 - 用户消息中出现任何文件路径→先判断文件类型再选工具：
@@ -136,7 +163,7 @@ ${ENGLISH_LIKE_TOOL_BLOCK}
   - 若已有 ecode_dir / 导出的工程文件：先 save_text_file 修改 .e.txt，再优先调 build_ecode_project；必要时才拆成 generate_efile_from_ecode + compile_efile。
   - 若只有单文件源码字符串：先 generate_efile_from_code，成功后调 compile_efile。
   - 失败时根据 stderr 继续修复并重试（最多 ${"${maxSteps}"} 步）。
-- 普通知识问答、参数解释、单个功能代码片段或示例案例：可以先按需查询精易模块，再直接输出 final_answer。不要因为回答里含有易语言代码就强行生成 .e 或编译；只有用户明确要求生成文件、编译、测试、运行，或正在优化已有 .e 项目时，才进入生成/编译闭环。
+- 普通知识问答、参数解释、单个功能代码片段或示例案例：通常只需要调用一次必要的知识工具，然后直接输出 final_answer。不要因为回答里含有易语言代码就强行生成 .e、编译，或反复自检；只有用户明确要求生成文件、编译、测试、运行，或正在优化已有 .e 项目时，才进入生成/编译闭环。
 - 缺路径时用 pick_file / pick_save_path 让用户选。
 - 知识库只允许使用本地精易模块知识库；不要读取/解析易语言 IDE help 或其他支持库文档作为知识库。
 - scan_easy_language_env 只用于检查编译链/本机依赖状态，不能作为回答知识来源。
@@ -152,7 +179,10 @@ ${JINGYI_MODULE_SUMMARY}
 使用说明：
 - 当你需要精易模块命令/类/全局变量的签名、参数、返回值或用法证据时，调用 search_jingyi_module。不要靠记忆猜参数；也不要把它当成固定关键词触发器，是否调用由当前问题和已知上下文决定。
 - 调用方式：直接使用命令名或自然语言功能描述；不要凭记忆猜参数。
-- search_jingyi_module 可能返回 related_implementations。用户问“怎么实现某功能/写个案例/有哪些方式”时，先根据 related_implementations 和 matches 对比多个可用实现的返回值、参数、适用场景，再给推荐和代码；不要只因为第一条能用就忽略同族实现。
+- search_jingyi_module 可能返回 implementation_options / related_implementations。用户问“怎么实现某功能/写个案例/有哪些方式”时，先按 implementation_options 的 route_type 和 primary_options 识别实现路线，再比较多个可用实现的返回值、关键参数、对象调用链和适用场景；不要只因为 matches 第一条能用就只写一种。
+- route_type=function_family 表示同族函数方案，object_workflow 表示对象/类调用链方案，namespace_overview/candidate_pool 只是补充召回；生成代码优先用 primary_options 里的主入口，supporting_options 只作为设置请求头、构造参数、读取状态等辅助步骤。
+- 当 search_jingyi_module 返回多个同级可实现入口时，优先让用户选择实现方式；用户选定后再继续生成代码。若用户已经明确点名某个命令/类，则按该选择继续，不要重复询问。
+- 如果候选里同时出现“主操作 API”和“辅助构造/状态查询 API”，回答时应先识别调用链：主操作负责真正执行用户要的动作，辅助 API 只用于准备参数、设置状态或读取结果；不要把辅助 API 当成完整方案。
 - 精易模块是 .ec 文件；生成单文件项目时，通过 generate_efile_from_code 的 module_paths 引用；编译时通过 compile_efile 的 module_paths 引用。若用户消息里已有精易模块 .ec 路径，工具会自动提取。
 - 如果用户没有提供精易模块 .ec 路径，先用 search_jingyi_module 完成代码方案；生成/编译阶段如果需要模块路径但缺失，再在 final_answer 中明确说明需要引用精易模块。
 - 不要因为需要精易模块就改用 COM 对象或其他支持库绕开，除非 search_jingyi_module 没有相关能力。
@@ -555,6 +585,402 @@ function toolResultSucceeded(result: ToolResult | undefined): boolean {
     if (success === false) return false;
   }
   return true;
+}
+
+function hasJingyiKnowledgeEvidence(trace: AgentTrace): boolean {
+  return trace.steps.some((step) =>
+    step.toolCalls.some((call, index) => {
+      if (call.name !== "search_jingyi_module") return false;
+      const result = step.toolResults[index];
+      if (!toolResultSucceeded(result)) return false;
+      const content = resultContentObject(result);
+      const count = typeof content?.count === "number" ? content.count : 0;
+      return count > 0;
+    }),
+  );
+}
+
+function answerMentionsJingyiEvidenceBoundApi(answer: string): boolean {
+  return /精易模块/.test(answer) || /[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9]*_[\u4e00-\u9fa5A-Za-z0-9_]+/.test(answer);
+}
+
+function shouldRequireJingyiEvidence(userInput: string, answer: string, trace: AgentTrace): boolean {
+  if (hasJingyiKnowledgeEvidence(trace)) return false;
+  const isEasyLanguageTask = /精易模块|易语言|```epl|```易语言|\.e\b|\.ec\b/i.test(`${userInput}\n${answer}`);
+  return isEasyLanguageTask && answerMentionsJingyiEvidenceBoundApi(answer);
+}
+
+function collectJingyiImplementationOptionNames(trace: AgentTrace): string[] {
+  const names: string[] = [];
+  for (const step of trace.steps) {
+    step.toolCalls.forEach((call, index) => {
+      if (call.name !== "search_jingyi_module") return;
+      const result = step.toolResults[index];
+      if (!toolResultSucceeded(result)) return;
+      const content = resultContentObject(result);
+      const groups = Array.isArray(content?.implementation_options)
+        ? content.implementation_options
+        : Array.isArray(content?.related_implementations)
+          ? content.related_implementations
+          : [];
+      for (const rawGroup of groups) {
+        if (!rawGroup || typeof rawGroup !== "object" || Array.isArray(rawGroup)) continue;
+        const group = rawGroup as Record<string, unknown>;
+        const options = Array.isArray(group.options)
+          ? group.options
+          : Array.isArray(group.items)
+            ? group.items
+            : [];
+        for (const rawOption of options) {
+          if (!rawOption || typeof rawOption !== "object" || Array.isArray(rawOption)) continue;
+          const option = rawOption as Record<string, unknown>;
+          const name = typeof option.name === "string" ? option.name.trim() : "";
+          if (name && !names.includes(name)) names.push(name);
+          if (names.length >= 12) return;
+        }
+      }
+    });
+  }
+  return names;
+}
+
+interface JingyiImplementationRouteEvidence {
+  family: string;
+  routeType: string;
+  primaryNames: string[];
+  supportingNames: string[];
+}
+
+function extractJingyiOptionName(rawOption: unknown): string {
+  if (!rawOption || typeof rawOption !== "object" || Array.isArray(rawOption)) return "";
+  const option = rawOption as Record<string, unknown>;
+  return typeof option.name === "string" ? option.name.trim() : "";
+}
+
+function collectJingyiImplementationRoutes(trace: AgentTrace): JingyiImplementationRouteEvidence[] {
+  const routes: JingyiImplementationRouteEvidence[] = [];
+  const seen = new Set<string>();
+
+  for (const step of trace.steps) {
+    step.toolCalls.forEach((call, index) => {
+      if (call.name !== "search_jingyi_module") return;
+      const result = step.toolResults[index];
+      if (!toolResultSucceeded(result)) return;
+      const content = resultContentObject(result);
+      const groups = Array.isArray(content?.implementation_options)
+        ? content.implementation_options
+        : Array.isArray(content?.related_implementations)
+          ? content.related_implementations
+          : [];
+
+      for (const rawGroup of groups) {
+        if (!rawGroup || typeof rawGroup !== "object" || Array.isArray(rawGroup)) continue;
+        const group = rawGroup as Record<string, unknown>;
+        const family = typeof group.family === "string" ? group.family.trim() : "";
+        if (!family) continue;
+        const routeType =
+          typeof group.route_type === "string"
+            ? group.route_type.trim()
+            : family.startsWith("类_")
+              ? "object_workflow"
+              : "unknown";
+        const primaryOptions = Array.isArray(group.primary_options)
+          ? group.primary_options
+          : Array.isArray(group.primary_items)
+            ? group.primary_items
+            : Array.isArray(group.options)
+              ? group.options.slice(0, 3)
+              : Array.isArray(group.items)
+                ? group.items.slice(0, 3)
+                : [];
+        const supportingOptions = Array.isArray(group.supporting_options)
+          ? group.supporting_options
+          : Array.isArray(group.supporting_items)
+            ? group.supporting_items
+            : [];
+        const primaryNames = primaryOptions
+          .map(extractJingyiOptionName)
+          .filter(Boolean)
+          .slice(0, 6);
+        const supportingNames = supportingOptions
+          .map(extractJingyiOptionName)
+          .filter(Boolean)
+          .slice(0, 8);
+        if (primaryNames.length === 0) continue;
+
+        const key = `${family}:${routeType}:${primaryNames.join("|")}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        routes.push({
+          family,
+          routeType,
+          primaryNames,
+          supportingNames,
+        });
+      }
+    });
+  }
+
+  return routes.slice(0, 8);
+}
+
+export function shouldRequireImplementationComparison(answer: string, trace: AgentTrace): string[] {
+  const routes = collectJingyiImplementationRoutes(trace)
+    .filter((route) =>
+      route.routeType === "function_family" ||
+      route.routeType === "object_workflow" ||
+      route.primaryNames.length >= 2,
+    );
+  if (routes.length === 0) return [];
+
+  const mentionedRoutes = routes.filter((route) =>
+    route.primaryNames.some((name) => answer.includes(name)) ||
+    route.supportingNames.some((name) => answer.includes(name)) ||
+    answer.includes(route.family),
+  );
+  const mentionedPrimaryNames = new Set<string>();
+  for (const route of mentionedRoutes) {
+    for (const name of route.primaryNames) {
+      if (answer.includes(name)) mentionedPrimaryNames.add(name);
+    }
+  }
+
+  if (mentionedRoutes.length >= 2 || mentionedPrimaryNames.size >= 2) return [];
+
+  const compactRoutes = routes.slice(0, 5).map((route) =>
+    `${route.family}(${route.routeType}): ${route.primaryNames.slice(0, 4).join(" / ")}`,
+  );
+  if (compactRoutes.length >= 2) return compactRoutes;
+
+  const optionNames = collectJingyiImplementationOptionNames(trace);
+  const mentioned = optionNames.filter((name) => answer.includes(name));
+  return mentioned.length >= 2 ? [] : optionNames.slice(0, 6);
+}
+
+export function getLatestPendingUserChoice(history: ChatMessage[]): AgentUserChoiceRequest | null {
+  return getLatestPendingUserChoiceContext(history)?.request ?? null;
+}
+
+function getLatestPendingUserChoiceContext(
+  history: ChatMessage[],
+): { request: AgentUserChoiceRequest; trace: AgentTrace } | null {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const message = history[index];
+    if (message.role !== "assistant") continue;
+    const trace = message.agentTrace;
+    const pending = trace?.pendingUserChoice;
+    if (trace && pending) return { request: pending, trace };
+    if (trace && trace.outcome !== "needs_input") return null;
+  }
+
+  return null;
+}
+
+function findSelectedChoice(
+  userInput: string,
+  pending: AgentUserChoiceRequest,
+): AgentChoiceOption | null {
+  const normalizedInput = userInput.trim();
+  const selected = pending.options
+    .map((option) => {
+      const label = option.label.trim();
+      const value = (option.value || option.label).trim();
+      const candidates = [value, label].filter(Boolean);
+      let exact = false;
+      let matchLength = 0;
+      for (const candidate of candidates) {
+        if (normalizedInput === candidate) exact = true;
+        if (normalizedInput.includes(candidate)) {
+          matchLength = Math.max(matchLength, candidate.length);
+        }
+      }
+      if (!exact && matchLength === 0) return null;
+      return {
+        option,
+        score: (exact ? 10_000 : 0) + matchLength,
+        specificity: Math.max(label.length, value.length),
+      };
+    })
+    .filter((item): item is { option: AgentChoiceOption; score: number; specificity: number } => Boolean(item))
+    .sort((a, b) =>
+      b.score - a.score ||
+      b.specificity - a.specificity ||
+      a.option.label.localeCompare(b.option.label, "zh-CN"),
+    )[0];
+
+  return selected?.option ?? null;
+}
+
+export function describeSelectedImplementationFromChoice(
+  userInput: string,
+  history: ChatMessage[],
+): string {
+  const pending = getLatestPendingUserChoice(history);
+  if (!pending) return "";
+  const selected = findSelectedChoice(userInput, pending);
+  if (!selected) return "";
+  const label = selected.label.trim();
+  const value = (selected.value || selected.label).trim();
+  return value === label ? label : `${label}（${value}）`;
+}
+
+export function buildSelectedImplementationEvidenceQuery(
+  userInput: string,
+  history: ChatMessage[],
+): string {
+  const context = getLatestPendingUserChoiceContext(history);
+  if (!context) return "";
+  const selected = findSelectedChoice(userInput, context.request);
+  if (!selected) return "";
+
+  const parts = [
+    context.trace.goal ? `原问题：${context.trace.goal}` : "",
+    `用户选择：${selected.label}`,
+    selected.value && selected.value !== selected.label ? `实现入口：${selected.value}` : "",
+    selected.description ? `选择说明：${selected.description}` : "",
+    userInput ? `当前补充：${userInput}` : "",
+  ].filter((part) => part.trim());
+
+  return parts.join("\n");
+}
+
+function makeSelectedImplementationReminder(selectedImplementation: string): ChatMessage {
+  return {
+    id: `selected_impl_${nanoid(8)}`,
+    role: "user",
+    content:
+      `【用户已选择实现方式】${selectedImplementation}\n` +
+      "请基于刚刚查询到的精易模块工具证据继续回答用户原问题。不要再次要求用户选择；如果只是普通案例问答，直接输出完整 final_answer。",
+    timestamp: Date.now(),
+  };
+}
+
+function userInputLooksLikeLocalFileTask(userInput: string): boolean {
+  return (
+    /(?:^|\s)[A-Za-z]:[\\/]/.test(userInput) ||
+    /\\\\[^\s]+/.test(userInput) ||
+    /\.(?:e|ec|epl|txt|ini|json|csv|log|md)\b/i.test(userInput)
+  );
+}
+
+function shouldPrimeJingyiKnowledge(userInput: string, history: ChatMessage[]): boolean {
+  const text = userInput.trim();
+  if (text.length < 2) return false;
+  if (getLatestPendingUserChoiceContext(history)) return false;
+  if (userInputLooksLikeLocalFileTask(text)) return false;
+  return true;
+}
+
+function makeJingyiSearchToolCall(query: string, limit = CHOICE_EVIDENCE_SEARCH_LIMIT): ToolCall {
+  const args = { query, limit };
+  return {
+    id: `auto_jingyi_${nanoid(8)}`,
+    name: "search_jingyi_module",
+    arguments: args,
+    rawArguments: JSON.stringify(args),
+  };
+}
+
+function answerMentionsSelectedImplementation(answer: string, selectedImplementation: string): boolean {
+  const candidates = selectedImplementation
+    .split(/[（）()、,，\s]+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 2);
+  if (candidates.length === 0) return true;
+  return candidates.some((candidate) => answer.includes(candidate));
+}
+
+function extractUserChoiceRequest(result: ToolResult | undefined): AgentUserChoiceRequest | null {
+  if (!toolResultSucceeded(result)) return null;
+  const content = result?.content;
+  if (!content || typeof content !== "object" || Array.isArray(content)) return null;
+  const payload = content as Record<string, unknown>;
+  if (payload.needs_user_choice !== true) return null;
+  const question = typeof payload.question === "string" && payload.question.trim()
+    ? payload.question.trim()
+    : "请选择一个方案";
+  const rawOptions = Array.isArray(payload.options) ? payload.options : [];
+  const options: AgentUserChoiceRequest["options"] = rawOptions
+    .map((item, index): AgentUserChoiceRequest["options"][number] | null => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+      const option = item as Record<string, unknown>;
+      const label = typeof option.label === "string" && option.label.trim()
+        ? option.label.trim()
+        : typeof option.value === "string" && option.value.trim()
+          ? option.value.trim()
+          : "";
+      if (!label) return null;
+      return {
+        id: typeof option.id === "string" && option.id.trim()
+          ? option.id.trim()
+          : `choice_${index + 1}`,
+        label,
+        value: typeof option.value === "string" && option.value.trim()
+          ? option.value.trim()
+          : label,
+        description: typeof option.description === "string" && option.description.trim()
+          ? option.description.trim()
+          : undefined,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  if (options.length === 0) return null;
+
+  return {
+    question,
+    options,
+    allowCustom: payload.allow_custom !== false,
+    context: typeof payload.context === "string" && payload.context.trim()
+      ? payload.context.trim()
+      : undefined,
+  };
+}
+
+function findPendingUserChoice(results: ToolResult[]): AgentUserChoiceRequest | null {
+  for (const result of results) {
+    const request = extractUserChoiceRequest(result);
+    if (request) return request;
+  }
+  return null;
+}
+
+function findPendingUserChoiceFromToolResults(
+  results: ToolResult[],
+  userInput: string,
+): AgentUserChoiceRequest | null {
+  return (
+    findPendingUserChoice(results) ??
+    createJingyiImplementationChoiceRequestFromToolResults(results, userInput)
+  );
+}
+
+function findPendingUserChoiceFromTrace(
+  trace: AgentTrace,
+  userInput: string,
+): AgentUserChoiceRequest | null {
+  for (let index = trace.steps.length - 1; index >= 0; index -= 1) {
+    const request = findPendingUserChoiceFromToolResults(
+      trace.steps[index].toolResults,
+      userInput,
+    );
+    if (request) return request;
+  }
+  return null;
+}
+
+function finishWithPendingUserChoice(
+  trace: AgentTrace,
+  step: AgentStep,
+  request: AgentUserChoiceRequest,
+  onStatus?: (status: string) => void,
+  onStep?: (step: AgentStep, trace: AgentTrace) => void,
+): void {
+  step.finishReason = "needs_input";
+  trace.pendingUserChoice = request;
+  trace.outcome = "needs_input";
+  trace.finalAnswer = formatPendingUserChoice(request);
+  onStatus?.("等待用户选择");
+  onStep?.(step, trace);
 }
 
 function hasSuccessfulToolCall(trace: AgentTrace, toolName: string): boolean {
@@ -1027,6 +1453,33 @@ function shouldContinueAfterFinalAnswer(
   return evaluateContinueAfterFinalAnswer(trace, answer).shouldContinue;
 }
 
+function traceHasProjectWorkflow(trace: AgentTrace): boolean {
+  const projectTools = new Set([
+    "parse_efile",
+    "export_efile_to_ecode",
+    "summarize_ecode_project",
+    "analyze_ecode_project",
+    "inspect_ecode_context",
+    "build_original_efile_baseline",
+    "save_text_file",
+    "generate_efile_from_ecode",
+    "generate_efile_from_code",
+    "build_ecode_project",
+    "compile_efile",
+  ]);
+  return trace.steps.some((step) =>
+    step.toolCalls.some((call) => projectTools.has(call.name)),
+  );
+}
+
+function shouldUseHeavyAnswerSelfCheck(trace: AgentTrace): boolean {
+  return traceHasProjectWorkflow(trace);
+}
+
+function shouldUseReviewerAnswerSelfCheck(trace: AgentTrace, _answer: string): boolean {
+  return shouldUseHeavyAnswerSelfCheck(trace);
+}
+
 function extendStepBudgetForIncompleteWorkflow(
   decision: ContinueDecision,
   stepIndex: number,
@@ -1087,6 +1540,425 @@ function makeBlankResponseReminder(): string {
   return "【空响应重试】你上一轮返回了空内容。请继续当前任务，并严格输出合法 JSON；需要工具就输出 tool_calls，已经能回答就输出 final_answer。";
 }
 
+export function answerLooksLikeClarificationOnly(answer: string): boolean {
+  const compact = answer.replace(/\s+/g, " ").trim();
+  if (!compact || compact.length > 1600) return false;
+  if (/```[\s\S]*?```/.test(answer) || answerContainsEplCode(answer)) return false;
+
+  const asksQuestion = /[?？]/.test(compact);
+  const asksToChoose =
+    /(请选择|选择|选一个|选定|你要哪|需要哪|哪种|哪一种|回复数字|直接回复|告诉我|确认后|我再)/.test(compact);
+  const hasOptionList =
+    /(?:^|\s)(?:\d+[.、)]|[-*•])\s*\S+/.test(answer) ||
+    /(1[.、)]|2[.、)]|3[.、)]|4[.、)])/.test(compact);
+
+  return (asksQuestion && asksToChoose) || (asksToChoose && hasOptionList);
+}
+
+function shouldRejectClarificationOnlyAnswer(answer: string, trace: AgentTrace): boolean {
+  if (!hasJingyiKnowledgeEvidence(trace)) return false;
+  if (trace.pendingUserChoice) return false;
+  return answerLooksLikeClarificationOnly(answer);
+}
+
+function makeAnswerSelfCheckRetryStep(
+  stepIndex: number,
+  assistantText: string,
+  stepStart: number,
+): AgentStep {
+  return {
+    index: stepIndex,
+    assistantText,
+    toolCalls: [],
+    toolResults: [],
+    finishReason: "format_retry",
+    startedAt: stepStart,
+    endedAt: Date.now(),
+  };
+}
+
+interface AnswerSelfCheckDecision {
+  pass: boolean;
+  confidence: number;
+  issues: string[];
+  followup: string;
+}
+
+function limitForSelfCheck(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const head = text.slice(0, Math.floor(maxChars * 0.58));
+  const tail = text.slice(-Math.floor(maxChars * 0.28));
+  return `${head}\n\n... [自检上下文已截断，省略 ${text.length - maxChars} 字符] ...\n\n${tail}`;
+}
+
+function summarizeTraceForSelfCheck(trace: AgentTrace): string {
+  const lines: string[] = [
+    `目标：${trace.goal}`,
+    `当前步骤数：${trace.steps.length}`,
+    `工具调用次数：${trace.toolCallCount}`,
+  ];
+
+  for (const step of trace.steps.slice(-10)) {
+    if (step.toolCalls.length === 0) {
+      lines.push(`- 第 ${step.index} 步：${step.finishReason}`);
+      continue;
+    }
+    step.toolCalls.forEach((call, index) => {
+      const result = step.toolResults[index];
+      lines.push(
+        `- 第 ${step.index}.${index + 1} 步 ${call.name}: ${summarizeToolResultForSelfCheck(result)}`,
+      );
+    });
+  }
+
+  return limitForSelfCheck(lines.join("\n"), 7_000);
+}
+
+function summarizeToolResultForSelfCheck(result: ToolResult | undefined): string {
+  if (!result) return "无结果";
+  const parts = [toolResultSucceeded(result) ? "成功" : "失败"];
+  if (result.error) parts.push(`错误=${result.error}`);
+  if (result.content && typeof result.content === "object" && !Array.isArray(result.content)) {
+    const payload = result.content as Record<string, unknown>;
+    const importantKeys = [
+      "success",
+      "summary",
+      "matches",
+      "implementation_options",
+      "related_implementations",
+      "findings",
+      "stderr",
+      "stdout",
+      "error",
+      "output_path",
+      "ecode_dir",
+    ];
+    for (const key of importantKeys) {
+      const value = payload[key];
+      if (value === undefined || value === null) continue;
+      parts.push(`${key}=${limitForSelfCheck(JSON.stringify(value), 900)}`);
+    }
+  } else if (typeof result.content === "string") {
+    parts.push(limitForSelfCheck(result.content, 900));
+  }
+  return limitForSelfCheck(parts.join("；"), 1_800);
+}
+
+function parseAnswerSelfCheckDecision(text: string): AnswerSelfCheckDecision | null {
+  const json = extractJsonObject(text);
+  if (!json) return null;
+  const parsed = tryParseJsonWithRepair(json);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const obj = parsed as Record<string, unknown>;
+  const pass = obj.pass === true;
+  const confidence =
+    typeof obj.confidence === "number"
+      ? obj.confidence
+      : typeof obj.score === "number"
+        ? obj.score
+        : pass
+          ? 1
+          : 0;
+  const issues = Array.isArray(obj.issues)
+    ? obj.issues.filter((item): item is string => typeof item === "string")
+    : typeof obj.issue === "string"
+      ? [obj.issue]
+      : [];
+  const followup =
+    typeof obj.followup === "string"
+      ? obj.followup
+      : typeof obj.revision_prompt === "string"
+        ? obj.revision_prompt
+        : issues.join("\n");
+
+  return {
+    pass,
+    confidence,
+    issues,
+    followup,
+  };
+}
+
+function makeAnswerSelfCheckMessages(
+  userInput: string,
+  trace: AgentTrace,
+  answer: string,
+  eplDiagnosticsText: string,
+  selectedImplementation: string,
+): ChatMessage[] {
+  const diagnosticSection = eplDiagnosticsText
+    ? `\n\n【本地 EPL 代码信号】\n${eplDiagnosticsText}`
+    : "";
+  const selectedImplementationSection = selectedImplementation
+    ? `\n\n【用户上一轮已选择的实现方式】\n${selectedImplementation}`
+    : "";
+  const prompt = `请作为 EAiCoding 的独立 Reviewer 自检候选最终答案。
+
+你的任务不是重写答案，而是判断它是否可以展示给用户。重点检查：
+1. 是否真正回答了用户当前问题，而不是答偏或只给空泛建议。
+2. 易语言/精易模块示例是否有工具证据支撑；如果涉及精易模块 API，应确认答案使用了已查询到的签名/实现，不要凭记忆编造。
+3. 代码是否存在明显不可用结构、伪语法、缺少必要声明、控制结构不闭合、机械复制、参数没有变化等问题。
+4. 如果用户要求生成、编译、测试、修复，应确认工具闭环已经完成或失败原因已被真实说明。
+5. 如果只是普通案例问答，不要求强行生成 .e，但应保证示例自洽、语法可信、实现路线符合用户选择。
+6. 如果本地代码信号只是 warning，不要机械否决；请结合用户目标判断它是否确实会导致答案质量问题。
+
+只输出一个 JSON 对象：
+{
+  "pass": true 或 false,
+  "confidence": 0 到 1,
+  "issues": ["不通过时列出具体问题"],
+  "followup": "不通过时写给主 Agent 的下一步指令：需要继续查工具、重写答案或修正哪段代码"
+}
+
+【用户问题】
+${userInput}
+
+【已执行轨迹和工具证据】
+${summarizeTraceForSelfCheck(trace)}${selectedImplementationSection}${diagnosticSection}
+
+【候选最终答案】
+${limitForSelfCheck(answer, 10_000)}`;
+
+  return [
+    {
+      id: "__self_check_sys__",
+      role: "system",
+      content: "你是严谨的 AI Coding Reviewer。只做事实核查和可交付性判断，输出严格 JSON。",
+      timestamp: 0,
+    },
+    {
+      id: `self_check_${nanoid(8)}`,
+      role: "user",
+      content: prompt,
+      timestamp: Date.now(),
+    },
+  ];
+}
+
+async function runAnswerSelfCheck(
+  config: LLMConfig,
+  userInput: string,
+  history: ChatMessage[],
+  trace: AgentTrace,
+  answer: string,
+): Promise<AnswerSelfCheckDecision> {
+  const eplDiagnostics = findEplAnswerDiagnostics(answer);
+  const eplDiagnosticsText = eplDiagnostics.length > 0
+    ? formatEplDiagnostics(eplDiagnostics)
+    : "";
+  const eplErrorsText = eplDiagnostics.some((item) => item.severity === "error")
+    ? formatEplDiagnostics(eplDiagnostics.filter((item) => item.severity === "error"))
+    : "";
+  const blockingEplDiagnostics = eplDiagnostics.filter(
+    (item) => item.severity === "error" || item.kind === "repeated_executable",
+  );
+  const blockingEplDiagnosticsText = blockingEplDiagnostics.length > 0
+    ? formatEplDiagnostics(blockingEplDiagnostics)
+    : "";
+  const selectedImplementation = describeSelectedImplementationFromChoice(userInput, history);
+
+  if (shouldRequireJingyiEvidence(userInput, answer, trace)) {
+    return {
+      pass: false,
+      confidence: 0.1,
+      issues: ["答案涉及易语言/精易模块 API，但本轮没有成功查询精易模块知识库作为依据。"],
+        followup:
+        "请先调用 search_jingyi_module 查询相关命令/实现，再根据工具返回的签名、参数和 related_implementations 重写答案。",
+    };
+  }
+
+  if (shouldRejectClarificationOnlyAnswer(answer, trace)) {
+    return {
+      pass: false,
+      confidence: 0.15,
+      issues: ["候选答案只是让用户在正文里继续选择，没有交付代码或明确结论。"],
+      followup:
+        "本轮已经有精易模块工具证据；如果确实需要用户选择，必须通过 ask_user_choice/结构化 pendingUserChoice，而不是在正文里追问。当前没有 pendingUserChoice 时，请根据工具证据选一个默认推荐实现并直接给完整 final_answer。",
+    };
+  }
+
+  if (selectedImplementation) {
+    if (!answerMentionsSelectedImplementation(answer, selectedImplementation)) {
+      return {
+        pass: false,
+        confidence: 0.2,
+        issues: ["用户已经选择了实现方式，但候选答案没有按该选择展开。"],
+        followup:
+          `用户已选择 ${selectedImplementation}。请基于该实现方式和已查询到的精易模块签名重写最终答案，不要再要求用户重新选择。`,
+      };
+    }
+  } else {
+    const missingComparisonOptions = shouldRequireImplementationComparison(answer, trace);
+    if (missingComparisonOptions.length > 0) {
+      return {
+        pass: false,
+        confidence: 0.2,
+        issues: [
+          "精易模块知识库返回了多个实现候选，但候选答案没有基于这些证据做比较或选择说明。",
+        ],
+        followup:
+          "请根据 search_jingyi_module 返回的 implementation_options/related_implementations 重写答案，至少比较这些候选中的多个实现，并说明默认推荐或需要用户选择的点：" +
+          missingComparisonOptions.join("、"),
+      };
+    }
+  }
+
+  if (blockingEplDiagnosticsText) {
+    return {
+      pass: false,
+      confidence: 0,
+      issues: ["候选答案存在 EPL 结构错误或机械重复代码。"],
+      followup: `请修正以下 EPL 代码问题后重写最终答案：\n${blockingEplDiagnosticsText}`,
+    };
+  }
+
+  const heavySelfCheck = shouldUseHeavyAnswerSelfCheck(trace);
+  const useReviewerSelfCheck = shouldUseReviewerAnswerSelfCheck(trace, answer);
+
+  if (!useReviewerSelfCheck) {
+    if (eplErrorsText) {
+      return {
+        pass: false,
+        confidence: 0,
+        issues: ["候选答案存在确定的 EPL 结构错误。"],
+        followup: `请修正以下 EPL 结构问题后重写最终答案：\n${eplErrorsText}`,
+      };
+    }
+    return {
+      pass: true,
+      confidence: 0.86,
+      issues: [],
+      followup: "",
+    };
+  }
+
+  let checkerText = "";
+  let checkerError: Error | null = null;
+  const provider = createLLMProvider({ ...config, systemPrompt: undefined });
+  let timeoutId: number | undefined;
+
+  try {
+    await Promise.race([
+      provider.stream(
+        makeAnswerSelfCheckMessages(userInput, trace, answer, eplDiagnosticsText, selectedImplementation),
+        {
+          onToken: (token) => {
+            checkerText += token;
+          },
+          onComplete: (full) => {
+            checkerText = full || checkerText;
+          },
+          onError: (error) => {
+            checkerError = error;
+          },
+        },
+        { nativeTools: false },
+      ),
+      new Promise<never>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          provider.abort();
+          reject(new Error(`Answer self-check timed out after ${Math.round(ANSWER_SELF_CHECK_TIMEOUT_MS / 1000)}s`));
+        }, ANSWER_SELF_CHECK_TIMEOUT_MS);
+      }),
+    ]);
+  } catch (error) {
+    checkerError = error instanceof Error ? error : new Error(String(error));
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+  }
+
+  const parsed = checkerError ? null : parseAnswerSelfCheckDecision(checkerText);
+  if (parsed) {
+    if (eplErrorsText && parsed.pass) {
+      return {
+        pass: false,
+        confidence: Math.min(parsed.confidence, 0.2),
+        issues: [
+          "本地 EPL 结构检查发现候选答案存在确定的控制结构错误。",
+          ...parsed.issues,
+        ],
+        followup:
+          `请根据本地 EPL 结构检查修正代码后重写最终答案：\n${eplErrorsText}`,
+      };
+    }
+    return parsed;
+  }
+
+  if (eplErrorsText) {
+    return {
+      pass: false,
+      confidence: 0,
+      issues: ["候选答案存在确定的 EPL 结构错误。"],
+      followup: `请修正以下 EPL 结构问题后重写最终答案：\n${eplErrorsText}`,
+    };
+  }
+
+  return {
+    pass: false,
+    confidence: checkerError ? 0 : 0.5,
+    issues: checkerError ? [`自检模型调用失败：${checkerError.message}`] : ["自检模型未返回可解析 JSON。"],
+    followup: "请重新执行答案自检；如果仍失败，不要把候选答案作为已验证结果展示给用户。",
+  };
+}
+
+function makeAnswerSelfCheckReminder(
+  answer: string,
+  decision: AnswerSelfCheckDecision,
+  iteration: number,
+): ChatMessage {
+  const issues = decision.issues.length > 0
+    ? decision.issues.map((issue) => `- ${issue}`).join("\n")
+    : "- 自检未通过，但未给出细节。";
+  const followup = decision.followup.trim()
+    ? decision.followup.trim()
+    : "请重新审查用户问题和工具结果，必要时继续调用工具，然后重写最终答案。";
+
+  return {
+    id: `self_check_retry_${nanoid(8)}`,
+    role: "user",
+    content:
+      `【自检未通过 ${iteration}/${ANSWER_SELF_CHECK_MAX_REVISIONS}】候选最终答案暂不展示给用户。\n` +
+      `置信度：${decision.confidence}\n` +
+      `问题：\n${issues}\n\n` +
+      `下一步：${followup}\n\n` +
+      `要求：如果缺少精易模块证据，先调用 search_jingyi_module；如果缺少文件事实，先调用对应读取/解析工具；如果只是答案表达或代码错误，则重写 final_answer。不要把自检过程暴露给用户。\n\n` +
+      `候选答案：\n${trimReminderAnswer(answer)}`,
+    timestamp: Date.now(),
+  };
+}
+
+function makeSelfCheckEscalationReminder(
+  answer: string,
+  decision: AnswerSelfCheckDecision,
+): ChatMessage {
+  const issues = decision.issues.length > 0
+    ? decision.issues.map((issue) => `- ${issue}`).join("\n")
+    : "- Reviewer 没有返回具体问题，但候选答案不可直接交付。";
+  const followup = decision.followup.trim()
+    ? decision.followup.trim()
+    : "请重新审查用户问题、工具证据和候选答案，然后继续调用工具或重写最终答案。";
+
+  return {
+    id: `self_check_escalate_${nanoid(8)}`,
+    role: "user",
+    content:
+      "【内部质量门继续修复】候选最终答案仍不可交付，不能把质量门失败信息展示给用户。\n" +
+      `问题：\n${issues}\n\n` +
+      `下一步：${followup}\n\n` +
+      "现在请继续推理：缺证据就调用工具；证据足够就直接输出新的完整 final_answer；不要输出中间态说明。\n\n" +
+      `候选答案：\n${trimReminderAnswer(answer)}`,
+    timestamp: Date.now(),
+  };
+}
+
+function formatPendingUserChoice(request: AgentUserChoiceRequest): string {
+  const lines = [request.question.trim()];
+  if (request.context?.trim()) {
+    lines.push("", request.context.trim());
+  }
+  return lines.join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // Public entrypoint
 // ---------------------------------------------------------------------------
@@ -1111,6 +1983,7 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
       Math.min(options.maxSteps ?? DEFAULT_AGENT_MAX_STEPS, HARD_AGENT_MAX_STEPS),
     );
     const startedAt = Date.now();
+    let answerSelfCheckRevisionCount = 0;
     const trace: AgentTrace = {
       goal: options.userInput,
       steps: [],
@@ -1135,7 +2008,115 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
       },
     ];
 
-    for (let stepIndex = 1; stepIndex <= maxSteps; stepIndex++) {
+    let firstModelStepIndex = 1;
+    const selectedImplementation = describeSelectedImplementationFromChoice(
+      options.userInput,
+      options.history,
+    );
+    const selectedEvidenceQuery = buildSelectedImplementationEvidenceQuery(
+      options.userInput,
+      options.history,
+    );
+    if (selectedEvidenceQuery && !aborted) {
+      const stepIndex = firstModelStepIndex;
+      const stepStart = Date.now();
+      const call = makeJingyiSearchToolCall(selectedEvidenceQuery);
+      const assistantText = "根据用户已选择的实现方式，先补齐精易模块知识库证据。";
+      conversation.push({
+        id: `a_${nanoid(8)}`,
+        role: "assistant",
+        content: JSON.stringify({ thought: assistantText, tool_calls: [call] }),
+        timestamp: Date.now(),
+        toolCalls: [call],
+      });
+
+      options.onStatus?.(`第 ${stepIndex}/${maxSteps} 步：查询所选实现证据`);
+      const result = await executeTool(call.name, call.id, call.arguments, {
+        sessionId: options.sessionId,
+        userInput: selectedEvidenceQuery,
+        allowDialog: options.allowDialog ?? true,
+        onStatus: options.onStatus,
+      });
+      conversation.push(toolResultToMessage(result));
+      if (selectedImplementation) {
+        conversation.push(makeSelectedImplementationReminder(selectedImplementation));
+      }
+      trace.toolCallCount += 1;
+
+      const step: AgentStep = {
+        index: stepIndex,
+        assistantText,
+        toolCalls: [call],
+        toolResults: [result],
+        finishReason: "tool_call",
+        startedAt: stepStart,
+        endedAt: Date.now(),
+      };
+      trace.steps.push(step);
+      options.onStep?.(step, trace);
+      firstModelStepIndex = 2;
+    }
+
+    if (
+      firstModelStepIndex === 1 &&
+      shouldPrimeJingyiKnowledge(options.userInput, options.history) &&
+      !aborted
+    ) {
+      const stepIndex = firstModelStepIndex;
+      const stepStart = Date.now();
+      const call = makeJingyiSearchToolCall(options.userInput);
+      const assistantText = "先查询本地精易模块知识库，获取真实 API 证据和可选实现路线。";
+      conversation.push({
+        id: `a_${nanoid(8)}`,
+        role: "assistant",
+        content: JSON.stringify({ thought: assistantText, tool_calls: [call] }),
+        timestamp: Date.now(),
+        toolCalls: [call],
+      });
+
+      options.onStatus?.(`第 ${stepIndex}/${maxSteps} 步：查询精易模块`);
+      const result = await executeTool(call.name, call.id, call.arguments, {
+        sessionId: options.sessionId,
+        userInput: options.userInput,
+        allowDialog: options.allowDialog ?? true,
+        onStatus: options.onStatus,
+      });
+      conversation.push(toolResultToMessage(result));
+      trace.toolCallCount += 1;
+
+      const step: AgentStep = {
+        index: stepIndex,
+        assistantText,
+        toolCalls: [call],
+        toolResults: [result],
+        finishReason: "tool_call",
+        startedAt: stepStart,
+        endedAt: Date.now(),
+      };
+
+      const pendingUserChoice = findPendingUserChoiceFromToolResults(
+        [result],
+        options.userInput,
+      );
+      if (pendingUserChoice) {
+        trace.steps.push(step);
+        finishWithPendingUserChoice(
+          trace,
+          step,
+          pendingUserChoice,
+          options.onStatus,
+          options.onStep,
+        );
+        trace.endedAt = Date.now();
+        return trace;
+      }
+
+      trace.steps.push(step);
+      options.onStep?.(step, trace);
+      firstModelStepIndex = 2;
+    }
+
+    for (let stepIndex = firstModelStepIndex; stepIndex <= maxSteps; stepIndex++) {
       if (aborted) {
         trace.outcome = "aborted";
         break;
@@ -1162,8 +2143,10 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
         nativeToolCalls = [];
         const provider = createLLMProvider({ ...options.config, systemPrompt: undefined });
         providerRef.current = provider;
+        const toolTransport = selectAgentToolTransport(options.config);
         const enableNativeTools =
-          options.config.provider === "openai" &&
+          toolTransport === "native-openai-tools" &&
+          options.config.protocol === "openai-chat-completions" &&
           !conversation.some((message) => message.role === "tool");
 
         let timeoutId: number | undefined;
@@ -1342,6 +2325,28 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
           continue;
         }
 
+        const pendingUserChoice = findPendingUserChoiceFromTrace(trace, options.userInput);
+        if (pendingUserChoice) {
+          const step: AgentStep = {
+            index: stepIndex,
+            assistantText,
+            toolCalls: [],
+            toolResults: [],
+            finishReason: "answer",
+            startedAt: stepStart,
+            endedAt: Date.now(),
+          };
+          trace.steps.push(step);
+          finishWithPendingUserChoice(
+            trace,
+            step,
+            pendingUserChoice,
+            options.onStatus,
+            options.onStep,
+          );
+          break;
+        }
+
         const priorUnstructuredCount = trace.steps.filter(
           (s) => s.finishReason === "format_retry",
         ).length;
@@ -1375,6 +2380,70 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
           });
           options.onStatus?.(`第 ${stepIndex}/${maxSteps} 步：格式重试`);
           continue;
+        }
+
+        options.onStatus?.(
+          shouldUseHeavyAnswerSelfCheck(trace)
+            ? `第 ${stepIndex}/${maxSteps} 步：答案自检`
+            : `第 ${stepIndex}/${maxSteps} 步：本地检查`,
+        );
+        const selfCheck = await runAnswerSelfCheck(
+          options.config,
+          options.userInput,
+          options.history,
+          trace,
+          unstructuredAnswer,
+        );
+        if (
+          !selfCheck.pass &&
+          answerSelfCheckRevisionCount < ANSWER_SELF_CHECK_MAX_REVISIONS &&
+          stepIndex < maxSteps
+        ) {
+          answerSelfCheckRevisionCount += 1;
+          const step = makeAnswerSelfCheckRetryStep(stepIndex, assistantText, stepStart);
+          trace.steps.push(step);
+          options.onStep?.(step, trace);
+
+          conversation.push({
+            id: `a_${nanoid(8)}`,
+            role: "assistant",
+            content: assistantText,
+            timestamp: Date.now(),
+          });
+          conversation.push(
+            makeAnswerSelfCheckReminder(
+              unstructuredAnswer,
+              selfCheck,
+              answerSelfCheckRevisionCount,
+            ),
+          );
+          options.onStatus?.(`第 ${stepIndex}/${maxSteps} 步：根据自检继续修正`);
+          continue;
+        }
+        if (!selfCheck.pass) {
+          const step = makeAnswerSelfCheckRetryStep(stepIndex, assistantText, stepStart);
+          trace.steps.push(step);
+          options.onStep?.(step, trace);
+          if (stepIndex < HARD_AGENT_MAX_STEPS) {
+            const nextMaxSteps = Math.min(
+              HARD_AGENT_MAX_STEPS,
+              Math.max(maxSteps, stepIndex + ANSWER_SELF_CHECK_EXTRA_STEP_BUDGET),
+            );
+            if (nextMaxSteps !== maxSteps) maxSteps = nextMaxSteps;
+            conversation.push({
+              id: `a_${nanoid(8)}`,
+              role: "assistant",
+              content: assistantText,
+              timestamp: Date.now(),
+            });
+            conversation.push(makeSelfCheckEscalationReminder(unstructuredAnswer, selfCheck));
+            options.onStatus?.(`第 ${stepIndex}/${maxSteps} 步：继续修正答案`);
+            continue;
+          }
+          trace.outcome = "max_steps";
+          trace.finalAnswer =
+            "这次没有拿到足够可靠的最终答案。请再试一次，我会继续从工具证据开始重新检查。";
+          break;
         }
 
         const step: AgentStep = {
@@ -1446,6 +2515,21 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
         trace.steps.push(step);
         options.onStep?.(step, trace);
 
+        const pendingUserChoice = findPendingUserChoiceFromToolResults(
+          toolResults,
+          options.userInput,
+        );
+        if (pendingUserChoice) {
+          finishWithPendingUserChoice(
+            trace,
+            step,
+            pendingUserChoice,
+            options.onStatus,
+            options.onStep,
+          );
+          break;
+        }
+
         if (aborted) {
           trace.outcome = "aborted";
           break;
@@ -1469,6 +2553,27 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
 
       // Final answer
       const finalAnswer = parsed.finalAnswer ?? assistantText;
+      const pendingUserChoice = findPendingUserChoiceFromTrace(trace, options.userInput);
+      if (pendingUserChoice) {
+        const step: AgentStep = {
+          index: stepIndex,
+          assistantText,
+          toolCalls: [],
+          toolResults: [],
+          finishReason: "answer",
+          startedAt: stepStart,
+          endedAt: Date.now(),
+        };
+        trace.steps.push(step);
+        finishWithPendingUserChoice(
+          trace,
+          step,
+          pendingUserChoice,
+          options.onStatus,
+          options.onStep,
+        );
+        break;
+      }
       const continueDecision = evaluateContinueAfterFinalAnswer(trace, finalAnswer);
       const nextMaxSteps = extendStepBudgetForIncompleteWorkflow(
         continueDecision,
@@ -1500,6 +2605,70 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
         conversation.push(makeContinueReminder(trace, finalAnswer));
         options.onStatus?.(`第 ${stepIndex}/${maxSteps} 步：继续未完成任务`);
         continue;
+      }
+
+      options.onStatus?.(
+        shouldUseHeavyAnswerSelfCheck(trace)
+          ? `第 ${stepIndex}/${maxSteps} 步：答案自检`
+          : `第 ${stepIndex}/${maxSteps} 步：本地检查`,
+      );
+      const selfCheck = await runAnswerSelfCheck(
+        options.config,
+        options.userInput,
+        options.history,
+        trace,
+        finalAnswer,
+      );
+      if (
+        !selfCheck.pass &&
+        answerSelfCheckRevisionCount < ANSWER_SELF_CHECK_MAX_REVISIONS &&
+        stepIndex < maxSteps
+      ) {
+        answerSelfCheckRevisionCount += 1;
+        const step = makeAnswerSelfCheckRetryStep(stepIndex, assistantText, stepStart);
+        trace.steps.push(step);
+        options.onStep?.(step, trace);
+
+        conversation.push({
+          id: `a_${nanoid(8)}`,
+          role: "assistant",
+          content: assistantText,
+          timestamp: Date.now(),
+        });
+        conversation.push(
+          makeAnswerSelfCheckReminder(
+            finalAnswer,
+            selfCheck,
+            answerSelfCheckRevisionCount,
+          ),
+        );
+        options.onStatus?.(`第 ${stepIndex}/${maxSteps} 步：根据自检继续修正`);
+        continue;
+      }
+      if (!selfCheck.pass) {
+        const step = makeAnswerSelfCheckRetryStep(stepIndex, assistantText, stepStart);
+        trace.steps.push(step);
+        options.onStep?.(step, trace);
+        if (stepIndex < HARD_AGENT_MAX_STEPS) {
+          const nextMaxSteps = Math.min(
+            HARD_AGENT_MAX_STEPS,
+            Math.max(maxSteps, stepIndex + ANSWER_SELF_CHECK_EXTRA_STEP_BUDGET),
+          );
+          if (nextMaxSteps !== maxSteps) maxSteps = nextMaxSteps;
+          conversation.push({
+            id: `a_${nanoid(8)}`,
+            role: "assistant",
+            content: assistantText,
+            timestamp: Date.now(),
+          });
+          conversation.push(makeSelfCheckEscalationReminder(finalAnswer, selfCheck));
+          options.onStatus?.(`第 ${stepIndex}/${maxSteps} 步：继续修正答案`);
+          continue;
+        }
+        trace.outcome = "max_steps";
+        trace.finalAnswer =
+          "这次没有拿到足够可靠的最终答案。请再试一次，我会继续从工具证据开始重新检查。";
+        break;
       }
 
       const step: AgentStep = {

@@ -39,13 +39,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import { useSettingsStore, type ProviderModel, type ProviderProfile } from "@/stores/settings";
+  DEFAULT_PROVIDER_PROFILE,
+  useSettingsStore,
+  type ProviderModel,
+  type ProviderProfile,
+} from "@/stores/settings";
 import type { LLMProvider } from "@/types/llm";
 import { toast } from "sonner";
 import { invoke } from "@tauri-apps/api/core";
@@ -77,26 +75,37 @@ type FetchModelsResponse = {
   models: ProviderModel[];
 };
 
-const PROVIDER_OPTIONS: { value: LLMProvider; label: string; defaultUrl: string; defaultModel: string }[] = [
-  {
-    value: "openai",
-    label: "OpenAI（兼容）",
-    defaultUrl: "https://api.openai.com/v1",
-    defaultModel: "gpt-4o",
-  },
-  {
-    value: "provider",
-    label: "Claude (Anthropic)",
-    defaultUrl: "https://api.anthropic.com",
-    defaultModel: "claude-sonnet-4-20250514",
-  },
-  {
-    value: "gemini",
-    label: "Gemini",
-    defaultUrl: "https://generativelanguage.googleapis.com/v1beta",
-    defaultModel: "gemini-2.5-pro",
-  },
+const PROVIDER_OPTIONS: { value: LLMProvider; label: string }[] = [
+  { value: "openai", label: "OpenAI 兼容" },
+  { value: "anthropic", label: "Claude / Anthropic" },
+  { value: "gemini", label: "Gemini" },
 ];
+
+const PROVIDER_DEFAULTS: Record<
+  LLMProvider,
+  Pick<ProviderProfile, "protocol" | "baseUrl" | "model">
+> = {
+  openai: {
+    protocol: "openai-chat-completions",
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-4o",
+  },
+  anthropic: {
+    protocol: "anthropic-messages",
+    baseUrl: "https://api.anthropic.com/v1",
+    model: "claude-sonnet-4-20250514",
+  },
+  provider: {
+    protocol: "anthropic-messages",
+    baseUrl: "https://api.anthropic.com/v1",
+    model: "claude-sonnet-4-20250514",
+  },
+  gemini: {
+    protocol: "gemini-generate-content",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+    model: "gemini-2.5-pro",
+  },
+};
 
 export function SettingsView({ sidebarOpen, onToggleSidebar, onBack }: SettingsViewProps) {
   const { t } = useTranslation();
@@ -111,8 +120,6 @@ export function SettingsView({ sidebarOpen, onToggleSidebar, onBack }: SettingsV
     userKnowledgeDocuments,
     addProfile,
     updateProfile,
-    removeProfile,
-    setActiveProfile,
     setProfileModels,
     setTheme,
     setEasyLanguageRoot,
@@ -123,7 +130,14 @@ export function SettingsView({ sidebarOpen, onToggleSidebar, onBack }: SettingsV
     removeUserKnowledgeDocument,
   } = useSettingsStore();
 
-  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const activeProfile =
+    profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0] ?? null;
+
+  useEffect(() => {
+    if (profiles.length === 0) {
+      void addProfile({ ...DEFAULT_PROVIDER_PROFILE, apiKey: "" });
+    }
+  }, [addProfile, profiles.length]);
 
   return (
     <TooltipProvider>
@@ -174,35 +188,28 @@ export function SettingsView({ sidebarOpen, onToggleSidebar, onBack }: SettingsV
 
               {/* ---- Providers ---- */}
               <TabsContent value="providers" className="space-y-4 mt-4">
-                <div className="flex justify-between items-center">
+                <div>
                   <h3 className="text-sm font-medium">{t("settings.apiProfiles")}</h3>
-                  <Button size="sm" variant="outline" onClick={() => setAddDialogOpen(true)}>
-                    {t("settings.add")}
-                  </Button>
                 </div>
 
-                {profiles.length === 0 && (
-                  <Card>
+                {activeProfile ? (
+                  <ProfileCard
+                    profile={activeProfile}
+                    catalogModels={
+                      modelCatalogs[activeProfile.id]?.length
+                        ? modelCatalogs[activeProfile.id]
+                        : (activeProfile.models ?? [])
+                    }
+                    onUpdate={(patch) => updateProfile(activeProfile.id, patch)}
+                    onModelsFetched={(models) => setProfileModels(activeProfile.id, models)}
+                  />
+                ) : (
+                  <Card className="border-0 shadow-none">
                     <CardContent className="py-8 text-center text-muted-foreground text-sm">
-                      {t("settings.noProfiles")}
+                      正在初始化模型配置...
                     </CardContent>
                   </Card>
                 )}
-
-                {profiles.map((p) => (
-                  <ProfileCard
-                    key={p.id}
-                    profile={p}
-                    catalogModels={
-                      modelCatalogs[p.id]?.length ? modelCatalogs[p.id] : (p.models ?? [])
-                    }
-                    isActive={p.id === activeProfileId}
-                    onActivate={() => setActiveProfile(p.id)}
-                    onUpdate={(patch) => updateProfile(p.id, patch)}
-                    onModelsFetched={(models) => setProfileModels(p.id, models)}
-                    onRemove={() => removeProfile(p.id)}
-                  />
-                ))}
               </TabsContent>
               <TabsContent value="environment" className="mt-4 space-y-4">
                 <EasyLanguageEnvironmentCard
@@ -228,17 +235,6 @@ export function SettingsView({ sidebarOpen, onToggleSidebar, onBack }: SettingsV
             </Tabs>
           </div>
         </ScrollArea>
-
-        {/* Add Profile Dialog */}
-        <AddProfileDialog
-          open={addDialogOpen}
-          onOpenChange={setAddDialogOpen}
-          onAdd={async (data) => {
-            await addProfile(data);
-            setAddDialogOpen(false);
-            toast.success(`已添加配置 ${data.name}`);
-          }}
-        />
       </div>
     </TooltipProvider>
   );
@@ -249,19 +245,13 @@ export function SettingsView({ sidebarOpen, onToggleSidebar, onBack }: SettingsV
 function ProfileCard({
   profile,
   catalogModels,
-  isActive,
-  onActivate,
   onUpdate,
   onModelsFetched,
-  onRemove,
 }: {
   profile: ProviderProfile;
   catalogModels: ProviderModel[];
-  isActive: boolean;
-  onActivate: () => void;
   onUpdate: (patch: Partial<Omit<ProviderProfile, "id" | "apiKeyEncrypted">> & { apiKey?: string }) => void;
   onModelsFetched: (models: ProviderModel[]) => void;
-  onRemove: () => void;
 }) {
   const { t } = useTranslation();
   const [showKey, setShowKey] = useState(false);
@@ -273,6 +263,20 @@ function ProfileCard({
   useEffect(() => {
     setModels(catalogModels);
   }, [catalogModels]);
+
+  const handleProviderChange = (value: string) => {
+    const nextProvider = value as LLMProvider;
+    const defaults = PROVIDER_DEFAULTS[nextProvider];
+    setModels([]);
+    onModelsFetched([]);
+    onUpdate({
+      provider: nextProvider,
+      protocol: defaults.protocol,
+      baseUrl: defaults.baseUrl,
+      model: defaults.model,
+      models: [],
+    });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -322,29 +326,29 @@ function ProfileCard({
     <Card className="border-0 shadow-none">
       <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
         <div>
-          <CardTitle className="text-base">{profile.name}</CardTitle>
+          <CardTitle className="text-base">模型配置</CardTitle>
           <CardDescription className="text-xs">
             {providerInfo?.label || profile.provider} · {profile.model}
           </CardDescription>
         </div>
-        <div className="flex gap-1">
-          {!isActive && (
-            <Button variant="outline" size="sm" onClick={onActivate}>
-              {t("settings.activate")}
-            </Button>
-          )}
-          {isActive && (
-            <span className="px-2 py-1 text-xs text-primary">
-              {t("settings.active")}
-            </span>
-          )}
-          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive-foreground" onClick={onRemove}>
-            <Trash className="h-4 w-4" />
-          </Button>
-        </div>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="space-y-3">
+          <div>
+            <label className="text-xs text-muted-foreground">{t("settings.providerLabel")}</label>
+            <Select value={profile.provider} onValueChange={handleProviderChange}>
+              <SelectTrigger className="mt-1">
+                <SelectValue placeholder={t("settings.chooseProvider")} />
+              </SelectTrigger>
+              <SelectContent>
+                {PROVIDER_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <div>
             <label className="text-xs text-muted-foreground">Base URL</label>
             <Input
@@ -439,202 +443,6 @@ function ProfileCard({
       </CardContent>
     </Card>
   );
-}
-
-function AddProfileDialog({
-  open,
-  onOpenChange,
-  onAdd,
-}: {
-  open: boolean;
-  onOpenChange: (v: boolean) => void;
-  onAdd: (data: {
-    name: string;
-    provider: LLMProvider;
-    baseUrl: string;
-    model: string;
-    models?: ProviderModel[];
-    maxTokens: number;
-    temperature: number;
-    apiKey: string;
-  }) => void;
-}) {
-  const { t } = useTranslation();
-  const defaultProvider = PROVIDER_OPTIONS[0]!;
-  const [provider, setProvider] = useState<LLMProvider>(defaultProvider.value);
-  const [baseUrl, setBaseUrl] = useState(defaultProvider.defaultUrl);
-  const [model, setModel] = useState(defaultProvider.defaultModel);
-  const [apiKey, setApiKey] = useState("");
-  const [temperature, setTemperature] = useState(0.2);
-  const [maxTokens, setMaxTokens] = useState(4096);
-  const [models, setModels] = useState<ProviderModel[]>([]);
-  const [fetchingModels, setFetchingModels] = useState(false);
-
-  const handleProviderChange = (v: string) => {
-    const p = v as LLMProvider;
-    setProvider(p);
-    const info = PROVIDER_OPTIONS.find((o) => o.value === p);
-    if (info) {
-      setBaseUrl(info.defaultUrl);
-      setModel(info.defaultModel);
-    }
-    setModels([]);
-  };
-
-  const handleFetchModels = async () => {
-    try {
-      setFetchingModels(true);
-      if (!apiKey.trim()) {
-        toast.error(t("settings.apiKeyRequired"));
-        return;
-      }
-      const result = await invoke<FetchModelsResponse>("fetch_llm_models", {
-        provider,
-        baseUrl,
-        apiKey,
-      });
-      setModels(result.models);
-      toast.success(t("settings.modelsFetched", { count: result.models.length }));
-    } catch (err) {
-      toast.error(t("settings.modelsFetchFailed", { message: err instanceof Error ? err.message : String(err) }));
-    } finally {
-      setFetchingModels(false);
-    }
-  };
-
-  const handleSubmit = () => {
-    const normalizedBaseUrl = baseUrl.trim();
-    const normalizedModel = model.trim();
-    if (!normalizedBaseUrl) {
-      toast.error("请填写 Base URL");
-      return;
-    }
-    if (!normalizedModel) {
-      toast.error("请填写模型名");
-      return;
-    }
-    onAdd({
-      name: makeProfileName(provider, normalizedModel),
-      provider,
-      baseUrl: normalizedBaseUrl,
-      model: normalizedModel,
-      models,
-      maxTokens,
-      temperature,
-      apiKey,
-    });
-    // Reset
-    setProvider(defaultProvider.value);
-    setBaseUrl(defaultProvider.defaultUrl);
-    setModel(defaultProvider.defaultModel);
-    setApiKey("");
-    setTemperature(0.2);
-    setMaxTokens(4096);
-    setModels([]);
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>{t("settings.addApiProfile")}</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-4 py-2">
-          <div>
-            <label className="text-xs text-muted-foreground">{t("settings.providerLabel")}</label>
-            <Select value={provider} onValueChange={handleProviderChange}>
-              <SelectTrigger className="mt-1">
-                <SelectValue placeholder={t("settings.chooseProvider")} />
-              </SelectTrigger>
-              <SelectContent>
-                {PROVIDER_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>
-                    {o.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground">Base URL</label>
-            <Input
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              className="mt-1 text-xs font-mono"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground">{t("settings.modelLabel")}</label>
-            <ModelInputWithFetch
-              value={model}
-              models={models}
-              isLoading={fetchingModels}
-              onChange={setModel}
-              onFetch={handleFetchModels}
-            />
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground">API Key</label>
-            <Input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="sk-..."
-              className="mt-1 font-mono"
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-muted-foreground">Temperature</label>
-              <Input
-                type="number"
-                min={0}
-                max={2}
-                step={0.1}
-                value={temperature}
-                onChange={(e) => {
-                  const v = parseFloat(e.target.value);
-                  if (!isNaN(v) && v >= 0 && v <= 2) setTemperature(v);
-                }}
-                className="mt-1 text-xs"
-              />
-              <p className="mt-0.5 text-[11px] text-muted-foreground">0 = 精确，2 = 创意</p>
-            </div>
-            <div>
-              <label className="text-xs text-muted-foreground">Max Tokens</label>
-              <Input
-                type="number"
-                min={1}
-                max={1000000}
-                step={1}
-                value={maxTokens}
-                onChange={(e) => {
-                  const v = parseInt(e.target.value, 10);
-                  if (!isNaN(v) && v >= 1) setMaxTokens(v);
-                }}
-                className="mt-1 text-xs"
-              />
-              <p className="mt-0.5 text-[11px] text-muted-foreground">最大输出 token 数</p>
-            </div>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            {t("settings.cancel")}
-          </Button>
-          <Button onClick={handleSubmit}>{t("settings.add")}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function makeProfileName(provider: LLMProvider, model: string): string {
-  const providerLabel =
-    PROVIDER_OPTIONS.find((option) => option.value === provider)?.label ??
-    provider;
-  const cleanProvider = providerLabel.replace(/[（(].*?[）)]/g, "").trim();
-  return model ? `${cleanProvider} · ${model}` : cleanProvider;
 }
 
 function ModelInputWithFetch({

@@ -39,7 +39,10 @@ export const useChatStore = create<ChatState>()(
           updatedAt: now,
         };
         set((s) => ({
-          sessions: [session, ...s.sessions],
+          sessions: [
+            session,
+            ...s.sessions.filter((item) => item.messages.length > 0),
+          ],
           activeSessionId: id,
         }));
         return id;

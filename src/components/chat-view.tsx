@@ -75,6 +75,7 @@ import { deriveSessionTitle, getSessionDisplayTitle } from "@/lib/session-title"
 import type {
   AgentStep,
   AgentTrace,
+  AgentUserChoiceRequest,
   ChatMessage,
   ToolCall,
   ToolResult,
@@ -125,7 +126,6 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
   const previewSignatureRef = useRef("");
   const sendingRef = useRef(false);
   const rafRef = useRef<number | null>(null);
-  const activeSessionIdRef = useRef(activeSessionId);
   const isStreamingRef = useRef(isStreaming);
   const pendingMobileActionsRef = useRef<MobileAction[]>([]);
   const processingMobileActionRef = useRef(false);
@@ -235,10 +235,6 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
       updatedAt: Date.now(),
     };
   }, [activeSessionId, isStreaming, latestAssistantTrace?.steps, previewItems, sessions, statusLine]);
-
-  useEffect(() => {
-    activeSessionIdRef.current = activeSessionId;
-  }, [activeSessionId]);
 
   useEffect(() => {
     isStreamingRef.current = isStreaming;
@@ -378,10 +374,9 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
       userContent = text ? `${fileBlock}\n\n用户补充说明：${text}` : fileBlock;
     }
 
-    let sid = activeSessionIdRef.current;
+    let sid = useChatStore.getState().activeSessionId;
     if (!sid) {
       sid = createSession(deriveSessionTitle(userContent));
-      activeSessionIdRef.current = sid;
     }
 
     setIsStreaming(true);
@@ -417,7 +412,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
         if (rafRef.current === null) {
           rafRef.current = requestAnimationFrame(() => {
             rafRef.current = null;
-            const extracted = extractStreamingContent(streamBufRef.current);
+            const extracted = extractStreamingThought(streamBufRef.current);
             if (extracted) {
               updateMessage(sid!, assistantMsgId, {
                 content: sanitizeProtocolText(extracted),
@@ -474,6 +469,9 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
       } else if (trace.outcome === "aborted") {
         toast.info("Stopped");
         emitPet({ state: "idle", bubble: "Stopped" });
+      } else if (trace.outcome === "needs_input") {
+        toast.info("请选择一个方案继续");
+        emitPet({ state: "notification", bubble: "请选择" });
       } else {
         toast.error("Run failed");
         emitPet({ state: "error", bubble: "Error" });
@@ -512,6 +510,16 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
     setAttachedFiles([]);
     await runAgentMessage({ text, files, source: "desktop" });
   }, [input, attachedFiles, runAgentMessage]);
+
+  const handleAgentChoice = useCallback(async (choice: string, request: AgentUserChoiceRequest) => {
+    const question = request.question.trim();
+    const text = [
+      `我选择：${choice}`,
+      question ? `对应问题：${question}` : "",
+      "请按这个选择继续完成上一轮任务。",
+    ].filter(Boolean).join("\n");
+    await runAgentMessage({ text, files: [], source: "desktop" });
+  }, [runAgentMessage]);
 
   const handleStartMobileBridge = useCallback(async () => {
     try {
@@ -559,14 +567,12 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
     if (action.type === "set_active_session") {
       if (action.sessionId) {
         setActiveSession(action.sessionId);
-        activeSessionIdRef.current = action.sessionId;
       }
       return;
     }
 
     if (action.type === "new_session") {
-      const id = createSession();
-      activeSessionIdRef.current = id;
+      createSession();
       return;
     }
 
@@ -759,7 +765,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
 
               {visibleMessages.map((msg, index) => (
                 <Fragment key={msg.id}>
-                  <MessageBubble message={msg} />
+                  <MessageBubble message={msg} onChoice={handleAgentChoice} />
                   {index === lastAssistantMessageIndex && (
                     <div className="message-enter chat-pet-row flex justify-start">
                       <DesktopPet placement="chat" />
@@ -974,6 +980,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
 const TOOL_LABELS: Record<string, string> = {
   scan_easy_language_env: "扫描易语言环境",
   search_jingyi_module: "查询精易模块",
+  ask_user_choice: "等待选择",
   read_file: "读取文件",
   parse_efile: "解析源码",
   export_efile_to_ecode: "导出 ecode 工程",
@@ -1006,6 +1013,7 @@ function mobileStepLabel(step: AgentStep): string {
     return step.toolCalls.map((call) => toolLabel(call.name)).join("、");
   }
   if (step.finishReason === "answer") return "生成回复";
+  if (step.finishReason === "needs_input") return "等待选择";
   if (step.finishReason === "error") return "错误";
   if (step.finishReason === "format_retry") return "继续推理";
   return "模型推理";
@@ -1025,6 +1033,9 @@ function mobileStepDetail(step: AgentStep): string {
     })
     .join("\n");
   if (toolDetails) return toolDetails;
+  if (step.finishReason === "format_retry") {
+    return "候选答案未通过内部检查，已继续修正";
+  }
   const thought = parseThought(step.assistantText);
   if (thought) return thought;
   return sanitizeProtocolText(step.assistantText).slice(0, 320);
@@ -1410,10 +1421,17 @@ function CodePreviewPanel({
 // MessageBubble: assistant turns get a collapsible trace panel underneath.
 // ---------------------------------------------------------------------------
 
-const MessageBubble = memo(function MessageBubble({ message }: { message: ChatMessage }) {
+const MessageBubble = memo(function MessageBubble({
+  message,
+  onChoice,
+}: {
+  message: ChatMessage;
+  onChoice: (choice: string, request: AgentUserChoiceRequest) => void;
+}) {
   const { t } = useTranslation();
   const isUser = message.role === "user";
   const trace = message.agentTrace;
+  const pendingChoice = !isUser ? trace?.pendingUserChoice : undefined;
   const displayContent = isUser
     ? message.content
     : sanitizeProtocolText(message.content || t("chat.emptyAssistantMessage"));
@@ -1440,6 +1458,14 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: ChatMe
           <MarkdownView content={displayContent} />
         )}
 
+        {pendingChoice && (
+          <AgentChoicePrompt
+            request={pendingChoice}
+            disabled={Boolean(message.isStreaming)}
+            onChoice={(choice) => onChoice(choice, pendingChoice)}
+          />
+        )}
+
         {!isUser && trace && trace.steps.length > 0 && (
           <AgentTracePanel trace={trace} />
         )}
@@ -1447,6 +1473,36 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: ChatMe
     </div>
   );
 });
+
+function AgentChoicePrompt({
+  request,
+  disabled,
+  onChoice,
+}: {
+  request: AgentUserChoiceRequest;
+  disabled: boolean;
+  onChoice: (choice: string) => void;
+}) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {request.options.map((option) => {
+        const value = option.value ?? option.label;
+        return (
+          <button
+            key={option.id ?? value}
+            type="button"
+            disabled={disabled}
+            className="rounded-md border border-border/70 bg-background px-3 py-1.5 text-xs text-foreground transition hover:border-foreground/30 hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
+            title={option.description}
+            onClick={() => onChoice(value)}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // AgentTracePanel: a compact, collapsible visualisation of all ReAct steps.
@@ -1552,6 +1608,8 @@ function formatToolArgs(name: string, args: Record<string, unknown>): string {
     }
     case "save_text_file":
       return String(args.path ?? "");
+    case "ask_user_choice":
+      return String(args.question ?? "");
     default: {
       const raw = JSON.stringify(args);
       return raw.length > 80 ? raw.slice(0, 80) + "..." : raw;
@@ -1695,11 +1753,13 @@ function AgentStepSummary({ step }: { step: AgentStep }) {
     ? step.toolCalls.map((tc) => toolLabel(tc.name)).join("、")
     : step.finishReason === "answer"
       ? "生成回复"
-      : step.finishReason === "error"
-        ? "错误"
-        : "推理";
+      : step.finishReason === "format_retry"
+        ? "自检修正"
+        : step.finishReason === "error"
+          ? "错误"
+          : "推理";
 
-  const hasDetails = step.toolCalls.length > 0 || thought;
+  const hasDetails = step.finishReason !== "format_retry" && (step.toolCalls.length > 0 || thought);
 
   return (
     <div className="agent-step rounded-md overflow-hidden">
@@ -2074,14 +2134,11 @@ function extractEplPreviewItems(trace: AgentTrace | null): EplPreviewData[] {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Extract partial `final_answer` or `thought` from an incomplete JSON stream.
- *  The model outputs `{"thought":"...","final_answer":"...markdown..."}`.
- *  While streaming, the JSON is incomplete — we grab the value after the last
- *  `"final_answer":"` (or `"thought":"` as fallback) by scanning for the key
- *  and collecting everything after it, stripping the trailing incomplete quote. */
-function extractStreamingContent(buf: string): string | null {
-  // Try final_answer first, then thought
-  for (const key of ['"final_answer"', '"answer"', '"thought"']) {
+/** Extract partial `thought` from an incomplete JSON stream.
+ *  Candidate final answers stay hidden until the Agent has completed its
+ *  internal self-check, so rejected code is not briefly shown in the chat. */
+function extractStreamingThought(buf: string): string | null {
+  for (const key of ['"thought"']) {
     const idx = buf.lastIndexOf(key);
     if (idx < 0) continue;
     // Find the colon after the key, then the opening quote of the value
@@ -2131,6 +2188,8 @@ function outcomeLabel(outcome: AgentTrace["outcome"]): string {
   switch (outcome) {
     case "answer":
       return "已完成";
+    case "needs_input":
+      return "等待选择";
     case "max_steps":
       return "已达到上限";
     case "aborted":

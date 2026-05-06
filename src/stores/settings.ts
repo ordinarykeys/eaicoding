@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
-import type { LLMProvider, LLMConfig } from "@/types/llm";
+import type { LLMProvider, LLMProtocol, LLMConfig } from "@/types/llm";
 import { idbStorage } from "@/lib/idb-storage";
 import type { UserKnowledgeDocument } from "@/services/knowledge/user-knowledge";
 
@@ -9,6 +9,7 @@ export interface ProviderProfile {
   id: string;
   name: string;
   provider: LLMProvider;
+  protocol: LLMProtocol;
   baseUrl: string;
   /** Encrypted API key blob (base64 of nonce+ciphertext, AES-GCM via Rust). */
   apiKeyEncrypted: string;
@@ -22,6 +23,17 @@ export interface ProviderModel {
   id: string;
   ownedBy: string | null;
 }
+
+export const DEFAULT_PROVIDER_PROFILE = {
+  name: "默认模型配置",
+  provider: "openai" as LLMProvider,
+  protocol: "openai-chat-completions" as LLMProtocol,
+  baseUrl: "https://api.openai.com/v1",
+  model: "gpt-4o",
+  models: [] as ProviderModel[],
+  maxTokens: 4096,
+  temperature: 0.2,
+};
 
 interface SettingsState {
   /** Configured provider profiles. */
@@ -104,9 +116,15 @@ const shouldReplaceSystemPrompt = (prompt: unknown) =>
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
-      profiles: [],
+      profiles: [
+        {
+          id: "default",
+          ...DEFAULT_PROVIDER_PROFILE,
+          apiKeyEncrypted: "",
+        },
+      ],
       modelCatalogs: {},
-      activeProfileId: null,
+      activeProfileId: "default",
       systemPrompt: DEFAULT_SYSTEM_PROMPT,
       theme: "light",
       petEnabled: true,
@@ -126,6 +144,7 @@ export const useSettingsStore = create<SettingsState>()(
           id,
           name: input.name,
           provider: input.provider,
+          protocol: input.protocol,
           baseUrl: input.baseUrl,
           apiKeyEncrypted,
           model: input.model,
@@ -134,14 +153,14 @@ export const useSettingsStore = create<SettingsState>()(
           temperature: input.temperature,
         };
         set((s) => ({
-          profiles: [...s.profiles, profile],
+          profiles: s.profiles.length > 0 ? [profile, ...s.profiles.slice(1)] : [profile],
           modelCatalogs: input.models
             ? {
                 ...s.modelCatalogs,
                 [id]: input.models,
               }
             : s.modelCatalogs,
-          activeProfileId: s.activeProfileId ?? id,
+          activeProfileId: id,
         }));
         return id;
       },
@@ -218,7 +237,7 @@ export const useSettingsStore = create<SettingsState>()(
 
       resolveLLMConfig: async () => {
         const { profiles, activeProfileId, systemPrompt } = get();
-        const profile = profiles.find((item) => item.id === activeProfileId);
+        const profile = profiles.find((item) => item.id === activeProfileId) ?? profiles[0];
         if (!profile) return null;
         let apiKey = "";
         if (profile.apiKeyEncrypted) {
@@ -232,6 +251,7 @@ export const useSettingsStore = create<SettingsState>()(
         }
         return {
           provider: profile.provider,
+          protocol: protocolForProvider(profile.provider),
           apiKey,
           baseUrl: profile.baseUrl,
           model: profile.model,
@@ -244,14 +264,34 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: "eaicoding-settings",
       storage: createJSONStorage(() => idbStorage),
-      version: 1,
+      version: 3,
       migrate: (persistedState) => {
         if (!persistedState || typeof persistedState !== "object") {
           return persistedState;
         }
         const state = persistedState as Partial<SettingsState>;
+        const profiles = Array.isArray(state.profiles) && state.profiles.length > 0
+          ? state.profiles
+          : [
+              {
+                id: "default",
+                ...DEFAULT_PROVIDER_PROFILE,
+                apiKeyEncrypted: "",
+              },
+            ];
+        const normalizedProfiles = profiles.map((profile) => ({
+          ...profile,
+          provider: normalizeProvider(profile.provider),
+          protocol: protocolForProvider(profile.provider),
+        }));
+        const activeProfileId =
+          state.activeProfileId && profiles.some((profile) => profile.id === state.activeProfileId)
+            ? state.activeProfileId
+            : normalizedProfiles[0]?.id ?? "default";
         return {
           ...state,
+          profiles: normalizedProfiles,
+          activeProfileId,
           systemPrompt: shouldReplaceSystemPrompt(state.systemPrompt)
             ? DEFAULT_SYSTEM_PROMPT
             : state.systemPrompt,
@@ -274,3 +314,18 @@ export const useSettingsStore = create<SettingsState>()(
     },
   ),
 );
+
+function normalizeProvider(provider: unknown): LLMProvider {
+  if (provider === "provider") return "anthropic";
+  if (provider === "anthropic" || provider === "gemini" || provider === "openai") {
+    return provider;
+  }
+  return DEFAULT_PROVIDER_PROFILE.provider;
+}
+
+function protocolForProvider(provider: unknown): LLMProtocol {
+  const normalizedProvider = normalizeProvider(provider);
+  if (normalizedProvider === "anthropic") return "anthropic-messages";
+  if (normalizedProvider === "gemini") return "gemini-generate-content";
+  return "openai-chat-completions";
+}

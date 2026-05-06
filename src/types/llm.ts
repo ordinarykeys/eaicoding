@@ -1,7 +1,14 @@
-export type LLMProvider = "openai" | "provider" | "gemini";
+export type LLMProvider = "openai" | "anthropic" | "provider" | "gemini";
+
+export type LLMProtocol =
+  | "openai-chat-completions"
+  | "openai-responses"
+  | "anthropic-messages"
+  | "gemini-generate-content";
 
 export interface LLMConfig {
   provider: LLMProvider;
+  protocol: LLMProtocol;
   apiKey: string;
   baseUrl: string;
   model: string;
@@ -107,6 +114,20 @@ export interface ToolResult {
   durationMs: number;
 }
 
+export interface AgentChoiceOption {
+  id?: string;
+  label: string;
+  value?: string;
+  description?: string;
+}
+
+export interface AgentUserChoiceRequest {
+  question: string;
+  options: AgentChoiceOption[];
+  allowCustom?: boolean;
+  context?: string;
+}
+
 /** A single step inside a ReAct trace: an assistant turn that may
  *  contain tool calls plus the tool results that followed. */
 export interface AgentStep {
@@ -118,7 +139,7 @@ export interface AgentStep {
   /** Tool execution results — paired with `toolCalls` by `toolCallId`. */
   toolResults: ToolResult[];
   /** Reason this step ended: "tool_call" | "answer" | "stop" | "error" */
-  finishReason: "tool_call" | "answer" | "stop" | "error" | "max_steps" | "format_retry";
+  finishReason: "tool_call" | "answer" | "stop" | "error" | "max_steps" | "format_retry" | "needs_input";
   startedAt: number;
   endedAt: number;
 }
@@ -129,7 +150,8 @@ export interface AgentTrace {
   steps: AgentStep[];
   finalAnswer: string;
   /** "answer" → 模型给出最终回答；"max_steps" → 达到上限；"error" → 异常 */
-  outcome: "answer" | "max_steps" | "error" | "aborted";
+  outcome: "answer" | "max_steps" | "error" | "aborted" | "needs_input";
+  pendingUserChoice?: AgentUserChoiceRequest;
   startedAt: number;
   endedAt: number;
   /** Total tool-call count across all steps. */

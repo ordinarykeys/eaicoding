@@ -16,7 +16,7 @@ use ecode_parser::{
 };
 use easy_language_sdk::scan_easy_language_env;
 use llm_models::fetch_llm_models;
-use llm_proxy::llm_proxy_request;
+use llm_proxy::{llm_proxy_request, llm_proxy_stream};
 use local_files::{read_text_file_for_agent, write_text_file};
 use mobile_bridge::{
     get_mobile_bridge_state, poll_mobile_actions, publish_mobile_snapshot, start_mobile_bridge,
@@ -58,6 +58,7 @@ pub fn run() {
             scan_easy_language_env,
             fetch_llm_models,
             llm_proxy_request,
+            llm_proxy_stream,
             start_mobile_bridge,
             stop_mobile_bridge,
             get_mobile_bridge_state,

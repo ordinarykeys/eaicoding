@@ -40,6 +40,9 @@ const IMPORTANT_PAYLOAD_KEYS = new Set([
   "compiled",
   "module_paths_used",
   "error",
+  "needs_user_choice",
+  "question",
+  "options",
 ]);
 
 function redactSecrets(text: string): string {
@@ -209,6 +212,11 @@ function summarizeTrace(trace: AgentTrace, ordinal: number): string {
   }
   if (trace.finalAnswer.trim()) {
     lines.push(`- 最终回复摘要：${limit(trace.finalAnswer, 320)}`);
+  }
+  if (trace.pendingUserChoice) {
+    lines.push(
+      `- 等待用户选择：${limit(trace.pendingUserChoice.question, 180)}；选项：${trace.pendingUserChoice.options.map((option) => option.label).join(" / ")}`,
+    );
   }
   if (paths.length > 0) {
     lines.push(`- 关键路径：${paths.join(" | ")}`);

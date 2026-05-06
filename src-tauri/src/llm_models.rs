@@ -13,18 +13,6 @@ const GEMINI_PROVIDER: &str = "gemini";
 const FETCH_TIMEOUT_SECS: u64 = 15;
 const ERROR_BODY_MAX_CHARS: usize = 512;
 
-const OPENAI_COMPAT_SUFFIXES: &[&str] = &[
-    "/api/claudecode",
-    "/api/anthropic",
-    "/apps/anthropic",
-    "/api/coding",
-    "/claudecode",
-    "/anthropic",
-    "/step_plan",
-    "/coding",
-    "/claude",
-];
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FetchedModel {
@@ -71,31 +59,10 @@ fn normalize_base_url(base_url: &str) -> String {
 
 fn provider_default_base_url(provider: &str) -> &'static str {
     match provider {
-        ANTHROPIC_PROVIDER => "https://api.anthropic.com",
+        ANTHROPIC_PROVIDER => "https://api.anthropic.com/v1",
         GEMINI_PROVIDER => "https://generativelanguage.googleapis.com",
         _ => "https://api.openai.com",
     }
-}
-
-fn validate_known_provider_key_shape(base_url: &str, api_key: &str) -> Result<(), String> {
-    let lowered = base_url.trim().to_ascii_lowercase();
-    let api_key = api_key.trim();
-
-    if lowered.contains("xiaomimimo.com") {
-        if lowered.contains("token-plan-") && api_key.starts_with("sk-") {
-            return Err(
-                "Xiaomi MiMo token-plan endpoints usually require a tp- key. Use a tp- key with https://token-plan-<region>.xiaomimimo.com, or switch sk- keys to https://api.xiaomimimo.com/v1.".to_string(),
-            );
-        }
-
-        if lowered.contains("api.xiaomimimo.com") && api_key.starts_with("tp-") {
-            return Err(
-                "Xiaomi MiMo standard API endpoints usually expect an sk- key. Use tp- keys with https://token-plan-<region>.xiaomimimo.com/v1 instead.".to_string(),
-            );
-        }
-    }
-
-    Ok(())
 }
 
 fn truncate_body(body: String) -> String {
@@ -107,16 +74,6 @@ fn truncate_body(body: String) -> String {
         short.push_str("...");
         short
     }
-}
-
-fn dedupe_urls(urls: Vec<String>) -> Vec<String> {
-    let mut unique = Vec::with_capacity(urls.len());
-    for url in urls {
-        if !url.is_empty() && !unique.iter().any(|entry| entry == &url) {
-            unique.push(url);
-        }
-    }
-    unique
 }
 
 fn is_likely_full_url(provider: &str, base_url: &str) -> bool {
@@ -137,147 +94,117 @@ fn is_likely_full_url(provider: &str, base_url: &str) -> bool {
     }
 }
 
-fn strip_openai_compat_suffix(base_url: &str) -> Option<&str> {
-    for suffix in OPENAI_COMPAT_SUFFIXES {
-        if base_url.ends_with(*suffix) {
-            return Some(&base_url[..base_url.len() - suffix.len()]);
-        }
-    }
-    None
-}
-
-fn derive_openai_compat_candidates_from_full_url(url: &str) -> Vec<String> {
+fn derive_openai_compat_model_url_from_full_url(url: &str) -> Option<String> {
     let normalized = normalize_base_url(url);
-    let mut candidates = Vec::new();
 
     if let Some(index) = normalized.find("/v1/") {
-        candidates.push(format!("{}/v1/models", &normalized[..index]));
+        return Some(format!("{}/v1/models", &normalized[..index]));
     }
 
     if let Some(index) = normalized.find("/models/") {
         let prefix = &normalized[..index];
         if prefix.ends_with("/v1") {
-            candidates.push(format!("{prefix}/models"));
+            return Some(format!("{prefix}/models"));
         }
     }
 
-    if candidates.is_empty() {
-        if let Some(index) = normalized.rfind('/') {
-            let root = &normalized[..index];
-            if root.contains("://") && root.len() > root.find("://").unwrap_or(0) + 3 {
-                if root.ends_with("/v1") {
-                    candidates.push(format!("{root}/models"));
-                } else {
-                    candidates.push(format!("{root}/v1/models"));
-                }
+    if let Some(index) = normalized.rfind('/') {
+        let root = &normalized[..index];
+        if root.contains("://") && root.len() > root.find("://").unwrap_or(0) + 3 {
+            if root.ends_with("/v1") {
+                return Some(format!("{root}/models"));
+            } else {
+                return Some(format!("{root}/v1/models"));
             }
         }
     }
 
-    dedupe_urls(candidates)
+    None
 }
 
-fn build_openai_compatible_candidates(base_url: &str) -> Result<Vec<String>, String> {
+fn build_openai_compatible_model_url(base_url: &str) -> Result<String, String> {
     let normalized = normalize_base_url(base_url);
     if normalized.is_empty() {
         return Err("Please provide a base URL".to_string());
     }
 
     if normalized.ends_with("/models") {
-        return Ok(vec![normalized]);
+        return Ok(normalized);
     }
 
     if is_likely_full_url(OPENAI_PROVIDER, &normalized)
         || is_likely_full_url(ANTHROPIC_PROVIDER, &normalized)
     {
-        let derived = derive_openai_compat_candidates_from_full_url(&normalized);
-        if !derived.is_empty() {
+        if let Some(derived) = derive_openai_compat_model_url_from_full_url(&normalized) {
             return Ok(derived);
         }
     }
 
-    let mut candidates = Vec::new();
     if normalized.ends_with("/v1") {
-        candidates.push(format!("{normalized}/models"));
+        Ok(format!("{normalized}/models"))
     } else {
-        candidates.push(format!("{normalized}/v1/models"));
+        Ok(format!("{normalized}/v1/models"))
     }
-
-    if let Some(stripped) = strip_openai_compat_suffix(&normalized) {
-        let root = stripped.trim_end_matches('/');
-        if !root.is_empty() && root.contains("://") {
-            candidates.push(format!("{root}/v1/models"));
-            candidates.push(format!("{root}/models"));
-        }
-    }
-
-    Ok(dedupe_urls(candidates))
 }
 
-fn derive_gemini_candidates_from_full_url(url: &str) -> Vec<String> {
+fn derive_gemini_model_url_from_full_url(url: &str) -> Option<String> {
     let normalized = normalize_base_url(url);
-    let mut candidates = Vec::new();
 
     if let Some(index) = normalized.find("/models/") {
         let prefix = &normalized[..index];
         if prefix.ends_with("/v1beta") || prefix.ends_with("/v1") {
-            candidates.push(format!("{prefix}/models"));
+            return Some(format!("{prefix}/models"));
         }
     }
 
     if let Some(index) = normalized.find("/v1beta/") {
-        candidates.push(format!("{}/v1beta/models", &normalized[..index]));
+        return Some(format!("{}/v1beta/models", &normalized[..index]));
     }
     if let Some(index) = normalized.find("/v1/") {
-        candidates.push(format!("{}/v1/models", &normalized[..index]));
+        return Some(format!("{}/v1/models", &normalized[..index]));
     }
 
-    if candidates.is_empty() {
-        if let Some(index) = normalized.rfind('/') {
-            let root = &normalized[..index];
-            if root.contains("://") && root.len() > root.find("://").unwrap_or(0) + 3 {
-                if root.ends_with("/v1beta") || root.ends_with("/v1") {
-                    candidates.push(format!("{root}/models"));
-                } else {
-                    candidates.push(format!("{root}/v1beta/models"));
-                }
+    if let Some(index) = normalized.rfind('/') {
+        let root = &normalized[..index];
+        if root.contains("://") && root.len() > root.find("://").unwrap_or(0) + 3 {
+            if root.ends_with("/v1beta") || root.ends_with("/v1") {
+                return Some(format!("{root}/models"));
+            } else {
+                return Some(format!("{root}/v1beta/models"));
             }
         }
     }
 
-    dedupe_urls(candidates)
+    None
 }
 
-fn build_gemini_candidates(base_url: &str) -> Result<Vec<String>, String> {
+fn build_gemini_model_url(base_url: &str) -> Result<String, String> {
     let normalized = normalize_base_url(base_url);
     if normalized.is_empty() {
         return Err("Please provide a base URL".to_string());
     }
 
     if normalized.ends_with("/models") {
-        return Ok(vec![normalized]);
+        return Ok(normalized);
     }
 
     if is_likely_full_url(GEMINI_PROVIDER, &normalized) {
-        let derived = derive_gemini_candidates_from_full_url(&normalized);
-        if !derived.is_empty() {
+        if let Some(derived) = derive_gemini_model_url_from_full_url(&normalized) {
             return Ok(derived);
         }
     }
 
-    let primary = if normalized.ends_with("/v1beta") || normalized.ends_with("/v1") {
-        format!("{normalized}/models")
+    if normalized.ends_with("/v1beta") || normalized.ends_with("/v1") {
+        Ok(format!("{normalized}/models"))
     } else {
-        format!("{normalized}/v1beta/models")
-    };
-
-    Ok(vec![primary])
+        Ok(format!("{normalized}/v1beta/models"))
+    }
 }
 
-fn model_list_urls(provider: &str, base_url: &str) -> Result<Vec<String>, String> {
+fn model_list_url(provider: &str, base_url: &str) -> Result<String, String> {
     match provider {
-        OPENAI_PROVIDER | ANTHROPIC_PROVIDER => build_openai_compatible_candidates(base_url),
-        GEMINI_PROVIDER => build_gemini_candidates(base_url),
+        OPENAI_PROVIDER | ANTHROPIC_PROVIDER => build_openai_compatible_model_url(base_url),
+        GEMINI_PROVIDER => build_gemini_model_url(base_url),
         _ => Err("Unsupported LLM provider".to_string()),
     }
 }
@@ -314,11 +241,11 @@ fn build_headers(api_key: &str, strategy: HeaderStrategy) -> Result<HeaderMap, S
     Ok(headers)
 }
 
-fn header_strategies(provider: &str) -> &'static [HeaderStrategy] {
+fn header_strategy(provider: &str) -> HeaderStrategy {
     match provider {
-        ANTHROPIC_PROVIDER => &[HeaderStrategy::AnthropicKey, HeaderStrategy::Bearer],
-        GEMINI_PROVIDER => &[HeaderStrategy::GeminiKey],
-        _ => &[HeaderStrategy::Bearer],
+        ANTHROPIC_PROVIDER => HeaderStrategy::AnthropicKey,
+        GEMINI_PROVIDER => HeaderStrategy::GeminiKey,
+        _ => HeaderStrategy::Bearer,
     }
 }
 
@@ -484,51 +411,24 @@ pub async fn fetch_llm_models(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| provider_default_base_url(provider));
-    validate_known_provider_key_shape(base_url, api_key)?;
-    let urls = model_list_urls(provider, base_url)?;
-    let first_url = urls
-        .first()
-        .cloned()
-        .ok_or_else(|| "Please provide a base URL".to_string())?;
+    let url = model_list_url(provider, base_url)?;
+    let strategy = header_strategy(provider);
 
     let client = Client::builder()
         .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
         .build()
         .map_err(|err| format!("Failed to build model list client: {err}"))?;
 
-    let mut last_err: Option<String> = None;
-
-    for url in &urls {
-        for strategy in header_strategies(provider) {
-            match try_fetch_models_once(&client, provider, url, api_key, *strategy).await {
-                Ok(models) => {
-                    return Ok(FetchModelsResponse {
-                        provider: provider.to_string(),
-                        url: url.clone(),
-                        models,
-                    });
-                }
-                Err(err) => {
-                    let should_continue = err.contains("HTTP 404")
-                        || err.contains("HTTP 405")
-                        || ((err.contains("HTTP 401") || err.contains("HTTP 403"))
-                            && provider == ANTHROPIC_PROVIDER
-                            && *strategy == HeaderStrategy::AnthropicKey);
-
-                    last_err = Some(format!("{url} -> {err}"));
-                    if should_continue {
-                        continue;
-                    }
-                    return Err(format!("Model list request failed: {url} -> {err}"));
-                }
-            }
+    match try_fetch_models_once(&client, provider, &url, api_key, strategy).await {
+        Ok(models) => Ok(FetchModelsResponse {
+            provider: provider.to_string(),
+            url,
+            models,
+        }),
+        Err(err) => {
+            Err(format!("Model list request failed: {url} -> {err}"))
         }
     }
-
-    Err(format!(
-        "Model list request failed: all candidates failed: {}",
-        last_err.unwrap_or(first_url)
-    ))
 }
 
 #[cfg(test)]
@@ -545,51 +445,37 @@ mod tests {
 
     #[test]
     fn openai_candidates_use_v1_models() {
-        let candidates = build_openai_compatible_candidates("https://api.openai.com/v1").unwrap();
-        assert_eq!(candidates, vec!["https://api.openai.com/v1/models"]);
+        let url = build_openai_compatible_model_url("https://api.openai.com/v1").unwrap();
+        assert_eq!(url, "https://api.openai.com/v1/models");
     }
 
     #[test]
     fn openai_candidates_from_full_chat_url() {
-        let candidates =
-            build_openai_compatible_candidates("https://gateway.example.com/v1/chat/completions")
+        let url =
+            build_openai_compatible_model_url("https://gateway.example.com/v1/chat/completions")
                 .unwrap();
-        assert_eq!(candidates, vec!["https://gateway.example.com/v1/models"]);
-    }
-
-    #[test]
-    fn anthropic_compat_suffix_candidates_match_cc_switch() {
-        let candidates =
-            build_openai_compatible_candidates("https://api.deepseek.com/anthropic").unwrap();
-        assert_eq!(
-            candidates,
-            vec![
-                "https://api.deepseek.com/anthropic/v1/models",
-                "https://api.deepseek.com/v1/models",
-                "https://api.deepseek.com/models",
-            ]
-        );
+        assert_eq!(url, "https://gateway.example.com/v1/models");
     }
 
     #[test]
     fn gemini_candidates_default_to_v1beta_models() {
-        let candidates =
-            build_gemini_candidates("https://generativelanguage.googleapis.com").unwrap();
+        let url =
+            build_gemini_model_url("https://generativelanguage.googleapis.com").unwrap();
         assert_eq!(
-            candidates,
-            vec!["https://generativelanguage.googleapis.com/v1beta/models"]
+            url,
+            "https://generativelanguage.googleapis.com/v1beta/models"
         );
     }
 
     #[test]
     fn gemini_candidates_from_full_generate_url() {
-        let candidates = build_gemini_candidates(
+        let url = build_gemini_model_url(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
         )
         .unwrap();
         assert_eq!(
-            candidates,
-            vec!["https://generativelanguage.googleapis.com/v1beta/models"]
+            url,
+            "https://generativelanguage.googleapis.com/v1beta/models"
         );
     }
 
@@ -632,21 +518,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn xiaomi_token_plan_rejects_sk_key_shape() {
-        let err = validate_known_provider_key_shape(
-            "https://token-plan-cn.xiaomimimo.com/v1",
-            "sk-example",
-        )
-        .unwrap_err();
-        assert!(err.contains("tp- key"));
-    }
-
-    #[test]
-    fn xiaomi_standard_api_rejects_tp_key_shape() {
-        let err =
-            validate_known_provider_key_shape("https://api.xiaomimimo.com/v1", "tp-example")
-                .unwrap_err();
-        assert!(err.contains("sk- key"));
-    }
 }

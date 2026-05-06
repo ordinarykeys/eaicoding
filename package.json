@@ -8,6 +8,9 @@
     "build": "tsc -b && vite build",
     "build:jingyi-docs": "node scripts/build-jingyi-docs.mjs",
     "build:jingyi-vector": "node scripts/build-jingyi-vector-index.mjs",
+    "test:agent-choice": "node scripts/test-agent-choice.mjs",
+    "test:agent-epl": "node scripts/test-epl-diagnostics.mjs",
+    "test:agent-retrieval": "node scripts/test-agent-retrieval.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "package:portable": "node scripts/package-portable.mjs"
