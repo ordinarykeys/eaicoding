@@ -7,7 +7,6 @@ import {
   useCallback,
   useMemo,
 } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import {
   ArrowElbowDownLeft,
   CaretDown,
@@ -15,19 +14,15 @@ import {
   Check,
   Code,
   CopySimple,
-  DeviceMobile,
   DownloadSimple,
   File,
   FolderOpen,
   GearSix,
-  LinkSimple,
   Plus,
-  Power,
   SidebarSimple,
   Square,
   X,
 } from "@phosphor-icons/react";
-import QRCode from "qrcode";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -44,34 +39,19 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { MarkdownView } from "@/components/markdown-view";
 import { CodeBlock } from "@/components/code-block";
-import { EplRenderer, renderEplToHtml } from "@/components/epl-renderer";
+import { EplRenderer } from "@/components/epl-renderer";
 import { useChatStore, useActiveSession } from "@/stores/chat";
 import { useSettingsStore } from "@/stores/settings";
 import { startAgentRun } from "@/services/agent/runner";
-import {
-  getMobileBridgeState,
-  pollMobileActions,
-  publishMobileSnapshot,
-  startMobileBridge,
-  stopMobileBridge,
-  type MobileAction,
-  type MobileBridgeInfo,
-  type MobileSnapshot,
-} from "@/services/mobile-bridge";
 import { DesktopPet, emitPet } from "@/components/desktop-pet";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { copyFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { useTranslation } from "react-i18next";
 import { deriveSessionTitle, getSessionDisplayTitle } from "@/lib/session-title";
+import { useVirtualWindow } from "@/hooks/use-virtual-window";
 import type {
   AgentStep,
   AgentTrace,
@@ -96,9 +76,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
   const { t } = useTranslation();
   const session = useActiveSession();
   const {
-    sessions,
     createSession,
-    setActiveSession,
     appendMessage,
     updateMessage,
     activeSessionId,
@@ -116,9 +94,6 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | null>(null);
   const [previewVisible, setPreviewVisible] = useState(true);
   const [previewWidth, setPreviewWidth] = useState(520);
-  const [mobileBridge, setMobileBridge] = useState<MobileBridgeInfo | null>(null);
-  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
-  const [mobileQrDataUrl, setMobileQrDataUrl] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<(() => void) | null>(null);
@@ -127,8 +102,6 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
   const sendingRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const isStreamingRef = useRef(isStreaming);
-  const pendingMobileActionsRef = useRef<MobileAction[]>([]);
-  const processingMobileActionRef = useRef(false);
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId);
   const sessionTitle = session ? getSessionDisplayTitle(session) : "EAiCoding";
   const composerModels = useMemo(() => {
@@ -147,6 +120,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
     () => session?.messages.filter((m) => m.role !== "tool") ?? [],
     [session?.messages],
   );
+  const virtualMessages = useVirtualWindow(visibleMessages, 140);
   const lastAssistantMessageIndex = useMemo(() => {
     for (let index = visibleMessages.length - 1; index >= 0; index -= 1) {
       if (visibleMessages[index].role === "assistant") return index;
@@ -174,67 +148,6 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
       previewItems[0]
     );
   }, [previewItems, selectedPreviewId]);
-  const mobileSnapshot = useMemo<MobileSnapshot>(() => {
-    const activeMobileSession = activeSessionId
-      ? sessions.find((item) => item.id === activeSessionId) ?? null
-      : null;
-    const messages = (activeMobileSession?.messages ?? [])
-      .filter((message) => message.role === "user" || message.role === "assistant")
-      .slice(-80)
-      .map((message) => {
-        const content = limitMobileText(
-          message.role === "assistant"
-            ? sanitizeProtocolText(message.content)
-            : message.content,
-          8000,
-        );
-        return {
-          id: message.id,
-          role: message.role,
-          content,
-          html: message.role === "assistant" ? renderMobileMessageHtml(content) : undefined,
-          timestamp: message.timestamp,
-          isStreaming: message.isStreaming,
-        };
-      });
-    const steps = (latestAssistantTrace?.steps ?? []).map((step) => ({
-      index: step.index,
-      label: mobileStepLabel(step),
-      detail: mobileStepDetail(step),
-    }));
-
-    return {
-      activeSessionId,
-      sessions: sessions.slice(0, 40).map((item) => ({
-        id: item.id,
-        title: getSessionDisplayTitle(item),
-        updatedAt: item.updatedAt,
-        lastMessagePreview: limitMobileText(
-          item.messages
-            .filter((message) => message.role === "user" || message.role === "assistant")
-            .at(-1)?.content ?? "",
-          140,
-        ),
-      })),
-      messages,
-      previewItems: previewItems.slice(0, 8).map((item) => ({
-        id: item.id,
-        title: item.title,
-        code: limitMobileText(item.code, 120_000),
-        html: renderEplToHtml(item.code, {
-          theme: 1,
-          showLineNumbers: false,
-          className: "mobile-epl-renderer",
-        }),
-        sourceLabel: item.sourceLabel,
-        stepIndex: item.stepIndex,
-      })),
-      steps,
-      statusLine,
-      isStreaming,
-      updatedAt: Date.now(),
-    };
-  }, [activeSessionId, isStreaming, latestAssistantTrace?.steps, previewItems, sessions, statusLine]);
 
   useEffect(() => {
     isStreamingRef.current = isStreaming;
@@ -334,13 +247,11 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
   const runAgentMessage = useCallback(async (options: {
     text: string;
     files?: string[];
-    source?: "desktop" | "mobile";
   }) => {
     const text = options.text.trim();
     const files = options.files ?? [];
     if (!text && files.length === 0) return;
     if (isStreamingRef.current || sendingRef.current) {
-      if (options.source === "mobile") toast.info("桌面端正在处理上一条消息");
       return;
     }
     sendingRef.current = true;
@@ -366,7 +277,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
       const fileLines = files.map((fp) => {
         const ext = fp.split(".").pop()?.toLowerCase() ?? "";
         if (ext === "e") return `- ${fp} （.e 二进制源程序）`;
-        if (ext === "ec") return `- ${fp} （.ec 模块，被主程序引用的依赖库）`;
+        if (ext === "ec") return `- ${fp} （.ec 模块文件，可用 parse_efile 读取公开接口）`;
         if (ext === "epl") return `- ${fp} （.epl 文本源码）`;
         return `- ${fp}`;
       }).join("\n");
@@ -508,7 +419,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
     if (!text && files.length === 0) return;
     setInput("");
     setAttachedFiles([]);
-    await runAgentMessage({ text, files, source: "desktop" });
+    await runAgentMessage({ text, files });
   }, [input, attachedFiles, runAgentMessage]);
 
   const handleAgentChoice = useCallback(async (choice: string, request: AgentUserChoiceRequest) => {
@@ -518,166 +429,8 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
       question ? `对应问题：${question}` : "",
       "请按这个选择继续完成上一轮任务。",
     ].filter(Boolean).join("\n");
-    await runAgentMessage({ text, files: [], source: "desktop" });
+    await runAgentMessage({ text, files: [] });
   }, [runAgentMessage]);
-
-  const handleStartMobileBridge = useCallback(async () => {
-    try {
-      const info = await startMobileBridge();
-      setMobileBridge(info);
-      setMobilePanelOpen(true);
-      toast.success("手机模式已开启");
-    } catch (err) {
-      toast.error(`开启手机模式失败：${err instanceof Error ? err.message : String(err)}`);
-    }
-  }, []);
-
-  const handleStopMobileBridge = useCallback(async () => {
-    try {
-      const info = await stopMobileBridge();
-      setMobileBridge(info);
-      setMobileQrDataUrl(null);
-      setMobilePanelOpen(false);
-      toast.info("手机模式已关闭");
-    } catch (err) {
-      toast.error(`关闭手机模式失败：${err instanceof Error ? err.message : String(err)}`);
-    }
-  }, []);
-
-  const handleToggleMobileBridge = useCallback(async () => {
-    if (mobileBridge?.running) {
-      setMobilePanelOpen((open) => !open);
-      return;
-    }
-    await handleStartMobileBridge();
-  }, [handleStartMobileBridge, mobileBridge?.running]);
-
-  const handleCopyMobileLink = useCallback(async () => {
-    const url = mobileBridge?.url || mobileBridge?.localUrl;
-    if (!url) return;
-    try {
-      await navigator.clipboard.writeText(url);
-      toast.success("手机链接已复制");
-    } catch (err) {
-      toast.error(`复制失败：${err instanceof Error ? err.message : String(err)}`);
-    }
-  }, [mobileBridge?.localUrl, mobileBridge?.url]);
-
-  const processMobileAction = useCallback(async (action: MobileAction) => {
-    if (action.type === "set_active_session") {
-      if (action.sessionId) {
-        setActiveSession(action.sessionId);
-      }
-      return;
-    }
-
-    if (action.type === "new_session") {
-      createSession();
-      return;
-    }
-
-    if (action.type === "send_message" || action.type === "quick_action") {
-      const text = (action.content ?? action.prompt ?? "").trim();
-      if (!text) return;
-      await runAgentMessage({ text, source: "mobile" });
-    }
-  }, [createSession, runAgentMessage, setActiveSession]);
-
-  const drainMobileActions = useCallback(async () => {
-    if (processingMobileActionRef.current || isStreamingRef.current) return;
-    const action = pendingMobileActionsRef.current.shift();
-    if (!action) return;
-
-    processingMobileActionRef.current = true;
-    try {
-      await processMobileAction(action);
-    } finally {
-      processingMobileActionRef.current = false;
-      if (pendingMobileActionsRef.current.length > 0) {
-        window.setTimeout(() => {
-          void drainMobileActions();
-        }, 200);
-      }
-    }
-  }, [processMobileAction]);
-
-  useEffect(() => {
-    let alive = true;
-    getMobileBridgeState()
-      .then((info) => {
-        if (alive) setMobileBridge(info);
-      })
-      .catch(() => {
-        if (alive) setMobileBridge(null);
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    const url = mobileBridge?.url || mobileBridge?.localUrl;
-    if (!mobileBridge?.running || !url) {
-      setMobileQrDataUrl(null);
-      return;
-    }
-
-    let alive = true;
-    QRCode.toDataURL(url, {
-      margin: 1,
-      width: 192,
-      color: {
-        dark: "#0f172a",
-        light: "#ffffff",
-      },
-    })
-      .then((dataUrl) => {
-        if (alive) setMobileQrDataUrl(dataUrl);
-      })
-      .catch((err) => {
-        if (alive) {
-          setMobileQrDataUrl(null);
-          toast.error(`二维码生成失败：${err instanceof Error ? err.message : String(err)}`);
-        }
-      });
-
-    return () => {
-      alive = false;
-    };
-  }, [mobileBridge?.localUrl, mobileBridge?.running, mobileBridge?.url]);
-
-  useEffect(() => {
-    if (!mobileBridge?.running) return;
-    const timeout = window.setTimeout(() => {
-      publishMobileSnapshot(mobileSnapshot).catch(() => {
-        // 手机页会在下一轮轮询恢复，不打扰桌面端主流程。
-      });
-    }, 120);
-    return () => window.clearTimeout(timeout);
-  }, [mobileBridge?.running, mobileSnapshot]);
-
-  useEffect(() => {
-    if (!mobileBridge?.running) return;
-
-    let alive = true;
-    const tick = async () => {
-      try {
-        const actions = await pollMobileActions();
-        if (!alive || actions.length === 0) return;
-        pendingMobileActionsRef.current.push(...actions);
-        void drainMobileActions();
-      } catch {
-        // 手机端临时断开时不影响桌面 agent。
-      }
-    };
-
-    void tick();
-    const interval = window.setInterval(tick, 900);
-    return () => {
-      alive = false;
-      window.clearInterval(interval);
-    };
-  }, [drainMobileActions, mobileBridge?.running]);
 
   const handleStop = useCallback(() => {
     abortRef.current?.();
@@ -763,10 +516,16 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
                 </div>
               )}
 
-              {visibleMessages.map((msg, index) => (
+              {virtualMessages.truncated && (
+                <div className="mx-auto max-w-sm rounded-md border border-border/60 bg-muted/35 px-3 py-1.5 text-center text-xs text-muted-foreground">
+                  已省略更早的 {virtualMessages.offset} 条消息
+                </div>
+              )}
+
+              {virtualMessages.items.map((msg, index) => (
                 <Fragment key={msg.id}>
                   <MessageBubble message={msg} onChoice={handleAgentChoice} />
-                  {index === lastAssistantMessageIndex && (
+                  {virtualMessages.offset + index === lastAssistantMessageIndex && (
                     <div className="message-enter chat-pet-row flex justify-start">
                       <DesktopPet placement="chat" />
                     </div>
@@ -851,24 +610,6 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
                     </TooltipTrigger>
                     <TooltipContent>{t("chat.attachFile")}</TooltipContent>
                   </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        className={cn(
-                          "code-composer-plus",
-                          mobileBridge?.running && "is-mobile-running",
-                        )}
-                        onClick={handleToggleMobileBridge}
-                        aria-label="手机模式"
-                      >
-                        <DeviceMobile className="h-4 w-4" weight="regular" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {mobileBridge?.running ? "显示手机二维码" : "开启手机模式"}
-                    </TooltipContent>
-                  </Tooltip>
                 </div>
                 <div className="flex items-center gap-2">
                   {activeProfile && composerModels.length > 0 ? (
@@ -901,60 +642,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
                   )}
                   <span className="code-composer-status-dot" />
                 </div>
-                </div>
-              <Dialog
-                open={Boolean(mobileBridge?.running && mobilePanelOpen)}
-                onOpenChange={(open) => {
-                  if (!open) setMobilePanelOpen(false);
-                  else if (mobileBridge?.running) setMobilePanelOpen(true);
-                }}
-              >
-                <DialogContent className="mobile-bridge-dialog">
-                  <DialogHeader>
-                    <DialogTitle>手机扫码继续写代码</DialogTitle>
-                  </DialogHeader>
-                  <div className="mobile-bridge-panel">
-                    <div className="mobile-bridge-qr-wrap">
-                      {mobileQrDataUrl ? (
-                        <img
-                          className="mobile-bridge-qr"
-                          src={mobileQrDataUrl}
-                          alt="手机模式二维码"
-                        />
-                      ) : (
-                        <div className="mobile-bridge-qr-placeholder">
-                          <GearSix className="h-4 w-4 animate-spin" />
-                        </div>
-                      )}
-                    </div>
-                    <div className="mobile-bridge-copy">
-                      <button
-                        type="button"
-                        className="mobile-bridge-link"
-                        onClick={handleCopyMobileLink}
-                      >
-                        <LinkSimple className="h-3.5 w-3.5" />
-                        <span>{mobileBridge?.url || mobileBridge?.localUrl}</span>
-                      </button>
-                    </div>
-                    <div className="mobile-bridge-actions">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            type="button"
-                            className="mobile-bridge-icon-btn"
-                            onClick={handleStopMobileBridge}
-                            aria-label="关闭手机模式"
-                          >
-                            <Power className="h-4 w-4" />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>关闭手机模式</TooltipContent>
-                      </Tooltip>
-                    </div>
-                  </div>
-                </DialogContent>
-              </Dialog>
+              </div>
             </div>
           </div>
         </div>
@@ -999,46 +687,6 @@ const TOOL_LABELS: Record<string, string> = {
 
 function toolLabel(name: string): string {
   return TOOL_LABELS[name] ?? name;
-}
-
-function limitMobileText(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  const head = text.slice(0, Math.floor(maxChars * 0.72));
-  const tail = text.slice(-Math.floor(maxChars * 0.18));
-  return `${head}\n\n... 已省略 ${text.length - maxChars} 字 ...\n\n${tail}`;
-}
-
-function mobileStepLabel(step: AgentStep): string {
-  if (step.toolCalls.length > 0) {
-    return step.toolCalls.map((call) => toolLabel(call.name)).join("、");
-  }
-  if (step.finishReason === "answer") return "生成回复";
-  if (step.finishReason === "needs_input") return "等待选择";
-  if (step.finishReason === "error") return "错误";
-  if (step.finishReason === "format_retry") return "继续推理";
-  return "模型推理";
-}
-
-function mobileStepDetail(step: AgentStep): string {
-  const toolDetails = step.toolCalls
-    .map((call, index) => {
-      const result = step.toolResults[index];
-      const status = result ? (result.ok ? "成功" : "失败") : "执行中";
-      const detail = result?.error
-        ? `：${result.error}`
-        : result
-          ? ` · ${formatMs(result.durationMs)}`
-          : "";
-      return `${toolLabel(call.name)} ${status}${detail}`;
-    })
-    .join("\n");
-  if (toolDetails) return toolDetails;
-  if (step.finishReason === "format_retry") {
-    return "候选答案未通过内部检查，已继续修正";
-  }
-  const thought = parseThought(step.assistantText);
-  if (thought) return thought;
-  return sanitizeProtocolText(step.assistantText).slice(0, 320);
 }
 
 // ---------------------------------------------------------------------------
@@ -2035,15 +1683,6 @@ function isLikelyEplContent(content: string, path = ""): boolean {
     return true;
   }
   return /^\.版本|^\.支持库|^\.程序集|^\.子程序|^\.全局变量/m.test(normalized);
-}
-
-function renderMobileMessageHtml(content: string): string {
-  const html = renderToStaticMarkup(
-    <div className="mobile-markdown">
-      <MarkdownView content={content} />
-    </div>,
-  );
-  return html;
 }
 
 function extractEplPreviewItems(trace: AgentTrace | null): EplPreviewData[] {

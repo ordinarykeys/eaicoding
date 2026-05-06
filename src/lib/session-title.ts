@@ -3,6 +3,7 @@ import type { ChatMessage, ChatSession } from "@/types/llm";
 const DEFAULT_TITLES = new Set(["新会话", "新聊天", "手机会话"]);
 const UPLOAD_PREFIX = "用户上传了以下本地文件";
 const SUPPLEMENT_MARKER = "用户补充说明：";
+const MAX_SESSION_TITLE_CHARS = 80;
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -16,10 +17,43 @@ function stripTitleNoise(value: string): string {
   return title;
 }
 
-function truncateTitle(value: string, max = 30): string {
-  const normalized = normalizeWhitespace(stripTitleNoise(value));
-  if (normalized.length <= max) return normalized;
-  return `${normalized.slice(0, max - 1)}…`;
+function simplifyTitle(value: string): string {
+  let title = normalizeWhitespace(stripTitleNoise(value))
+    .replace(/[`"'“”‘’]/g, "")
+    .replace(/^[#>\-*]+\s*/, "")
+    .replace(/[。.!！?？；;，,、：:]+$/g, "");
+
+  const prefixPatterns = [
+    /^(?:帮我|帮忙|麻烦你?|请你?|给我|我想|我要|能不能|可以)\s*/i,
+    /^(?:写一个|写个|做一个|做个|弄一个|弄个|生成一个|生成|看一下|看看|查看一下|查看)\s*/i,
+    /^(?:一个|一份|一下)\s*/i,
+  ];
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const pattern of prefixPatterns) {
+      const next = title.replace(pattern, "").trim();
+      if (next !== title) {
+        title = next;
+        changed = true;
+      }
+    }
+  }
+
+  title = title
+    .replace(/(?:案例|案列|例子|示例)$/i, "")
+    .replace(/[。.!！?？；;，,、：:]+$/g, "")
+    .trim();
+
+  return title;
+}
+
+function normalizeTitleCandidate(value: string, max = MAX_SESSION_TITLE_CHARS): string {
+  const normalized = simplifyTitle(value);
+  const chars = Array.from(normalized);
+  if (chars.length <= max) return normalized;
+  return chars.slice(0, max).join("");
 }
 
 function basename(path: string): string {
@@ -74,7 +108,7 @@ function extractUserIntent(input: string): string | null {
     const title = line.trim();
     if (!title || title.startsWith("-")) continue;
     if (/^[A-Za-z]:[\\/]/.test(title)) continue;
-    return truncateTitle(title);
+    return normalizeTitleCandidate(title);
   }
 
   return null;
@@ -98,12 +132,12 @@ export function deriveSessionTitle(input: string, fallback = "新会话"): strin
 
   const filenames = extractUploadedFilenames(input);
   const primarySources = filenames.filter((name) => name.toLowerCase().endsWith(".e"));
-  if (primarySources.length === 1) return truncateTitle(primarySources[0]);
-  if (primarySources.length > 1) return truncateTitle(primarySources.slice(0, 2).join("、"));
-  if (filenames.length === 1) return truncateTitle(filenames[0]);
-  if (filenames.length > 1) return truncateTitle(filenames.slice(0, 2).join("、"));
+  if (primarySources.length === 1) return normalizeTitleCandidate(primarySources[0]);
+  if (primarySources.length > 1) return normalizeTitleCandidate(primarySources.slice(0, 2).join("、"));
+  if (filenames.length === 1) return normalizeTitleCandidate(filenames[0]);
+  if (filenames.length > 1) return normalizeTitleCandidate(filenames.slice(0, 2).join("、"));
 
-  const cleanFallback = truncateTitle(fallback);
+  const cleanFallback = normalizeTitleCandidate(fallback);
   return cleanFallback || "新会话";
 }
 
@@ -113,7 +147,7 @@ export function shouldReplaceSessionTitle(title: string): boolean {
 
 export function getSessionDisplayTitle(session: Pick<ChatSession, "title" | "messages">): string {
   if (!shouldReplaceSessionTitle(session.title)) {
-    return truncateTitle(session.title);
+    return normalizeTitleCandidate(session.title);
   }
 
   const firstUserMessage = session.messages.find((message: ChatMessage) => message.role === "user");

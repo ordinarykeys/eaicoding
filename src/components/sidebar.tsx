@@ -109,7 +109,7 @@ export function Sidebar({ currentView, onNavigate, onClose, width, onResize, min
               <div
                 key={session.id}
                 className={cn(
-                  "group flex min-w-0 cursor-pointer items-center gap-2 overflow-hidden rounded-md px-3 py-1.5 text-[13px] transition-colors hover:bg-sidebar-accent",
+                  "group grid min-w-0 cursor-pointer grid-cols-[minmax(0,1fr)_24px] items-center gap-2 rounded-md px-3 py-1.5 text-[13px] transition-colors hover:bg-sidebar-accent",
                   activeSessionId === session.id && currentView === "chat"
                     ? "bg-sidebar-accent text-sidebar-accent-foreground"
                     : "text-sidebar-foreground/80",
@@ -126,7 +126,7 @@ export function Sidebar({ currentView, onNavigate, onClose, width, onResize, min
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-6 w-6 shrink-0 rounded-md text-muted-foreground opacity-0 hover:bg-transparent hover:text-destructive group-hover:opacity-100"
+                  className="h-6 w-6 rounded-md text-muted-foreground opacity-55 hover:bg-transparent hover:text-destructive group-hover:opacity-100"
                   onClick={(event) => {
                     event.stopPropagation();
                     deleteSession(session.id);

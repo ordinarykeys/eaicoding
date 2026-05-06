@@ -188,7 +188,7 @@ export class OpenAIChatCompletionsProvider extends BaseLLMProvider {
         console.warn("[eaicoding] Empty OpenAI chat completion response", summary);
         callbacks.onError(
           new Error(
-            `LLM 返回为空：当前协议为 OpenAI Chat Completions（/chat/completions），成功响应但未包含可见文本或工具调用。${summary}`,
+            `LLM 返回为空：当前协议为 OpenAI Chat Completions（/chat/completions），请求已使用 stream=true，但成功响应未包含可见文本或工具调用。${summary}`,
           ),
         );
         return;

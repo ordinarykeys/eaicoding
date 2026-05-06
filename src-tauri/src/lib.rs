@@ -2,10 +2,10 @@ mod crypto;
 mod eagent_tools;
 mod ecode_parser;
 mod easy_language_sdk;
+mod jingyi_search;
 mod llm_models;
 mod llm_proxy;
 mod local_files;
-mod mobile_bridge;
 mod window_effects;
 
 use crypto::{decrypt_secret, encrypt_secret};
@@ -15,20 +15,15 @@ use ecode_parser::{
     parse_efile, summarize_ecode_project_for_agent,
 };
 use easy_language_sdk::scan_easy_language_env;
+use jingyi_search::search_jingyi_module_rust;
 use llm_models::fetch_llm_models;
 use llm_proxy::{llm_proxy_request, llm_proxy_stream};
 use local_files::{read_text_file_for_agent, write_text_file};
-use mobile_bridge::{
-    get_mobile_bridge_state, poll_mobile_actions, publish_mobile_snapshot, start_mobile_bridge,
-    stop_mobile_bridge, MobileBridgeState,
-};
 use tauri::Manager;
 use window_effects::setup_window_effects;
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(MobileBridgeState::default())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -56,14 +51,10 @@ pub fn run() {
             decrypt_secret,
             detect_eagent_tools,
             scan_easy_language_env,
+            search_jingyi_module_rust,
             fetch_llm_models,
             llm_proxy_request,
             llm_proxy_stream,
-            start_mobile_bridge,
-            stop_mobile_bridge,
-            get_mobile_bridge_state,
-            poll_mobile_actions,
-            publish_mobile_snapshot,
             write_text_file,
             read_text_file_for_agent,
         ])

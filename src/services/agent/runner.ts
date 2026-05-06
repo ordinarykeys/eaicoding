@@ -20,6 +20,18 @@ import {
   makeAgentMemoryMessage,
   summarizeTraceForHistory,
 } from "@/services/agent/memory";
+import { saveAgentCheckpoint } from "@/services/agent/checkpoint";
+import {
+  selectAgentToolTransport,
+  type AgentToolTransport,
+} from "@/services/agent/runner-transport";
+import {
+  extractJsonObject,
+  extractProtocolStringValue,
+  parseAgentTurn,
+  tryParseJsonWithRepair,
+  type ParsedAgentTurn,
+} from "@/services/agent/runner-parser";
 import {
   answerContainsEplCode,
   findEplAnswerDiagnostics,
@@ -67,8 +79,6 @@ export interface AgentRunHandle {
   providerRef: { current: BaseLLMProvider | null };
 }
 
-type AgentToolTransport = "text-json" | "native-openai-tools";
-
 const LLM_STEP_TIMEOUT_MS = 180_000;
 const TOOL_TEXT_PROMPT_LIMIT = 6_000;
 const LLM_MAX_RETRIES = 5;
@@ -80,14 +90,6 @@ const ANSWER_SELF_CHECK_TIMEOUT_MS = 90_000;
 const ANSWER_SELF_CHECK_MAX_REVISIONS = 2;
 const ANSWER_SELF_CHECK_EXTRA_STEP_BUDGET = 6;
 const CHOICE_EVIDENCE_SEARCH_LIMIT = 12;
-
-function selectAgentToolTransport(_config: LLMConfig): AgentToolTransport {
-  // Vibe-coding providers are not equivalent even when they expose an
-  // OpenAI-compatible endpoint. Use the runner's text JSON ReAct protocol as
-  // the stable cross-provider tool transport; native tool calls can be enabled
-  // later from explicit model capability metadata instead of guessed fallbacks.
-  return "text-json";
-}
 
 // ---------------------------------------------------------------------------
 // System prompt
@@ -129,14 +131,15 @@ ${ENGLISH_LIKE_TOOL_BLOCK}
 - 控制结构必须使用真实易语言配对：如果/如果结束，如果真/如果真结束，判断开始/判断结束，判断循环首/判断循环尾，计次循环首/计次循环尾，变量循环首/变量循环尾，循环判断首/循环判断尾。
 - 不允许把控制结构的开始语句自行拼接成结束语句；结束语句必须来自真实配对表。
 - 不要连续复制同一条可执行语句来表示“多次执行”。需要执行固定次数时使用计次循环首/计次循环尾；需要并发多个任务时为每个线程准备不同参数或任务队列。
-- 示例代码中的精易模块命令名、参数和返回值必须以 search_jingyi_module 返回结果为准；没有查到签名时，不要凭记忆编造对象名或参数个数。
+- 示例代码中的模块命令名、参数和返回值必须有工具证据：用户上传的 .ec 以 parse_efile 结果为准；精易模块 API 以 search_jingyi_module 返回结果为准；没有证据时不要凭记忆编造对象名或参数个数。
 
 【强制工具使用规则 — 违反即为错误】
 - 用户消息中出现任何文件路径→先判断文件类型再选工具：
   - .e 源程序文件：必须先调 parse_efile 获取完整结构摘要和反编译源码。切勿对 .e 调 read_file（二进制格式，返回乱码）。
-  - .ec 模块文件：【重要】模块是被主程序引用的依赖库，通常包含数千个子程序，但主程序可能只用了其中几十个。
-    - 如果用户只上传了 .ec 没有 .e：调 parse_efile 查看模块概览。
-    - 如果用户同时上传了 .e 和 .ec：先解析 .e 主程序，从摘要中找到引用了哪些模块命令，再决定是否需要深入查看 .ec。通常不需要对 .ec 调 parse_efile，因为主程序的解析结果已经包含了它调用的模块命令名。
+  - .ec 模块文件：【重要】既可能是主程序依赖，也可能是用户要求你直接使用的自定义模块证据。
+    - 如果用户只上传了 .ec 没有 .e：调 parse_efile 查看模块公开接口，再基于解析结果回答或写示例。
+    - 如果用户明确说“用/使用/基于/调用/按这个模块/上传的模块/该 .ec”来实现功能或写案例：必须先对相关 .ec 调 parse_efile；解析到的类、公开子程序、参数和返回值是本轮答案的最高优先级证据。
+    - 如果用户同时上传了 .e 和 .ec 且任务是分析/优化主程序：先解析 .e 主程序，从摘要中找到引用了哪些模块命令；只有当主程序摘要不足、用户点名某个模块，或需要模块公开接口写代码时，再深入 parse_efile 对应 .ec。
     - 当后续需要编译 .e 项目时，不要尝试用 read_file 读取二进制 .ec；compile_efile 支持接收 module_paths，且会自动使用用户消息中的 .ec 路径把依赖模块放入编译环境。
   - 文本文件（.epl .txt .ini .json .csv 等）：先调 read_file 读取内容。
   - .dll 模块文件：read_file 后分析内容，或配合 parse_efile 处理对应 .ec 接口文件。
@@ -163,9 +166,14 @@ ${ENGLISH_LIKE_TOOL_BLOCK}
   - 若已有 ecode_dir / 导出的工程文件：先 save_text_file 修改 .e.txt，再优先调 build_ecode_project；必要时才拆成 generate_efile_from_ecode + compile_efile。
   - 若只有单文件源码字符串：先 generate_efile_from_code，成功后调 compile_efile。
   - 失败时根据 stderr 继续修复并重试（最多 ${"${maxSteps}"} 步）。
+- 修改已有文本文件时优先使用 apply_search_replace：
+  - 先用 read_file 读取目标文件完整内容，再构造唯一匹配的 SEARCH/REPLACE 补丁。
+  - SEARCH 必须包含足够上下文，只匹配一处；如果匹配不到或匹配多处，继续读取上下文后重试。
+  - 不要整文件覆盖，除非目标文件很小或用户明确要求重写。
 - 普通知识问答、参数解释、单个功能代码片段或示例案例：通常只需要调用一次必要的知识工具，然后直接输出 final_answer。不要因为回答里含有易语言代码就强行生成 .e、编译，或反复自检；只有用户明确要求生成文件、编译、测试、运行，或正在优化已有 .e 项目时，才进入生成/编译闭环。
 - 缺路径时用 pick_file / pick_save_path 让用户选。
 - 知识库只允许使用本地精易模块知识库；不要读取/解析易语言 IDE help 或其他支持库文档作为知识库。
+- 用户上传的 .e/.ec/.epl 文件不是“外部知识库”，而是用户提供的项目事实。用户要求使用上传模块时，不要用精易模块知识库替代它；如果需求同时包含上传模块负责的能力和其他辅助能力，例如“用多线程模块写 POST 案例”，应先用 parse_efile 确认上传模块的多线程/调度接口，再按需调用 search_jingyi_module 查询 POST/网页/编码/JSON 等辅助 API，最后组合成一个示例。
 - scan_easy_language_env 只用于检查编译链/本机依赖状态，不能作为回答知识来源。
 - 任务完成或无法继续时输出 final_answer。
 - 不允许在没有读取文件内容的情况下对文件内容做任何推断或假设。
@@ -178,6 +186,7 @@ ${JINGYI_MODULE_SUMMARY}
 
 使用说明：
 - 当你需要精易模块命令/类/全局变量的签名、参数、返回值或用法证据时，调用 search_jingyi_module。不要靠记忆猜参数；也不要把它当成固定关键词触发器，是否调用由当前问题和已知上下文决定。
+- 如果用户上传并点名使用非精易 .ec 模块，应优先 parse_efile 该模块；search_jingyi_module 只用于精易模块本身或辅助能力，不得覆盖用户指定模块的 API。
 - 调用方式：直接使用命令名或自然语言功能描述；不要凭记忆猜参数。
 - search_jingyi_module 可能返回 implementation_options / related_implementations。用户问“怎么实现某功能/写个案例/有哪些方式”时，先按 implementation_options 的 route_type 和 primary_options 识别实现路线，再比较多个可用实现的返回值、关键参数、对象调用链和适用场景；不要只因为 matches 第一条能用就只写一种。
 - route_type=function_family 表示同族函数方案，object_workflow 表示对象/类调用链方案，namespace_overview/candidate_pool 只是补充召回；生成代码优先用 primary_options 里的主入口，supporting_options 只作为设置请求头、构造参数、读取状态等辅助步骤。
@@ -187,307 +196,6 @@ ${JINGYI_MODULE_SUMMARY}
 - 如果用户没有提供精易模块 .ec 路径，先用 search_jingyi_module 完成代码方案；生成/编译阶段如果需要模块路径但缺失，再在 final_answer 中明确说明需要引用精易模块。
 - 不要因为需要精易模块就改用 COM 对象或其他支持库绕开，除非 search_jingyi_module 没有相关能力。
 `;
-
-// ---------------------------------------------------------------------------
-// JSON extraction — robust to models that wrap JSON in markdown / prose.
-// ---------------------------------------------------------------------------
-
-function extractJsonObject(text: string): string | null {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-
-  // Fast path: pure JSON
-  if (trimmed.startsWith("{") && trimmed.endsWith("}")) return trimmed;
-
-  // Look for fenced code block first.
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced) {
-    const inner = fenced[1].trim();
-    if (inner.startsWith("{")) return inner;
-  }
-
-  // Greedy bracket matcher: find first '{' then walk to its match.
-  const start = trimmed.indexOf("{");
-  if (start < 0) return null;
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  for (let i = start; i < trimmed.length; i++) {
-    const c = trimmed[i];
-    if (escape) { escape = false; continue; }
-    if (c === "\\") { escape = true; continue; }
-    if (c === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (c === "{") depth++;
-    else if (c === "}") {
-      depth--;
-      if (depth === 0) return trimmed.slice(start, i + 1);
-    }
-  }
-  return null;
-}
-
-function repairJsonStringEscapes(text: string): string {
-  let repaired = "";
-  let inString = false;
-  let escaped = false;
-
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i];
-
-    if (!inString) {
-      repaired += char;
-      if (char === '"') {
-        inString = true;
-        escaped = false;
-      }
-      continue;
-    }
-
-    if (escaped) {
-      repaired += char;
-      escaped = false;
-      continue;
-    }
-
-    if (char === "\\") {
-      const next = text[i + 1];
-      const isSimpleEscape =
-        next !== undefined && /["\\/bfnrt]/.test(next);
-      const isUnicodeEscape =
-        next === "u" && /^[0-9a-fA-F]{4}$/.test(text.slice(i + 2, i + 6));
-
-      if (isSimpleEscape || isUnicodeEscape) {
-        repaired += char;
-        escaped = true;
-      } else {
-        repaired += "\\\\";
-      }
-      continue;
-    }
-
-    if (char === '"') {
-      repaired += char;
-      inString = false;
-      continue;
-    }
-
-    if (char === "\n") {
-      repaired += "\\n";
-      continue;
-    }
-    if (char === "\r") {
-      repaired += "\\r";
-      continue;
-    }
-    if (char === "\t") {
-      repaired += "\\t";
-      continue;
-    }
-
-    if (char < " ") {
-      repaired += `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`;
-      continue;
-    }
-
-    repaired += char;
-  }
-
-  return repaired;
-}
-
-function tryParseJsonWithRepair(text: string): unknown | null {
-  try {
-    return JSON.parse(text);
-  } catch {
-    const repaired = repairJsonStringEscapes(text);
-    if (repaired === text) return null;
-    try {
-      return JSON.parse(repaired);
-    } catch {
-      return null;
-    }
-  }
-}
-
-interface ParsedAgentTurn {
-  thought?: string;
-  toolCalls?: ToolCall[];
-  finalAnswer?: string;
-  /** True when no JSON could be parsed; caller should treat the entire
-   *  assistant text as the final answer (graceful degradation). */
-  unstructured: boolean;
-}
-
-function parseXmlLikeToolCalls(rawText: string): ToolCall[] | null {
-  const toolCallBlocks = [...rawText.matchAll(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi)];
-  if (toolCallBlocks.length === 0) return null;
-
-  const toolCalls: ToolCall[] = [];
-  for (const blockMatch of toolCallBlocks) {
-    const block = blockMatch[1];
-    const functionMatch = block.match(/<function=([^>\s]+)>\s*([\s\S]*?)\s*<\/function>/i);
-    if (!functionMatch) continue;
-
-    const name = functionMatch[1]?.trim();
-    const body = functionMatch[2] ?? "";
-    if (!name) continue;
-
-    const args: Record<string, unknown> = {};
-    const parameterMatches = body.matchAll(
-      /<parameter=([^>\s]+)>\s*([\s\S]*?)\s*<\/parameter>/gi,
-    );
-    for (const parameterMatch of parameterMatches) {
-      const key = parameterMatch[1]?.trim();
-      const value = parameterMatch[2]?.trim() ?? "";
-      if (!key) continue;
-      args[key] = value;
-    }
-
-    toolCalls.push({
-      id: `tc_${nanoid(8)}`,
-      name,
-      arguments: args,
-      rawArguments: JSON.stringify(args),
-    });
-  }
-
-  return toolCalls.length > 0 ? toolCalls : null;
-}
-
-function parseAgentTurn(rawText: string): ParsedAgentTurn {
-  const json = extractJsonObject(rawText);
-  if (!json) {
-    const xmlLikeToolCalls = parseXmlLikeToolCalls(rawText);
-    if (xmlLikeToolCalls) {
-      return {
-        unstructured: false,
-        toolCalls: xmlLikeToolCalls,
-      };
-    }
-    const bestEffortAnswer = extractProtocolStringValue(rawText, ["final_answer", "answer"]);
-    if (bestEffortAnswer) {
-      return {
-        unstructured: false,
-        thought: extractProtocolStringValue(rawText, ["thought"]) ?? undefined,
-        finalAnswer: bestEffortAnswer,
-      };
-    }
-    return { unstructured: true, finalAnswer: rawText };
-  }
-
-  const parsed = tryParseJsonWithRepair(json);
-  if (parsed === null) {
-    const xmlLikeToolCalls = parseXmlLikeToolCalls(rawText);
-    if (xmlLikeToolCalls) {
-      return {
-        unstructured: false,
-        toolCalls: xmlLikeToolCalls,
-      };
-    }
-    const bestEffortAnswer = extractProtocolStringValue(rawText, ["final_answer", "answer"]);
-    if (bestEffortAnswer) {
-      return {
-        unstructured: false,
-        thought: extractProtocolStringValue(rawText, ["thought"]) ?? undefined,
-        finalAnswer: bestEffortAnswer,
-      };
-    }
-    return { unstructured: true, finalAnswer: rawText };
-  }
-  if (!parsed || typeof parsed !== "object") {
-    return { unstructured: true, finalAnswer: rawText };
-  }
-
-  const obj = parsed as Record<string, unknown>;
-  const thought = typeof obj.thought === "string" ? obj.thought : undefined;
-  const finalAnswer =
-    typeof obj.final_answer === "string"
-      ? obj.final_answer
-      : typeof obj.answer === "string"
-        ? obj.answer
-        : undefined;
-  const rawCalls = Array.isArray(obj.tool_calls) ? obj.tool_calls : [];
-
-  const toolCalls: ToolCall[] = [];
-  for (const entry of rawCalls) {
-    if (!entry || typeof entry !== "object") continue;
-    const e = entry as Record<string, unknown>;
-    const name = typeof e.name === "string" ? e.name : null;
-    if (!name) continue;
-    let args: Record<string, unknown> = {};
-    let raw: string | undefined;
-    if (e.arguments && typeof e.arguments === "object" && !Array.isArray(e.arguments)) {
-      args = e.arguments as Record<string, unknown>;
-      raw = JSON.stringify(args);
-    } else if (typeof e.arguments === "string") {
-      raw = e.arguments;
-      const parsedArgs = tryParseJsonWithRepair(e.arguments);
-      if (parsedArgs && typeof parsedArgs === "object" && !Array.isArray(parsedArgs)) {
-        args = parsedArgs as Record<string, unknown>;
-      } else {
-        args = { _raw: e.arguments };
-      }
-    }
-    toolCalls.push({
-      id: typeof e.id === "string" ? e.id : `tc_${nanoid(8)}`,
-      name,
-      arguments: args,
-      rawArguments: raw,
-    });
-  }
-
-  if (toolCalls.length === 0 && finalAnswer === undefined) {
-    return { unstructured: true, finalAnswer: rawText, thought };
-  }
-
-  return {
-    unstructured: false,
-    thought,
-    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-    finalAnswer,
-  };
-}
-
-function extractProtocolStringValue(text: string, keys: string[]): string | null {
-  for (const key of keys) {
-    const marker = `"${key}"`;
-    const keyIndex = text.lastIndexOf(marker);
-    if (keyIndex < 0) continue;
-    const colonIndex = text.indexOf(":", keyIndex + marker.length);
-    if (colonIndex < 0) continue;
-    const quoteStart = text.indexOf('"', colonIndex + 1);
-    if (quoteStart < 0) continue;
-
-    let value = "";
-    let escaped = false;
-    for (let index = quoteStart + 1; index < text.length; index += 1) {
-      const char = text[index];
-      if (escaped) {
-        if (char === "n") value += "\n";
-        else if (char === "r") value += "\r";
-        else if (char === "t") value += "\t";
-        else if (char === '"') value += '"';
-        else if (char === "\\") value += "\\";
-        else if (char === "/") value += "/";
-        else value += char;
-        escaped = false;
-        continue;
-      }
-      if (char === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (char === '"') {
-        return value.trim() ? value : null;
-      }
-      value += char;
-    }
-    if (value.trim()) return value;
-  }
-
-  return null;
-}
 
 // ---------------------------------------------------------------------------
 // Message-list construction for the LLM
@@ -606,6 +314,7 @@ function answerMentionsJingyiEvidenceBoundApi(answer: string): boolean {
 
 function shouldRequireJingyiEvidence(userInput: string, answer: string, trace: AgentTrace): boolean {
   if (hasJingyiKnowledgeEvidence(trace)) return false;
+  if (hasUploadedEcModuleEvidence(userInput, trace)) return false;
   const isEasyLanguageTask = /精易模块|易语言|```epl|```易语言|\.e\b|\.ec\b/i.test(`${userInput}\n${answer}`);
   return isEasyLanguageTask && answerMentionsJingyiEvidenceBoundApi(answer);
 }
@@ -863,10 +572,72 @@ function userInputLooksLikeLocalFileTask(userInput: string): boolean {
   );
 }
 
+const LOCAL_FILE_PATH_RE =
+  /[A-Za-z]:[\\/][^\r\n<>|"]+?\.(e|ec|epl|txt|ini|json|csv|log|md)(?=$|[\s,，;；(（)）\]])/gi;
+
+export function extractLocalFilePathsByExtension(
+  userInput: string,
+  extensions: string[],
+): string[] {
+  const wanted = new Set(
+    extensions.map((ext) => ext.replace(/^\./, "").toLowerCase()).filter(Boolean),
+  );
+  const paths: string[] = [];
+  for (const match of userInput.matchAll(LOCAL_FILE_PATH_RE)) {
+    const path = match[0]?.trim();
+    const ext = match[1]?.toLowerCase();
+    if (!path || !ext || !wanted.has(ext)) continue;
+    if (paths.some((item) => normalizeToolPath(item) === normalizeToolPath(path))) continue;
+    paths.push(path);
+  }
+  return paths;
+}
+
+function userExplicitlyRequestsUploadedModule(userInput: string): boolean {
+  const compact = userInput.replace(/\s+/g, " ").trim();
+  if (!compact) return false;
+  return (
+    /(用|使用|基于|调用|利用|按|按照)[^。！？!?]{0,40}(上传的|这个|该|本地|自定义|模块|\.ec)/i.test(compact) ||
+    /(上传的|这个|该|本地|自定义)[^。！？!?]{0,24}(模块|\.ec)[^。！？!?]{0,40}(写|实现|生成|调用|使用|做)/i.test(compact) ||
+    /(模块|\.ec)[^。！？!?]{0,30}(写|实现|生成|做)[^。！？!?]{0,30}(案例|案列|代码|功能)/i.test(compact)
+  );
+}
+
+export function getUploadedEcModuleParseTargets(userInput: string): string[] {
+  const ecPaths = extractLocalFilePathsByExtension(userInput, ["ec"]);
+  if (ecPaths.length === 0) return [];
+  const mainEPaths = extractLocalFilePathsByExtension(userInput, ["e"]);
+  const onlyUploadedEcModules = mainEPaths.length === 0;
+  if (!onlyUploadedEcModules && !userExplicitlyRequestsUploadedModule(userInput)) return [];
+  return ecPaths.slice(0, 4);
+}
+
+function getRecentUploadedEcModuleParseTargets(userInput: string, history: ChatMessage[]): string[] {
+  const currentTargets = getUploadedEcModuleParseTargets(userInput);
+  if (currentTargets.length > 0) return currentTargets;
+  if (!userExplicitlyRequestsUploadedModule(userInput)) return [];
+
+  const targets: string[] = [];
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const message = history[index];
+    if (message.role !== "user") continue;
+    const ecPaths = extractLocalFilePathsByExtension(message.content, ["ec"]);
+    const mainEPaths = extractLocalFilePathsByExtension(message.content, ["e"]);
+    if (ecPaths.length === 0 || mainEPaths.length > 0) continue;
+    for (const path of ecPaths) {
+      if (targets.some((item) => normalizeToolPath(item) === normalizeToolPath(path))) continue;
+      targets.push(path);
+      if (targets.length >= 4) return targets;
+    }
+  }
+  return targets;
+}
+
 function shouldPrimeJingyiKnowledge(userInput: string, history: ChatMessage[]): boolean {
   const text = userInput.trim();
   if (text.length < 2) return false;
   if (getLatestPendingUserChoiceContext(history)) return false;
+  if (getRecentUploadedEcModuleParseTargets(text, history).length > 0) return false;
   if (userInputLooksLikeLocalFileTask(text)) return false;
   return true;
 }
@@ -876,6 +647,16 @@ function makeJingyiSearchToolCall(query: string, limit = CHOICE_EVIDENCE_SEARCH_
   return {
     id: `auto_jingyi_${nanoid(8)}`,
     name: "search_jingyi_module",
+    arguments: args,
+    rawArguments: JSON.stringify(args),
+  };
+}
+
+function makeParseEFileToolCall(targetPath: string): ToolCall {
+  const args = { target_path: targetPath };
+  return {
+    id: `auto_parse_${nanoid(8)}`,
+    name: "parse_efile",
     arguments: args,
     rawArguments: JSON.stringify(args),
   };
@@ -981,6 +762,7 @@ function finishWithPendingUserChoice(
   trace.finalAnswer = formatPendingUserChoice(request);
   onStatus?.("等待用户选择");
   onStep?.(step, trace);
+  saveAgentCheckpoint(trace);
 }
 
 function hasSuccessfulToolCall(trace: AgentTrace, toolName: string): boolean {
@@ -1024,6 +806,39 @@ function hasSuccessfulParseOfExtension(trace: AgentTrace, extension: string): bo
         ? call.arguments.target_path
         : "";
       return targetPath.trim().toLowerCase().endsWith(normalizedExtension);
+    }),
+  );
+}
+
+function hasSuccessfulParseOfPath(trace: AgentTrace, targetPath: string): boolean {
+  const normalizedTarget = normalizeToolPath(targetPath);
+  return trace.steps.some((step) =>
+    step.toolCalls.some((call, index) => {
+      if (call.name !== "parse_efile" || !toolResultSucceeded(step.toolResults[index])) {
+        return false;
+      }
+      const callPath = typeof call.arguments.target_path === "string"
+        ? call.arguments.target_path
+        : "";
+      return normalizeToolPath(callPath) === normalizedTarget;
+    }),
+  );
+}
+
+function hasUploadedEcModuleEvidence(userInput: string, trace: AgentTrace): boolean {
+  const targets = getUploadedEcModuleParseTargets(userInput);
+  if (targets.length > 0) {
+    return targets.some((targetPath) => hasSuccessfulParseOfPath(trace, targetPath));
+  }
+  return userExplicitlyRequestsUploadedModule(userInput) && trace.steps.some((step) =>
+    step.toolCalls.some((call, index) => {
+      if (call.name !== "parse_efile" || !toolResultSucceeded(step.toolResults[index])) {
+        return false;
+      }
+      const targetPath = typeof call.arguments.target_path === "string"
+        ? call.arguments.target_path
+        : "";
+      return targetPath.trim().toLowerCase().endsWith(".ec");
     }),
   );
 }
@@ -1315,7 +1130,12 @@ function evaluateContinueAfterFinalAnswer(
 ): ContinueDecision {
   const state = makeAgentWorkflowState(trace, answer);
 
-  if (state.parsedEFile && !state.exported && !state.readAfterExport) {
+  if (
+    state.parsedEFile &&
+    !state.exported &&
+    !state.readAfterExport &&
+    /(?:^|\s)[A-Za-z]:[\\/][^\r\n<>|"]+?\.e(?=$|[\s,，;；)）\]])/i.test(trace.goal)
+  ) {
     return {
       shouldContinue: true,
       reminder: "你已经解析了 .e 文件，请继续调用 export_efile_to_ecode 导出文本工程。",
@@ -1455,7 +1275,6 @@ function shouldContinueAfterFinalAnswer(
 
 function traceHasProjectWorkflow(trace: AgentTrace): boolean {
   const projectTools = new Set([
-    "parse_efile",
     "export_efile_to_ecode",
     "summarize_ecode_project",
     "analyze_ecode_project",
@@ -1473,7 +1292,7 @@ function traceHasProjectWorkflow(trace: AgentTrace): boolean {
 }
 
 function shouldUseHeavyAnswerSelfCheck(trace: AgentTrace): boolean {
-  return traceHasProjectWorkflow(trace);
+  return traceHasProjectWorkflow(trace) || hasSuccessfulParseOfExtension(trace, ".ec");
 }
 
 function shouldUseReviewerAnswerSelfCheck(trace: AgentTrace, _answer: string): boolean {
@@ -1561,6 +1380,23 @@ function shouldRejectClarificationOnlyAnswer(answer: string, trace: AgentTrace):
   return answerLooksLikeClarificationOnly(answer);
 }
 
+export function answerDeflectsAfterUploadedModuleParse(
+  userInput: string,
+  answer: string,
+  trace: AgentTrace,
+): boolean {
+  if (!hasUploadedEcModuleEvidence(userInput, trace)) return false;
+  const missingEvidence =
+    /(缺少|没有|无法|不能|不敢|需要).*?(接口|命令名|签名|参数|证据)/.test(answer);
+  const asksUserToContinue =
+    /(先让用户|让用户|请选择|选定实现路线|不能硬编造|你接下来有.*选择|如果你希望我继续|我下一步可以|再上传.*模块)/.test(answer);
+  const leavesPlaceholderImplementation =
+    /(占位|模拟返回|当前先做演示|先做演示|你项目里实际可用|请替换成.*?(方法|函数|命令|模块|接口|实现)|替换成.*?(方法|函数|命令|模块|接口|实现)|下一步.*?补全)/.test(answer);
+  if (leavesPlaceholderImplementation) return true;
+  if (answerContainsEplCode(answer) && !missingEvidence && !asksUserToContinue) return false;
+  return missingEvidence || asksUserToContinue;
+}
+
 function makeAnswerSelfCheckRetryStep(
   stepIndex: number,
   assistantText: string,
@@ -1623,6 +1459,7 @@ function summarizeToolResultForSelfCheck(result: ToolResult | undefined): string
     const importantKeys = [
       "success",
       "summary",
+      "public_api_index",
       "matches",
       "implementation_options",
       "related_implementations",
@@ -1696,7 +1533,7 @@ function makeAnswerSelfCheckMessages(
 
 你的任务不是重写答案，而是判断它是否可以展示给用户。重点检查：
 1. 是否真正回答了用户当前问题，而不是答偏或只给空泛建议。
-2. 易语言/精易模块示例是否有工具证据支撑；如果涉及精易模块 API，应确认答案使用了已查询到的签名/实现，不要凭记忆编造。
+2. 易语言示例是否有工具证据支撑；如果用户上传并要求使用 .ec 模块，应确认答案基于 parse_efile 的模块接口；如果涉及精易模块 API，应确认答案使用了已查询到的签名/实现，不要凭记忆编造。
 3. 代码是否存在明显不可用结构、伪语法、缺少必要声明、控制结构不闭合、机械复制、参数没有变化等问题。
 4. 如果用户要求生成、编译、测试、修复，应确认工具闭环已经完成或失败原因已被真实说明。
 5. 如果只是普通案例问答，不要求强行生成 .e，但应保证示例自洽、语法可信、实现路线符合用户选择。
@@ -1774,6 +1611,16 @@ async function runAnswerSelfCheck(
       issues: ["候选答案只是让用户在正文里继续选择，没有交付代码或明确结论。"],
       followup:
         "本轮已经有精易模块工具证据；如果确实需要用户选择，必须通过 ask_user_choice/结构化 pendingUserChoice，而不是在正文里追问。当前没有 pendingUserChoice 时，请根据工具证据选一个默认推荐实现并直接给完整 final_answer。",
+    };
+  }
+
+  if (answerDeflectsAfterUploadedModuleParse(userInput, answer, trace)) {
+    return {
+      pass: false,
+      confidence: 0.12,
+      issues: ["已成功解析用户上传的 .ec 模块，但候选答案仍把缺少接口证据作为最终结论。"],
+      followup:
+        "请读取 parse_efile 工具结果中的 public_api_index，基于其中的公开接口签名继续写完整示例；不要再要求用户选择或声称缺少模块接口证据。只有 public_api_index 为空时，才说明无法确认接口。",
     };
   }
 
@@ -2009,6 +1856,51 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
     ];
 
     let firstModelStepIndex = 1;
+    const uploadedEcParseTargets = getRecentUploadedEcModuleParseTargets(
+      options.userInput,
+      options.history,
+    );
+    if (uploadedEcParseTargets.length > 0 && !aborted) {
+      const stepIndex = firstModelStepIndex;
+      const stepStart = Date.now();
+      const toolCalls = uploadedEcParseTargets.map(makeParseEFileToolCall);
+      const assistantText = "先解析用户上传的 .ec 模块公开接口，再基于该模块写代码。";
+      conversation.push({
+        id: `a_${nanoid(8)}`,
+        role: "assistant",
+        content: JSON.stringify({ thought: assistantText, tool_calls: toolCalls }),
+        timestamp: Date.now(),
+        toolCalls,
+      });
+
+      const toolResults: ToolResult[] = [];
+      for (const call of toolCalls) {
+        options.onStatus?.(`第 ${stepIndex}/${maxSteps} 步：解析上传模块`);
+        const result = await executeTool(call.name, call.id, call.arguments, {
+          sessionId: options.sessionId,
+          userInput: options.userInput,
+          allowDialog: options.allowDialog ?? true,
+          onStatus: options.onStatus,
+        });
+        toolResults.push(result);
+        conversation.push(toolResultToMessage(result));
+        trace.toolCallCount += 1;
+      }
+
+      const step: AgentStep = {
+        index: stepIndex,
+        assistantText,
+        toolCalls,
+        toolResults,
+        finishReason: "tool_call",
+        startedAt: stepStart,
+        endedAt: Date.now(),
+      };
+      trace.steps.push(step);
+      options.onStep?.(step, trace);
+      firstModelStepIndex = 2;
+    }
+
     const selectedImplementation = describeSelectedImplementationFromChoice(
       options.userInput,
       options.history,

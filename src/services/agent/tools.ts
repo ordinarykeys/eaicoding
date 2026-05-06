@@ -6,6 +6,11 @@ import { useSettingsStore } from "@/stores/settings";
 import { JINGYI_ITEMS, type JingyiSearchItem } from "@/services/agent/knowledge/jingyi-data";
 import { enrichJingyiItemsWithDocs } from "@/services/agent/knowledge/jingyi-docs";
 import { semanticSearchJingyiModule } from "@/services/agent/knowledge/jingyi-vector-search";
+import {
+  applySearchReplaceToText,
+  parseSearchReplaceBlock,
+  type SearchReplaceResult,
+} from "@/services/agent/search-replace";
 
 // ---------------------------------------------------------------------------
 // Backend response shapes (mirror Rust structs in src-tauri/src/*).
@@ -1777,6 +1782,423 @@ function trimOutput(text: string, maxChars = 4000): string {
   return `${head}\n... [truncated ${text.length - maxChars} chars] ...\n${tail}`;
 }
 
+interface ParsedEFilePublicParam {
+  name: string;
+  type: string;
+  array: boolean;
+  byRef: boolean;
+  optional: boolean;
+  description: string;
+}
+
+interface ParsedEFilePublicApi {
+  kind: "subprogram" | "dll" | "datatype";
+  name: string;
+  returnType: string;
+  public: boolean;
+  assembly: string;
+  assemblyDescription: string;
+  line: number;
+  description: string;
+  params: ParsedEFilePublicParam[];
+  signature: string;
+  score: number;
+}
+
+interface ParsedEFileAssemblyInfo {
+  name: string;
+  line: number;
+  description: string;
+  publicApiCount: number;
+  score: number;
+}
+
+function cleanParsedEFileCell(value: string | undefined): string {
+  return (value ?? "").trim();
+}
+
+function splitParsedEFileFields(line: string, prefix: string): string[] {
+  const body = line.slice(prefix.length).trim();
+  return body.split(",").map(cleanParsedEFileCell);
+}
+
+function formatParsedEFileSignature(item: ParsedEFilePublicApi): string {
+  const params = item.params
+    .map((param) => {
+      const flags = [
+        param.array ? "数组" : "",
+        param.byRef ? "参考" : "",
+        param.optional ? "可空" : "",
+      ].filter(Boolean);
+      return `${param.name || "参数"}${param.type ? `: ${param.type}` : ""}${flags.length ? ` ${flags.join("/")}` : ""}`;
+    })
+    .join(", ");
+  const ret = item.returnType ? ` -> ${item.returnType}` : "";
+  const owner = item.assembly ? `${item.assembly}.` : "";
+  return `${owner}${item.name}(${params})${ret}`;
+}
+
+function parsedEFileApiText(item: ParsedEFilePublicApi): string {
+  return [
+    item.name,
+    item.returnType,
+    item.assembly,
+    item.assemblyDescription,
+    item.description,
+    item.params.map((param) => `${param.name} ${param.type} ${param.description}`).join(" "),
+  ].join(" ");
+}
+
+function scoreParsedEFileText(text: string, queryTokens: string[], exactWeight: number, includesWeight: number): number {
+  const normalizedText = normalizeSearchText(text);
+  if (!normalizedText) return 0;
+  let score = 0;
+  for (const token of queryTokens) {
+    if (!token) continue;
+    const normalizedToken = normalizeSearchText(token);
+    if (!normalizedToken) continue;
+    if (normalizedText === normalizedToken) score += exactWeight;
+    else if (normalizedText.includes(normalizedToken)) score += includesWeight;
+  }
+  return score;
+}
+
+function inferParsedEFileApiStage(name: string): string {
+  const normalized = name.trim();
+  if (!normalized) return "other";
+  if (/^(创建|初始化|重新初始化|打开|连接|启动|载入|安装|注册)/.test(normalized)) return "setup";
+  if (/^(投递|提交|添加|加入|压入|发送|请求|执行|调用|写入|置_|置|设置|绑定|关联)/.test(normalized)) return "action";
+  if (/^(等待|同步|触发|唤醒|暂停|继续|加锁|解锁|进入|退出|锁定|解锁)/.test(normalized)) return "sync";
+  if (/^(取_|取|查询|读|读取|枚举|判断|是否|存在|数量)/.test(normalized)) return "inspect";
+  if (/^(销毁|关闭|释放|清空|删除|移除|停止|卸载|注销)/.test(normalized)) return "teardown";
+  return "other";
+}
+
+function isLikelyClassAssembly(info: ParsedEFileAssemblyInfo): boolean {
+  if (!info.name) return false;
+  const text = `${info.name} ${info.description}`;
+  return /类|对象|面向对象|class/i.test(text);
+}
+
+function parsedEFileAssemblyLeafName(name: string): string {
+  const parts = name
+    .replace(/[（(].*?[）)]/g, "")
+    .split(/[_\s.。·-]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const leaf = parts[parts.length - 1] || name;
+  return normalizeSearchText(leaf.replace(/ex$/i, ""));
+}
+
+function scoreParsedEFileAssemblyNameCloseness(name: string, queryTokens: string[]): number {
+  const leaf = parsedEFileAssemblyLeafName(name);
+  if (!leaf) return 0;
+  let score = 0;
+  for (const token of queryTokens) {
+    const normalizedToken = normalizeSearchText(token);
+    if (!normalizedToken || normalizedToken.length < 2) continue;
+    const index = leaf.indexOf(normalizedToken);
+    if (index < 0) continue;
+    const extraChars = Math.max(0, [...leaf].length - [...normalizedToken].length);
+    score += Math.max(4, 22 - extraChars * 3);
+    if (index === 0) score += 5;
+    if (index + normalizedToken.length === leaf.length) score += 4;
+  }
+  return Math.min(42, score);
+}
+
+function scoreParsedEFileAssembly(
+  info: ParsedEFileAssemblyInfo,
+  apis: ParsedEFilePublicApi[],
+  queryTokens: string[],
+): number {
+  const directScore =
+    scoreParsedEFileText(info.name, queryTokens, 42, 18) +
+    scoreParsedEFileText(info.description, queryTokens, 10, 3) +
+    scoreParsedEFileAssemblyNameCloseness(info.name, queryTokens);
+  const apiSignal = apis
+    .filter((api) => api.assembly === info.name)
+    .reduce((total, api) => {
+      const apiText = `${api.name} ${api.description} ${api.params.map((param) => `${param.name} ${param.type}`).join(" ")}`;
+      return total + Math.min(18, scoreParsedEFileText(apiText, queryTokens, 8, 3));
+    }, 0);
+  const classPrior = isLikelyClassAssembly(info) ? 14 : 4;
+  const methodCountPrior = Math.min(10, Math.log2(Math.max(1, info.publicApiCount)) * 3);
+  return directScore + Math.min(34, apiSignal) + classPrior + methodCountPrior;
+}
+
+function scoreParsedEFileApi(
+  item: ParsedEFilePublicApi,
+  queryTokens: string[],
+  assemblyScore: number,
+): number {
+  const nameScore = scoreParsedEFileText(item.name, queryTokens, 36, 14);
+  const assemblyNameScore = scoreParsedEFileText(item.assembly, queryTokens, 28, 12);
+  const assemblyDescriptionScore = scoreParsedEFileText(item.assemblyDescription, queryTokens, 18, 7);
+  const detailScore = scoreParsedEFileText(
+    [
+      item.returnType,
+      item.description,
+      item.params.map((param) => `${param.name} ${param.type} ${param.description}`).join(" "),
+    ].join(" "),
+    queryTokens,
+    12,
+    4,
+  );
+  let score = item.public ? 4 : 0;
+  score += nameScore + assemblyNameScore + assemblyDescriptionScore + detailScore;
+  if (item.assembly) score += 8;
+  score += Math.min(36, assemblyScore * 0.5);
+  const stage = inferParsedEFileApiStage(item.name);
+  if (stage !== "other") score += 6;
+  if (item.kind === "subprogram") score += 2;
+  return score;
+}
+
+function parsedEFileApiPayload(item: ParsedEFilePublicApi) {
+  return {
+    kind: item.kind,
+    name: item.name,
+    assembly: item.assembly,
+    stage: inferParsedEFileApiStage(item.name),
+    return_type: item.returnType,
+    line: item.line,
+    description: trimOutput(item.description, 260),
+    signature: trimOutput(item.signature, 620),
+    params: item.params.slice(0, 10).map((param) => ({
+      name: param.name,
+      type: param.type,
+      array: param.array,
+      by_ref: param.byRef,
+      optional: param.optional,
+      description: trimOutput(param.description, 220),
+    })),
+    score: Number(item.score.toFixed(2)),
+  };
+}
+
+function selectParsedEFileWorkflowApis(apis: ParsedEFilePublicApi[], limit = 10): ParsedEFilePublicApi[] {
+  const sorted = [...apis].sort((a, b) => b.score - a.score || a.line - b.line);
+  const selected: ParsedEFilePublicApi[] = [];
+  const stageCounts = new Map<string, number>();
+
+  const push = (api: ParsedEFilePublicApi) => {
+    if (selected.some((item) => item.name === api.name && item.assembly === api.assembly)) return;
+    selected.push(api);
+    const stage = inferParsedEFileApiStage(api.name);
+    stageCounts.set(stage, (stageCounts.get(stage) ?? 0) + 1);
+  };
+
+  for (const stage of ["setup", "action", "sync", "inspect", "teardown"]) {
+    const api = sorted.find((item) => inferParsedEFileApiStage(item.name) === stage);
+    if (api) push(api);
+  }
+
+  for (const api of sorted) {
+    if (selected.length >= limit) break;
+    const stage = inferParsedEFileApiStage(api.name);
+    if ((stageCounts.get(stage) ?? 0) >= 3 && stage !== "other") continue;
+    push(api);
+  }
+
+  return selected.slice(0, limit).sort((a, b) => {
+    const stageOrder = ["setup", "action", "sync", "inspect", "teardown", "other"];
+    const stageDiff =
+      stageOrder.indexOf(inferParsedEFileApiStage(a.name)) -
+      stageOrder.indexOf(inferParsedEFileApiStage(b.name));
+    return stageDiff !== 0 ? stageDiff : a.line - b.line;
+  });
+}
+
+export function extractParsedEFilePublicApis(output: string, userInput: string, limit = 40) {
+  const lines = output.replace(/\r\n/g, "\n").split("\n");
+  const queryTokens = uniqueOrdered([
+    ...tokenizeJingyiText(userInput),
+    ...tokenizeJingyiText(userInput.replace(/案列/g, "案例")),
+  ]).slice(0, 80);
+  const apis: ParsedEFilePublicApi[] = [];
+  const assemblies = new Map<string, ParsedEFileAssemblyInfo>();
+  let currentAssembly = "";
+  let currentAssemblyDescription = "";
+  let current: ParsedEFilePublicApi | null = null;
+
+  const finishCurrent = () => {
+    if (!current) return;
+    current.signature = formatParsedEFileSignature(current);
+    current.score = 0;
+    apis.push(current);
+    current = null;
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index] ?? "";
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    if (/^\.程序集(?:\s|$)/.test(line)) {
+      finishCurrent();
+      const fields = splitParsedEFileFields(line, ".程序集");
+      currentAssembly = fields[0] || currentAssembly;
+      currentAssemblyDescription = fields.slice(3).filter(Boolean).join("，");
+      if (currentAssembly) {
+        const existing = assemblies.get(currentAssembly);
+        assemblies.set(currentAssembly, {
+          name: currentAssembly,
+          line: existing?.line ?? index + 1,
+          description: currentAssemblyDescription || existing?.description || "",
+          publicApiCount: existing?.publicApiCount ?? 0,
+          score: existing?.score ?? 0,
+        });
+      }
+      continue;
+    }
+
+    if (line.startsWith(".子程序")) {
+      finishCurrent();
+      const fields = splitParsedEFileFields(line, ".子程序");
+      const name = fields[0] || "";
+      const returnType = fields[1] || "";
+      const attr = fields[2] || "";
+      const description = fields.slice(3).filter(Boolean).join("，");
+      current = {
+        kind: "subprogram",
+        name,
+        returnType,
+        public: attr.includes("公开"),
+        assembly: currentAssembly,
+        assemblyDescription: currentAssemblyDescription,
+        line: index + 1,
+        description,
+        params: [],
+        signature: "",
+        score: 0,
+      };
+      continue;
+    }
+
+    if (line.startsWith(".DLL命令")) {
+      finishCurrent();
+      const fields = splitParsedEFileFields(line, ".DLL命令");
+      const name = fields[0] || "";
+      const returnType = fields[1] || "";
+      const description = fields.slice(5).filter(Boolean).join("，");
+      current = {
+        kind: "dll",
+        name,
+        returnType,
+        public: false,
+        assembly: currentAssembly,
+        assemblyDescription: currentAssemblyDescription,
+        line: index + 1,
+        description,
+        params: [],
+        signature: "",
+        score: 0,
+      };
+      continue;
+    }
+
+    if (line.startsWith(".参数") && current) {
+      const fields = splitParsedEFileFields(line, ".参数");
+      const attr = fields[2] || "";
+      current.params.push({
+        name: fields[0] || `参数${current.params.length + 1}`,
+        type: fields[1] || "",
+        array: attr.includes("数组"),
+        byRef: attr.includes("参考") || attr.includes("传址"),
+        optional: attr.includes("可空"),
+        description: fields.slice(3).filter(Boolean).join("，"),
+      });
+    }
+  }
+  finishCurrent();
+
+  const publicApis = apis.filter((item) => item.public && item.name);
+  for (const api of publicApis) {
+    if (!api.assembly) continue;
+    const info = assemblies.get(api.assembly) ?? {
+      name: api.assembly,
+      line: api.line,
+      description: api.assemblyDescription,
+      publicApiCount: 0,
+      score: 0,
+    };
+    info.publicApiCount += 1;
+    if (!info.description && api.assemblyDescription) info.description = api.assemblyDescription;
+    assemblies.set(api.assembly, info);
+  }
+
+  const assemblyScores = new Map<string, number>();
+  const classCatalog = [...assemblies.values()]
+    .filter((info) => info.name && info.publicApiCount > 0)
+    .map((info) => {
+      const score = scoreParsedEFileAssembly(info, publicApis, queryTokens);
+      info.score = score;
+      assemblyScores.set(info.name, score);
+      return info;
+    })
+    .sort((a, b) => b.score - a.score || a.line - b.line);
+  const likelyClassCount = classCatalog.filter(isLikelyClassAssembly).length;
+  const classOrientedModule =
+    likelyClassCount > 0 ||
+    /(?:类\s*为\s*面向对象调用|类名\s+基\s*类|面向对象调用)/.test(output.slice(0, 30_000));
+
+  for (const api of publicApis) {
+    api.signature = api.signature || formatParsedEFileSignature(api);
+    api.score = scoreParsedEFileApi(api, queryTokens, assemblyScores.get(api.assembly) ?? 0);
+  }
+
+  const ranked = publicApis
+    .sort((a, b) => b.score - a.score || a.line - b.line)
+    .slice(0, limit);
+  const preferredGroups = (classOrientedModule ? classCatalog : [])
+    .filter((info) => info.score > 0 || isLikelyClassAssembly(info))
+    .slice(0, 6)
+    .map((info) => {
+      const groupApis = publicApis
+        .filter((api) => api.assembly === info.name)
+        .sort((a, b) => b.score - a.score || a.line - b.line);
+      return {
+        class_name: info.name,
+        line: info.line,
+        description: trimOutput(info.description, 320),
+        public_method_count: info.publicApiCount,
+        score: Number(info.score.toFixed(2)),
+        workflow_methods: selectParsedEFileWorkflowApis(groupApis, 10).map(parsedEFileApiPayload),
+      };
+    });
+  const standaloneItems = ranked
+    .filter((item) => !item.assembly)
+    .slice(0, 12)
+    .map(parsedEFileApiPayload);
+
+  return {
+    total_public_api_count: publicApis.length,
+    returned_count: ranked.length,
+    module_index_mode: classOrientedModule ? "class_oriented" : "flat_public_api",
+    class_count: classCatalog.length,
+    likely_class_count: likelyClassCount,
+    class_catalog: classCatalog.slice(0, 36).map((info) => ({
+      name: info.name,
+      line: info.line,
+      description: trimOutput(info.description, 180),
+      public_method_count: info.publicApiCount,
+      likely_class: isLikelyClassAssembly(info),
+      score: Number(info.score.toFixed(2)),
+    })),
+    preferred_api_groups: preferredGroups,
+    assemblies: classCatalog.slice(0, 30).map((item) => item.name),
+    focus_tokens: queryTokens.slice(0, 20),
+    items: ranked.map(parsedEFileApiPayload),
+    standalone_items: standaloneItems,
+    usage_hint: classOrientedModule
+      ? "该模块解析结果呈现面向对象/类程序集结构。用户要求使用这个模块时，优先从 preferred_api_groups 选择相关类，再按 workflow_methods 的 创建/投递或执行/等待/销毁 等方法链写示例；如果还需要 HTTP/JSON 等辅助能力，再另查对应辅助模块。"
+      : "该模块未表现为明显的类/面向对象模块。用户要求使用这个模块时，优先依据 items 中的公开子程序签名写示例，不要强行改成对象式调用。",
+    note:
+      "这是从 parse_efile 原始输出中抽取并按当前用户问题排序的模块接口索引。module_index_mode=class_oriented 时优先看 preferred_api_groups/class_catalog；module_index_mode=flat_public_api 时优先看 items。不要因为 output_excerpt 截断就声称缺少接口证据；只有 total_public_api_count 为 0 时才说明无法确认公开接口。",
+  };
+}
+
 function rankReadableECodeFiles(file: string): number {
   const normalized = file.replace(/\\/g, "/");
   if (normalized === "全局变量.e.txt" || normalized.endsWith("/全局变量.e.txt")) return 0;
@@ -2270,6 +2692,16 @@ async function buildECodeContextPack(
 
 export async function searchJingyiKnowledge(query: string, limit = 8) {
   const safeLimit = Math.max(1, Math.min(limit, 20));
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    try {
+      return await invoke("search_jingyi_module_rust", {
+        query,
+        limit: safeLimit,
+      });
+    } catch (error) {
+      console.warn("[eaicoding] Rust Jingyi search failed; falling back to TS search", error);
+    }
+  }
   const tokens = expandJingyiQuery(query);
   const allItems = await getEnrichedJingyiItems();
   const lexicalIndex = await getJingyiLexicalIndex();
@@ -2609,7 +3041,8 @@ const searchJingyiModule: RegisteredTool = {
     name: "search_jingyi_module",
     description:
       "查询内置精易模块知识库，返回匹配命令/类/全局变量的签名和参数。" +
-      "当用户要实现任意易语言/精易模块相关功能时，先调用本工具查精易模块，再生成易语言代码。" +
+      "当用户要实现精易模块相关功能时，先调用本工具查精易模块，再生成易语言代码。" +
+      "如果用户上传并要求使用其他 .ec 模块，应先用 parse_efile 读取该模块公开接口，本工具只作为精易模块或辅助 API 证据。" +
       "本工具是唯一可作为知识库使用的 API 查询入口，不读取易语言 IDE help 或其他支持库文档。",
     parameters: {
       type: "object",
@@ -2711,14 +3144,19 @@ const parseEFile: RegisteredTool = {
       required: ["target_path"],
     },
   },
-  executor: async (args) => {
+  executor: async (args, ctx) => {
     const targetPath = readString(args, "target_path");
     if (!targetPath) throw new Error("缺少必填参数 target_path");
     const result = await invoke<ParseResult>("parse_efile", { filePath: targetPath });
+    const output = result.output ?? "";
+    const isModule = targetPath.trim().toLowerCase().endsWith(".ec");
     return {
       success: result.success,
       summary: result.summary,
-      output_excerpt: trimOutput(result.output ?? "", 8000),
+      public_api_index: result.success && isModule
+        ? extractParsedEFilePublicApis(output, ctx.userInput, 56)
+        : undefined,
+      output_excerpt: trimOutput(output, isModule ? 12_000 : 8_000),
       error: result.error,
     };
   },
@@ -3420,6 +3858,67 @@ const saveTextFile: RegisteredTool = {
   },
 };
 
+const applySearchReplace: RegisteredTool = {
+  definition: {
+    name: "apply_search_replace",
+    description:
+      "用 SEARCH/REPLACE 协议精确修改一个文本文件。适合对已 read_file 的源码做小范围补丁；" +
+      "SEARCH 必须唯一匹配，否则工具会失败并要求扩大上下文。",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "要修改的文本文件绝对路径。", nullable: true },
+        search: { type: "string", description: "原文片段，必须在文件中唯一出现。", nullable: true },
+        replace: { type: "string", description: "替换后的文本片段。", nullable: true },
+        patch: {
+          type: "string",
+          description:
+            "可选，完整 SEARCH/REPLACE 块。格式：PATH: ...\\n<<<<<<< SEARCH\\n...\\n=======\\n...\\n>>>>>>> REPLACE",
+          nullable: true,
+        },
+        encoding: {
+          type: "string",
+          description: "可选，'gbk' 或 'utf-8'；默认沿用读取到的文件编码。",
+          enum: ["gbk", "utf-8"],
+          nullable: true,
+        },
+      },
+    },
+  },
+  executor: async (args): Promise<SearchReplaceResult> => {
+    const parsed = typeof args.patch === "string" && args.patch.trim()
+      ? parseSearchReplaceBlock(args.patch)
+      : null;
+    const path = parsed?.path ?? readString(args, "path");
+    const search = parsed?.search ?? (typeof args.search === "string" ? args.search : "");
+    const replace = parsed?.replace ?? (typeof args.replace === "string" ? args.replace : "");
+    if (!path) throw new Error("缺少必填参数 path");
+
+    const read = await invoke<ReadFileResult>("read_text_file_for_agent", {
+      filePath: path,
+      maxChars: null,
+    });
+    if (read.truncated) {
+      throw new Error("目标文件读取被截断，不能安全执行 SEARCH/REPLACE");
+    }
+
+    const applied = applySearchReplaceToText(read.content, { search, replace });
+    const encoding = readString(args, "encoding") ??
+      (read.encoding.toLowerCase().includes("gbk") ? "gbk" : "utf-8");
+    const written = await invoke<WriteTextResult>("write_text_file", {
+      filePath: path,
+      content: applied.content,
+      encoding,
+    });
+    return {
+      path: written.path,
+      changed: applied.replacements > 0,
+      replacements: applied.replacements,
+      bytes: written.bytes,
+    };
+  },
+};
+
 /** Native file picker — model can request a path from the user. */
 const pickFile: RegisteredTool = {
   definition: {
@@ -3517,6 +4016,7 @@ export const TOOL_REGISTRY: Record<string, RegisteredTool> = {
   [buildOriginalEFileBaseline.definition.name]: buildOriginalEFileBaseline,
   [closedLoopBuild.definition.name]: closedLoopBuild,
   [saveTextFile.definition.name]: saveTextFile,
+  [applySearchReplace.definition.name]: applySearchReplace,
   [pickFile.definition.name]: pickFile,
   [pickSavePath.definition.name]: pickSavePath,
 };

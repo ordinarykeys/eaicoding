@@ -1,8 +1,8 @@
 import { create } from "zustand";
-import { persist, createJSONStorage } from "zustand/middleware";
+import { persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 import type { AgentTrace, ChatMessage, ChatSession } from "@/types/llm";
-import { idbStorage } from "@/lib/idb-storage";
+import { splitChatJsonStorage } from "@/stores/chat-storage";
 import { deriveSessionTitle, shouldReplaceSessionTitle } from "@/lib/session-title";
 
 interface ChatState {
@@ -135,8 +135,8 @@ export const useChatStore = create<ChatState>()(
     }),
     {
       name: "eaicoding-chat",
-      version: 2,
-      storage: createJSONStorage(() => idbStorage),
+      version: 3,
+      storage: splitChatJsonStorage,
       partialize: (s) => ({
         sessions: s.sessions,
         activeSessionId: s.activeSessionId,
