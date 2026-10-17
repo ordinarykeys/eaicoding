@@ -6,17 +6,23 @@
 
 EAiCoding 桌面端是一款面向易语言开发者的本地 AI Coding Agent。它把大模型对话、易语言源码解析、精易模块知识库、代码展示、`.e/.ec` 工程处理和编译验证整合到一个 Windows 桌面应用中，目标是让易语言项目也能拥有类似现代 AI Coding 工具的工作流。
 
-桌面端基于 Tauri 2、React、TypeScript 和 Rust 构建。应用不依赖项目自带后端服务，模型配置、对话记录、用户知识库和生成文件目录都保存在本机。
+桌面端基于 Tauri 2、React、TypeScript 和 Rust 构建。应用不依赖项目自带后端服务，模型配置、对话记录、用户模块索引和生成文件目录都保存在本机。模型推理使用 DeepSeek API，本地向量模型仅用于知识检索。
+
+文档入口：[架构与执行流程](docs/architecture.md) · [开发与验证](docs/development.md) · [更新记录](CHANGELOG.md) · [问题诊断与修复](项目诊断报告.md)
 
 ## 功能特性
 
-- AI 对话：支持 OpenAI 兼容接口、Anthropic、Gemini 等模型服务。
+- AI 对话：仅接入 DeepSeek，预置 DeepSeek-V4.1-Flash（`deepseek-flash`）和 DeepSeek-V4-Pro（`deepseek-v4-pro`）。
 - 本地配置：API 配置、模型参数、对话记录和生成目录保存在本机。
 - 易语言文件处理：支持解析 `.e/.ec`，导出 ecode 文本工程，回编生成 `.e`。
+- 原生窗口生成：可生成含窗口、控件布局、初始化和事件的易语言 GUI 工程，输出可编辑 ecode、`.e` 和编译后的 `.exe`；目前支持按钮、编辑框、标签、选择框、单选框。
 - 编译验证：内置易语言命令行编译相关工具，可对生成或修改后的 `.e` 做编译检查。
 - 精易模块知识库：内置精易模块 API 数据，支持精确检索、BM25、向量检索和融合排序。
-- 用户知识库：支持用户上传自己的模块说明、项目规范、团队经验文档。
-- 易语言代码展示：尽量按易语言 IDE 的代码结构展示变量、子程序和代码块。
+- 用户模块库：在设置中上传 `.ec` 模块，解析公开接口并建立本地索引；支持搜索、分页和导入进度显示。
+- 代码展示：参照 DeepSeek Harness 的代码卡片，提供行号、复制、自动换行、保存、深浅色主题，并保留易语言 IDE 视图切换。
+- 自动编程：AI 自主选择技术方案并读写文件，完成修改后继续回编和编译验证；桌面入口没有固定总步数上限，可随时停止。
+- 回复与预览：流式 Markdown、独立推理区域、可展开工具记录、右侧文件页签和分页预览；上翻暂停跟随，点击“回到最新”恢复。
+- 设置弹窗：分为通用、模型、易语言环境、模块库，保留 Claude 暖色主题与紧凑输入区。
 - 手机模式：桌面端可开启局域网桥接，手机 App 扫码后继续对话。
 - 单实例运行：重复打开应用时会聚焦已有窗口，避免多开造成状态混乱。
 
@@ -32,7 +38,7 @@ EAiCoding 桌面端是一款面向易语言开发者的本地 AI Coding Agent。
 ## 目录结构
 
 ```text
-tauri-app/
+eaicoding/
   src/                         前端源码
     components/                页面和 UI 组件
     services/                  LLM、Agent、知识库、移动桥接等服务
@@ -44,15 +50,16 @@ tauri-app/
     tauri.conf.json            Tauri 打包配置
   scripts/                     知识库构建、便携版打包等脚本
   public/                      静态资源
+  docs/                        架构、开发与验证文档
 ```
 
 ## 环境要求
 
 - Windows 10/11
-- Node.js 20 或更高版本
+- Node.js 22（建议使用与验证环境一致的版本）和 npm
 - Rust 稳定版
 - Microsoft WebView2 Runtime
-- 可选：Visual Studio Build Tools，用于 Rust/Tauri 依赖编译
+- 从源码构建桌面端还需要 Visual Studio Build Tools 的 C++ 桌面开发组件和 Windows SDK
 
 Android App 不是桌面端运行必需项；手机端项目在 `mobile-app` 目录。
 
@@ -61,9 +68,12 @@ Android App 不是桌面端运行必需项；手机端项目在 `mobile-app` 目
 安装依赖：
 
 ```powershell
-cd D:\pingfan\Downloads\eaicoding\tauri-app
-npm install
+git clone https://github.com/ordinarykeys/eaicoding.git
+cd eaicoding
+npm ci
 ```
+
+安装、开发启动和生产构建会自动将锁定依赖中的 ONNX JS/WASM 配对文件复制到 `public/ort/`，供本地向量检索使用，无需手动下载或依赖 CDN。如果使用了 `npm ci --ignore-scripts`，可手动运行 `node scripts/prepare-ort.mjs`；`npm run dev` 和 `npm run build` 也会准备这些文件。
 
 启动桌面端开发环境：
 
@@ -154,13 +164,40 @@ Get-FileHash src-tauri\resources\eagent-tools\eroot\e.zip -Algorithm SHA256
 
 ## 模型配置
 
-进入应用设置后添加 API 配置：
+打开设置弹窗，进入「模型」，填写 DeepSeek API Key。展开「自定义设置」可修改连接地址、检测连接、选择默认模型及编辑高级参数。修改后点击「应用」保存，「取消」撤回编辑；输入区右下角可随时切换实际请求使用的模型。
 
-- OpenAI 兼容接口：填写 Base URL、API Key、模型名。
-- Anthropic：填写 API Key 和模型名。
-- Gemini：填写 API Key 和模型名。
+| 配置 | 默认值 |
+| --- | --- |
+| 接口地址 | `https://api.deepseek.com` |
+| 请求协议 | OpenAI Chat Completions，`/chat/completions` |
+| 默认模型 | DeepSeek-V4.1-Flash，`deepseek-flash` |
+| 另一个可选模型 | DeepSeek-V4-Pro，`deepseek-v4-pro` |
+| 最大输出 Token | `256000`，输出上限而非固定生成长度 |
+| 生成随机性 | `0.2` |
+
+密钥在本机加密保存；重新打开配置时不会回填明文，留空保留原密钥。旧版本的 DeepSeek 配置继续保留；其他厂商配置会重置为 DeepSeek 默认值并清空旧密钥，需要重新填写。
+
+设置 v7 会将旧版官方接口的默认 `8192` 输出额度升级为 `256000`；其他自定义额度及代理配置保留。代理地址需要自行确认支持这两个模型及所设输出额度。输出被截断时会丢弃该轮不完整内容，并自动要求模型拆小操作，最多重试两次；已成功执行的工具不会重做。恢复仍失败会明确报告任务未完成。
 
 应用不会内置任何商业模型密钥。开源仓库中也不应提交真实 API Key、私有 Base URL、测试密钥或个人账号信息。
+
+### 改动验证
+
+```powershell
+npm run build
+npm run test:agent-runtime
+npm run test:code-highlight
+npm run test:agent-choice
+npm run test:agent-epl
+npm run test:agent-retrieval
+cargo test --offline --lib --manifest-path src-tauri/Cargo.toml
+```
+
+浏览器界面测试使用 Playwright：安装后执行 `npm run test:ui`；也可通过 `EAICODING_PLAYWRIGHT_MODULE` 指定已安装的 Playwright 模块路径，通过 `EAICODING_BROWSER_CHANNEL=msedge` 使用本机 Edge。测试使用模拟 IPC 和临时浏览器数据，截图位于 `.tmp/ui-validation`。
+
+详细依赖、测试分类、运行步骤及结果边界见[开发与验证](docs/development.md)。
+
+安装易语言后，可执行 `npm run test:native-gui -- -EasyLanguageRoot D:\e`。该测试实际生成并编译窗口程序，检查控件与按钮事件，最后关闭测试程序。模型请求测试使用模拟传输，不代表真实 DeepSeek 接口已联网验证。
 
 ## 易语言工作流
 
@@ -199,7 +236,7 @@ Get-FileHash src-tauri\resources\eagent-tools\eroot\e.zip -Algorithm SHA256
 - RRF 融合排序
 - 功能候选重排
 
-用户知识库用于补充私有模块、项目规范、团队经验和常见问题。建议使用 Markdown 编写，按“标题、用途、参数、返回值、示例、注意事项”的结构整理。
+用户模块库接收 `.ec` 文件，应用保存本地副本并解析公开子程序、类和参数，按需建立量化向量索引。元数据与完整索引分开存储，列表每页仅挂载 20 条。Agent 优先遵从用户指定的模块，基于检索证据自主选择接口；Markdown 文档上传不是当前模块库功能。
 
 ## 手机模式
 
@@ -225,7 +262,7 @@ src-tauri/resources/eagent-tools/eroot/e.zip
 构建前端和 Tauri 安装包：
 
 ```powershell
-cd D:\pingfan\Downloads\eaicoding\tauri-app
+cd D:\pingfan\eaicoding
 npm run tauri -- build
 ```
 
@@ -281,7 +318,15 @@ release\易语言AI助手-portable.zip
 
 ### 模型列表获取失败
 
-确认 Base URL 是否是标准模型接口地址，例如 OpenAI 兼容服务通常应以 `/v1` 结尾。部分服务商不支持 `/models`，这种情况下可以手动输入模型名。
+确认 Base URL 是否指向 DeepSeek 官方 API（默认 `https://api.deepseek.com`）或支持当前 DeepSeek 模型的兼容端点。连接检测通过 `/models` 验证模型，旧模型或其他服务商模型不会加入选择器。
+
+### 提示输出达到 Token 上限
+
+更新后的执行器会自动拆小本轮操作并重试，不会执行被截断的工具参数。若仍失败，在「模型 → 自定义设置 → 高级参数」检查最大输出 Token；旧代理或手动设置的小额度会保留。只需继续当前任务，之前成功的工具结果仍保存在对话中。提高额度前应确认接口支持的范围，额度本身不保证任务一定完成。
+
+### 为什么任务还在继续执行
+
+桌面入口按工具结果推进任务，最新修改完成验证后才交付，没有统一的 12/32 步上限。网络重试、截断恢复、重复无进展和自检各有独立处理；可使用停止按钮中断。普通问候正常情况下只发一次无工具请求。
 
 ### 手机扫码后一直连接中
 
@@ -321,3 +366,7 @@ release\易语言AI助手-portable.zip
 - 在保留作者信息和本说明的前提下进行非商业分享。
 
 第三方依赖、易语言相关工具链、模型文件和其他外部资源分别遵循其自身许可证或授权条款。本项目的非商业限制不代表这些第三方组件授予了额外商业授权。
+
+## 参考项目
+
+界面布局、设置编辑、执行流程、滚动跟随和代码卡片参考 DeepSeek Harness 的本地只读源码；分页源码读取、哈希校验修改参考 [AutoLinker](https://github.com/aiqinxuancai/AutoLinker)。具体对照点与实现差异见[架构与执行流程](docs/architecture.md)。项目使用 React + Tauri + Rust，原生窗口生成由本项目实现。

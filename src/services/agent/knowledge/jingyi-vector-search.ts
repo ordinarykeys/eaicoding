@@ -70,6 +70,14 @@ async function getExtractor(): Promise<FeatureExtractionPipeline> {
       const { env, pipeline } = await import("@huggingface/transformers");
       env.allowLocalModels = true;
       env.allowRemoteModels = false;
+      // Pin onnxruntime-web wasm assets to our own /ort/ folder so the runtime
+      // never falls back to the jsdelivr CDN (slow / unreachable in CN). The
+      // wasm + mjs pairs are copied from node_modules/onnxruntime-web/dist into
+      // public/ort/ — see scripts/prepare-ort.mjs (npm install/dev/build hooks).
+      const onnxBackend = (env.backends as { onnx?: { wasm?: { wasmPaths?: string } } }).onnx;
+      if (onnxBackend?.wasm) {
+        onnxBackend.wasm.wasmPaths = "/ort/";
+      }
       return pipeline("feature-extraction", getModelPath(), { dtype: "q8" }) as Promise<FeatureExtractionPipeline>;
     })();
   }
@@ -82,6 +90,10 @@ async function embed(text: string): Promise<Float32Array> {
   const data = output.data ?? [];
   return data instanceof Float32Array ? data : new Float32Array(data);
 }
+
+/** Re-exported so other modules (user-module library) share the same singleton extractor. */
+export { getExtractor as getJingyiExtractor, embed as embedWithJingyiModel };
+export type { FeatureExtractionPipeline as EmbeddingPipeline };
 
 function cosineNormalized(left: Float32Array, right: Float32Array): number {
   const length = Math.min(left.length, right.length);

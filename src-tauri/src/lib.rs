@@ -1,24 +1,30 @@
 mod crypto;
 mod eagent_tools;
-mod ecode_parser;
 mod easy_language_sdk;
+mod ecode_parser;
+mod gui_project;
 mod jingyi_search;
 mod llm_models;
 mod llm_proxy;
 mod local_files;
+mod task_cancel;
 mod window_effects;
 
 use crypto::{decrypt_secret, encrypt_secret};
 use eagent_tools::detect_eagent_tools;
+use easy_language_sdk::scan_easy_language_env;
 use ecode_parser::{
     compile_efile, export_efile_to_ecode, generate_efile_from_code, generate_efile_from_ecode,
-    parse_efile, summarize_ecode_project_for_agent,
+    generate_gui_project, parse_efile, summarize_ecode_project_for_agent,
 };
-use easy_language_sdk::scan_easy_language_env;
 use jingyi_search::search_jingyi_module_rust;
 use llm_models::fetch_llm_models;
 use llm_proxy::{llm_proxy_request, llm_proxy_stream};
-use local_files::{read_text_file_for_agent, write_text_file};
+use local_files::{
+    apply_text_patch_for_agent, copy_user_module_to_local, read_text_file_for_agent,
+    write_text_file,
+};
+use task_cancel::cancel_agent_task;
 use tauri::Manager;
 use window_effects::setup_window_effects;
 
@@ -46,6 +52,7 @@ pub fn run() {
             summarize_ecode_project_for_agent,
             generate_efile_from_ecode,
             generate_efile_from_code,
+            generate_gui_project,
             compile_efile,
             encrypt_secret,
             decrypt_secret,
@@ -55,8 +62,11 @@ pub fn run() {
             fetch_llm_models,
             llm_proxy_request,
             llm_proxy_stream,
+            cancel_agent_task,
             write_text_file,
+            apply_text_patch_for_agent,
             read_text_file_for_agent,
+            copy_user_module_to_local,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

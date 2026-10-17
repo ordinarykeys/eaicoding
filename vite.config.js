@@ -38,14 +38,40 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "url";
+import path from "path";
 // process is provided by @types/node
 var host = process.env.TAURI_DEV_HOST;
 var rootDir = fileURLToPath(new URL(".", import.meta.url));
+/**
+ * Dev-only plugin: when transformers.js / onnxruntime-web does
+ *   await import('/ort/ort-wasm-simd-threaded.asyncify.mjs')
+ * vite refuses, because /public/ files cannot be imported as source modules
+ * (only fetched). Re-resolve those imports to the matching files in
+ * node_modules/onnxruntime-web/dist so dev works without a CDN round-trip.
+ *
+ * In prod (vite build) `public/ort/*` is copied as-is into `dist/ort/`, served
+ * over plain HTTP — fetch + import work fine there, no plugin needed.
+ */
+var ortMjsDevRedirect = {
+    name: "ort-mjs-dev-redirect",
+    apply: "serve",
+    enforce: "pre",
+    resolveId: function (source) {
+        if (typeof source !== "string")
+            return null;
+        if (!source.startsWith("/ort/"))
+            return null;
+        var filename = source.slice("/ort/".length).split("?")[0];
+        if (!filename)
+            return null;
+        return path.join(rootDir, "node_modules/onnxruntime-web/dist", filename);
+    },
+};
 // https://vite.dev/config/
 export default defineConfig(function () { return __awaiter(void 0, void 0, void 0, function () {
     return __generator(this, function (_a) {
         return [2 /*return*/, ({
-                plugins: [react(), tailwindcss()],
+                plugins: [ortMjsDevRedirect, react(), tailwindcss()],
                 resolve: {
                     alias: {
                         "@": rootDir + "src",
@@ -61,6 +87,11 @@ export default defineConfig(function () { return __awaiter(void 0, void 0, void 
                         : undefined,
                     watch: {
                         ignored: ["**/src-tauri/**"],
+                    },
+                    fs: {
+                        // Allow vite to serve files from node_modules/onnxruntime-web/dist when
+                        // the dev redirect above resolves /ort/* to that path.
+                        allow: [rootDir],
                     },
                 },
             })];

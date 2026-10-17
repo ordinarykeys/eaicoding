@@ -34,3 +34,10 @@ src-tauri/target/
 *.sln
 *.sw?
 src-tauri/resources/eagent-tools/eroot/e.zip
+
+# Local archives and ONNX runtime assets copied from npm dependencies
+/eaicoding.zip
+/public/ort/
+.env
+.env.*
+!.env.example

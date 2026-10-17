@@ -17,7 +17,8 @@ export class OpenAIResponsesProvider extends BaseLLMProvider {
     callbacks: StreamCallbacks,
     _options?: StreamOptions,
   ): Promise<void> {
-    this.abortController = new AbortController();
+    const controller = new AbortController();
+    this.abortController = controller;
 
     const systemMessage = messages.find((message) => message.role === "system");
     const transcript = messages
@@ -69,6 +70,8 @@ export class OpenAIResponsesProvider extends BaseLLMProvider {
         },
         body,
         (chunk) => sseParser.feed(chunk),
+        120,
+        controller.signal,
       );
     } catch (err) {
       if ((err as Error).name === "AbortError") return;
@@ -76,7 +79,7 @@ export class OpenAIResponsesProvider extends BaseLLMProvider {
       return;
     }
 
-    if (this.abortController.signal.aborted) return;
+    if (controller.signal.aborted) return;
     sseParser.flush();
 
     if (response.status < 200 || response.status >= 300) {

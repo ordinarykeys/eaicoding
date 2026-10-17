@@ -1,3 +1,5 @@
+import { useChatScroll } from "@/hooks/use-chat-scroll";
+import { ChatComposer } from "@/components/chat-composer";
 import {
   Fragment,
   memo,
@@ -6,9 +8,17 @@ import {
   useState,
   useCallback,
   useMemo,
+  useContext,
 } from "react";
 import {
-  ArrowElbowDownLeft,
+  CircleNotch,
+  Brain,
+  FileText,
+  ListChecks,
+  MagnifyingGlass,
+  PencilSimple,
+  TerminalWindow,
+  Layout,
   CaretDown,
   CaretRight,
   Check,
@@ -18,21 +28,11 @@ import {
   File,
   FolderOpen,
   GearSix,
-  Plus,
   SidebarSimple,
-  Square,
   X,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Tooltip,
   TooltipContent,
@@ -41,14 +41,16 @@ import {
 } from "@/components/ui/tooltip";
 import { MarkdownView } from "@/components/markdown-view";
 import { CodeBlock } from "@/components/code-block";
-import { EplRenderer } from "@/components/epl-renderer";
+import { DocumentPreview } from "@/components/document-preview";
+import { DocumentPreviewContext, documentLanguage, fileName, isTextPath, type PreviewDocument } from "@/components/document-preview-context";
 import { useChatStore, useActiveSession } from "@/stores/chat";
+import { setChatPersistThrottling } from "@/stores/chat-storage";
 import { useSettingsStore } from "@/stores/settings";
 import { startAgentRun } from "@/services/agent/runner";
 import { DesktopPet, emitPet } from "@/components/desktop-pet";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { copyFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { copyFile } from "@tauri-apps/plugin-fs";
 import { useTranslation } from "react-i18next";
 import { deriveSessionTitle, getSessionDisplayTitle } from "@/lib/session-title";
 import { useVirtualWindow } from "@/hooks/use-virtual-window";
@@ -75,47 +77,33 @@ interface ChatViewProps {
 export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
   const { t } = useTranslation();
   const session = useActiveSession();
-  const {
-    createSession,
-    appendMessage,
-    updateMessage,
-    activeSessionId,
-  } = useChatStore();
+  // Per-field selectors: subscribing to the whole store would re-render this
+  // (very large) component a second time on every streaming token.
+  const createSession = useChatStore((s) => s.createSession);
+  const appendMessage = useChatStore((s) => s.appendMessage);
+  const updateMessage = useChatStore((s) => s.updateMessage);
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
   const resolveLLMConfig = useSettingsStore((s) => s.resolveLLMConfig);
-  const profiles = useSettingsStore((s) => s.profiles);
-  const modelCatalogs = useSettingsStore((s) => s.modelCatalogs);
-  const activeProfileId = useSettingsStore((s) => s.activeProfileId);
-  const updateProfile = useSettingsStore((s) => s.updateProfile);
 
   const [input, setInput] = useState("");
   const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [statusLine, setStatusLine] = useState<string | null>(null);
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | null>(null);
-  const [previewVisible, setPreviewVisible] = useState(true);
+  const [previewVisible, setPreviewVisible] = useState(false);
+  const [openedDocuments, setOpenedDocuments] = useState<PreviewDocument[]>([]);
   const [previewWidth, setPreviewWidth] = useState(520);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // P4 approval gate + pause/resume UI state.
+  const [isPaused, setIsPaused] = useState(false);
+  const { rootRef: scrollRootRef, contentRef: scrollContentRef, showLatest, toLatest } = useChatScroll(activeSessionId, session?.messages);
   const abortRef = useRef<(() => void) | null>(null);
+  // Handle to the running agent, for pause()/resume().
+  const runHandleRef = useRef<ReturnType<typeof startAgentRun> | null>(null);
   const streamBufRef = useRef("");
-  const previewSignatureRef = useRef("");
   const sendingRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const isStreamingRef = useRef(isStreaming);
-  const activeProfile = profiles.find((profile) => profile.id === activeProfileId);
   const sessionTitle = session ? getSessionDisplayTitle(session) : "EAiCoding";
-  const composerModels = useMemo(() => {
-    if (!activeProfile) return [];
-    const seen = new Set<string>();
-    const fetchedModels = modelCatalogs[activeProfile.id]?.length
-      ? modelCatalogs[activeProfile.id]
-      : (activeProfile.models ?? []);
-    return fetchedModels.filter((model) => {
-      if (!model.id || seen.has(model.id)) return false;
-      seen.add(model.id);
-      return true;
-    });
-  }, [activeProfile, modelCatalogs]);
   const visibleMessages = useMemo(
     () => session?.messages.filter((m) => m.role !== "tool") ?? [],
     [session?.messages],
@@ -127,20 +115,26 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
     }
     return -1;
   }, [visibleMessages]);
-  const latestAssistantTrace = useMemo(() => {
-    const messages = session?.messages ?? [];
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message.role === "assistant" && message.agentTrace) {
-        return message.agentTrace;
-      }
+  const availableDocuments = useMemo(() => {
+    const files = new Map<string, PreviewDocument>();
+    for (const message of session?.messages ?? []) {
+      for (const item of extractEplPreviewItems(message.agentTrace ?? null)) files.set(item.id, item);
     }
-    return null;
+    return files;
   }, [session?.messages]);
-  const previewItems = useMemo(
-    () => extractEplPreviewItems(latestAssistantTrace),
-    [latestAssistantTrace],
-  );
+  const previewItems = useMemo(() => openedDocuments.map(item => availableDocuments.get(item.id) ?? item), [openedDocuments, availableDocuments]);
+  const openPreview = useCallback((document: PreviewDocument) => {
+    setOpenedDocuments(previous => previous.some(item => item.id === document.id)
+      ? previous.map(item => item.id === document.id ? document : item) : [...previous, document]);
+    setSelectedPreviewId(document.id);
+    setPreviewVisible(true);
+  }, []);
+  const closePreviewTab = (id: string) => {
+    const remaining = previewItems.filter(item => item.id !== id);
+    setOpenedDocuments(remaining);
+    if (selectedPreviewId === id) setSelectedPreviewId(remaining.at(-1)?.id ?? null);
+    if (!remaining.length) setPreviewVisible(false);
+  };
   const activePreview = useMemo(() => {
     if (previewItems.length === 0) return null;
     return (
@@ -153,41 +147,9 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
     isStreamingRef.current = isStreaming;
   }, [isStreaming]);
 
-  // Scroll to bottom on session switch / initial mount (instant)
   useEffect(() => {
-    requestAnimationFrame(() => {
-      bottomRef.current?.scrollIntoView({ behavior: "instant" });
-    });
+    setOpenedDocuments([]); setSelectedPreviewId(null); setPreviewVisible(false);
   }, [activeSessionId]);
-
-  // Scroll to bottom on new messages / streaming updates
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [session?.messages, session?.messages?.length]);
-
-  useEffect(() => {
-    textareaRef.current?.focus();
-  }, [activeSessionId]);
-
-  useEffect(() => {
-    if (previewItems.length === 0) {
-      setSelectedPreviewId(null);
-      previewSignatureRef.current = "";
-      return;
-    }
-
-    if (!selectedPreviewId || !previewItems.some((item) => item.id === selectedPreviewId)) {
-      setSelectedPreviewId(previewItems[0].id);
-    }
-
-    const signature = previewItems
-      .map((item) => `${item.id}:${item.stepIndex}`)
-      .join("|");
-    if (signature && signature !== previewSignatureRef.current) {
-      previewSignatureRef.current = signature;
-      setPreviewVisible(true);
-    }
-  }, [previewItems, selectedPreviewId]);
 
   const handleAttachFile = useCallback(async () => {
     if (isStreaming) return;
@@ -232,7 +194,6 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
         return merged;
       });
 
-      requestAnimationFrame(() => textareaRef.current?.focus());
       toast.success(t("chat.attachSuccess", { count: paths.length }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -247,6 +208,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
   const runAgentMessage = useCallback(async (options: {
     text: string;
     files?: string[];
+    onAccepted?: () => void;
   }) => {
     const text = options.text.trim();
     const files = options.files ?? [];
@@ -271,6 +233,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
       return;
     }
 
+    options.onAccepted?.();
     let userContent = text;
 
     if (files.length > 0) {
@@ -290,8 +253,12 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
       sid = createSession(deriveSessionTitle(userContent));
     }
 
+    toLatest();
     setIsStreaming(true);
-    setStatusLine("Thinking...");
+    // Coalesce persistence writes during streaming; the finally block below
+    // disables throttling, which flushes the final answer to disk.
+    setChatPersistThrottling(true);
+    setStatusLine("正在思考");
     emitPet({ state: "thinking", bubble: "Thinking..." });
 
     appendMessage(sid, { role: "user", content: userContent });
@@ -311,40 +278,57 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
 
     streamBufRef.current = "";
 
+    let acceptingTokens = true;
+    let reasoningBuffer = "";
+    const cancelTokenFrame = () => {
+      if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+    };
+    const publishTokens = () => {
+      if (rafRef.current !== null) return;
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        if (!acceptingTokens) return;
+        updateMessage(sid!, assistantMsgId, {
+          content: streamBufRef.current, reasoningContent: reasoningBuffer, isStreaming: true,
+        });
+      });
+    };
     const handle = startAgentRun({
       config,
+      mode: "agent",
       userInput: userContent,
       history: historyWithoutTrigger,
       sessionId: sid,
       allowDialog: true,
-      onStatus: (status) => setStatusLine(status),
-      onAssistantToken: (token, stepIndex) => {
+      onStatus: (status) => setStatusLine(status.replace(/^第 \d+\/\d+ 步：/, "").replace("模型推理中", "正在思考").replace(/^执行 ([a-z_]+)/, (_match, name: string) => toolLabel(name))),
+      onAssistantStart: () => {
+        cancelTokenFrame(); streamBufRef.current = ""; reasoningBuffer = "";
+        updateMessage(sid!, assistantMsgId, { content: "", reasoningContent: "", activeToolCallId: undefined });
+      },
+      onAssistantToken: (token) => {
+        if (!acceptingTokens) return;
         streamBufRef.current += token;
-        if (rafRef.current === null) {
-          rafRef.current = requestAnimationFrame(() => {
-            rafRef.current = null;
-            const extracted = extractStreamingThought(streamBufRef.current);
-            if (extracted) {
-              updateMessage(sid!, assistantMsgId, {
-                content: sanitizeProtocolText(extracted),
-                isStreaming: true,
-              });
-            } else {
-              updateMessage(sid!, assistantMsgId, {
-                content: `*第 ${stepIndex} 步：推理中...*`,
-                isStreaming: true,
-              });
-            }
-          });
-        }
-        emitPet({ state: "typing", bubble: `Generating · Step ${stepIndex}` });
+        publishTokens();
+      },
+      onReasoningToken: (token) => {
+        if (!acceptingTokens) return;
+        reasoningBuffer += token;
+        publishTokens();
+      },
+      onToolProgress: (_step, runningTrace, activeToolCallId) => {
+        cancelTokenFrame();
+        streamBufRef.current = ""; reasoningBuffer = "";
+        updateMessage(sid!, assistantMsgId, { content: "", reasoningContent: "", isStreaming: true, agentTrace: runningTrace, activeToolCallId });
       },
       onStep: (step, runningTrace) => {
-        streamBufRef.current = "";
+        cancelTokenFrame();
+        streamBufRef.current = ""; reasoningBuffer = "";
         updateMessage(sid!, assistantMsgId, {
           content: renderTraceForBubble(runningTrace, /*isFinal*/ false),
+          reasoningContent: "",
           isStreaming: true,
           agentTrace: runningTrace,
+          activeToolCallId: undefined,
         });
         if (step.finishReason === "tool_call") {
           emitPet({
@@ -357,14 +341,19 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
       },
     });
     abortRef.current = handle.abort;
+    runHandleRef.current = handle;
 
     try {
       const trace = await handle.promise;
+      acceptingTokens = false;
+      cancelTokenFrame();
       const finalContent = renderTraceForBubble(trace, /*isFinal*/ true);
       updateMessage(sid, assistantMsgId, {
         content: finalContent,
+        reasoningContent: reasoningBuffer,
         isStreaming: false,
         agentTrace: trace,
+        activeToolCallId: undefined,
       });
 
       if (trace.outcome === "answer") {
@@ -375,38 +364,51 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
           emitPet({ state: "happy", bubble: "Answered" });
         }
       } else if (trace.outcome === "max_steps") {
-        toast.warning("Reached max steps");
+        toast.warning("本轮已达到执行上限");
         emitPet({ state: "notification", bubble: "Max steps" });
       } else if (trace.outcome === "aborted") {
-        toast.info("Stopped");
+        toast.info("已停止");
         emitPet({ state: "idle", bubble: "Stopped" });
       } else if (trace.outcome === "needs_input") {
         toast.info("请选择一个方案继续");
         emitPet({ state: "notification", bubble: "请选择" });
       } else {
-        toast.error("Run failed");
+        toast.error("执行失败，请查看回复中的原因");
         emitPet({ state: "error", bubble: "Error" });
       }
     } catch (err) {
+      acceptingTokens = false;
+      cancelTokenFrame();
       const message = err instanceof Error ? err.message : String(err);
       updateMessage(sid, assistantMsgId, {
-        content: `Run interrupted: ${message}`,
+        content: `执行已中断：${message}`,
+        reasoningContent: reasoningBuffer,
         isStreaming: false,
+        activeToolCallId: undefined,
       });
-      toast.error(`Run interrupted: ${message}`);
+      toast.error(`执行已中断：${message}`);
       emitPet({ state: "error", bubble: "Interrupted" });
     } finally {
+      acceptingTokens = false;
       abortRef.current = null;
       sendingRef.current = false;
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
+
+      // Disabling throttling flushes the pending (final) state to disk, so a
+      // refresh right after completion still restores the finished answer.
+      setChatPersistThrottling(false);
       setIsStreaming(false);
       setStatusLine(null);
+      // Clear the pause state when a run finishes or stops.
+      runHandleRef.current = null;
+      setIsPaused(false);
     }
   }, [
     resolveLLMConfig,
+    toLatest,
     createSession,
     appendMessage,
     updateMessage,
@@ -417,9 +419,8 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
     const text = input.trim();
     const files = attachedFiles;
     if (!text && files.length === 0) return;
-    setInput("");
-    setAttachedFiles([]);
-    await runAgentMessage({ text, files });
+    if (isStreamingRef.current || sendingRef.current) return;
+    await runAgentMessage({ text, files, onAccepted: () => { setInput(""); setAttachedFiles([]); } });
   }, [input, attachedFiles, runAgentMessage]);
 
   const handleAgentChoice = useCallback(async (choice: string, request: AgentUserChoiceRequest) => {
@@ -439,6 +440,20 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
     emitPet({ state: "idle", bubble: "Stopping" });
   }, []);
 
+  const handleTogglePause = useCallback(() => {
+    const handle = runHandleRef.current;
+    if (!handle) return;
+    if (handle.isPaused()) {
+      handle.resume();
+      setIsPaused(false);
+      emitPet({ state: "building", bubble: "继续" });
+    } else {
+      handle.pause();
+      setIsPaused(true);
+      emitPet({ state: "idle", bubble: "已暂停" });
+    }
+  }, []);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -447,13 +462,12 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
   };
 
   return (
+    <DocumentPreviewContext.Provider value={openPreview}>
     <TooltipProvider>
-      <div className="relative h-full overflow-hidden bg-background">
+      <div className="chat-workspace relative h-full overflow-hidden bg-background" data-preview-open={Boolean(activePreview && previewVisible)}>
         <div
-          className="flex h-full min-w-0 flex-col transition-[padding] duration-200"
-          style={{
-            paddingRight: activePreview && previewVisible ? previewWidth + 16 : 0,
-          }}
+          className="harness-chat-column flex h-full min-w-0 flex-col transition-[padding] duration-200"
+          data-empty={!session?.messages.length}
         >
           <header className="flex items-center gap-2 px-4 py-2.5 shrink-0">
             {!sidebarOpen && (
@@ -463,6 +477,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
                     variant="ghost"
                     size="icon"
                     className="h-8 w-8 rounded-lg text-muted-foreground"
+                    aria-label="打开侧栏"
                     onClick={onToggleSidebar}
                   >
                     <SidebarSimple className="h-4 w-4" />
@@ -487,6 +502,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
                     variant="ghost"
                     size="icon"
                     className="h-8 w-8 rounded-lg text-muted-foreground"
+                    aria-label="代码预览"
                     onClick={() => setPreviewVisible(true)}
                   >
                     <Code className="h-4 w-4" />
@@ -501,10 +517,10 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
             )}
           </header>
 
-          <ScrollArea className="flex-1 px-0">
-            <div className="mx-auto max-w-3xl px-6 py-6 space-y-6">
+          <ScrollArea ref={scrollRootRef} className="chat-message-scroll flex-1 px-0">
+            <div ref={scrollContentRef} className="chat-message-content mx-auto max-w-3xl px-6 py-6 space-y-6">
               {!session?.messages.length && (
-                <div className="flex min-h-[46vh] flex-col items-center justify-center text-center text-muted-foreground">
+                <div className="chat-empty-welcome flex min-h-[46vh] flex-col items-center justify-center text-center text-muted-foreground">
                   <div className="max-w-2xl space-y-4">
                     <h3 className="text-3xl font-medium tracking-tight text-foreground">
                       {t("chat.welcomeTitle")}
@@ -532,132 +548,32 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
                   )}
                 </Fragment>
               ))}
-              <div ref={bottomRef} />
             </div>
           </ScrollArea>
 
-          <div className="px-5 pb-5 pt-2 shrink-0">
-            <div className="code-composer-shell mx-auto flex max-w-3xl flex-col">
-              {attachedFiles.length > 0 && (
-                <div className="composer-file-chips">
-                  {attachedFiles.map((fp) => (
-                    <span key={fp} className="claude-chip composer-file-chip">
-                      <File className="h-3 w-3 shrink-0" />
-                      <span className="truncate max-w-[200px]">
-                        {fp.split(/[\\/]/).pop()}
-                      </span>
-                      <button
-                        type="button"
-                        className="composer-file-chip-close"
-                        onClick={() =>
-                          setAttachedFiles((prev) => prev.filter((p) => p !== fp))
-                        }
-                        aria-label="Remove"
-                      >
-                        <X className="h-2.5 w-2.5" />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div className="code-composer-input-wrap">
-                <div className="code-composer-input-mirror" aria-hidden="true">
-                  {input || " "}
-                </div>
-                <Textarea
-                  ref={textareaRef}
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder={attachedFiles.length > 0 ? "补充你的目标" : "输入你的需求"}
-                  className="code-composer-input"
-                  rows={1}
-                />
-                {isStreaming ? (
-                  <button
-                    type="button"
-                    className="code-composer-send is-active"
-                    onClick={handleStop}
-                    aria-label="Stop"
-                  >
-                    <Square className="h-3.5 w-3.5" weight="fill" />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="code-composer-send"
-                    onClick={handleSend}
-                    disabled={!input.trim() && attachedFiles.length === 0}
-                    aria-label="Send"
-                  >
-                    <ArrowElbowDownLeft className="h-3.5 w-3.5" />
-                  </button>
-                )}
-              </div>
-              <div className="code-composer-toolbar">
-                <div className="flex items-center gap-2">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        className="code-composer-plus"
-                        onClick={handleAttachFile}
-                        disabled={isStreaming}
-                        aria-label={t("chat.attachFile")}
-                      >
-                        <Plus className="h-4 w-4" weight="bold" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>{t("chat.attachFile")}</TooltipContent>
-                  </Tooltip>
-                </div>
-                <div className="flex items-center gap-2">
-                  {activeProfile && composerModels.length > 0 ? (
-                    <Select
-                      value={activeProfile.model}
-                      onValueChange={(model) => updateProfile(activeProfile.id, { model })}
-                    >
-                      <SelectTrigger className="code-composer-model">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent align="end">
-                        {composerModels.map((model) => (
-                          <SelectItem key={model.id} value={model.id}>
-                            <span className="flex min-w-0 items-center gap-3">
-                              <span className="min-w-0 truncate font-mono">{model.id}</span>
-                              {model.ownedBy && (
-                                <span className="shrink-0 text-muted-foreground">
-                                  {model.ownedBy}
-                                </span>
-                              )}
-                            </span>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <span className="code-composer-model-empty">
-                      {activeProfile ? "未获取模型" : "未配置模型"}
-                    </span>
-                  )}
-                  <span className="code-composer-status-dot" />
-                </div>
-              </div>
-            </div>
+          <div className="chat-composer-host relative shrink-0">
+            {showLatest && <button type="button" className="chat-jump-latest" onClick={toLatest}><CaretDown size={14} />回到最新</button>}
+            <ChatComposer value={input} onChange={setInput} onSend={() => void handleSend()} onStop={handleStop} running={isStreaming}
+              files={attachedFiles} onAttach={() => void handleAttachFile()} onRemove={path => setAttachedFiles(files => files.filter(file => file !== path))}
+              onNewChat={() => { createSession(); setInput(""); setAttachedFiles([]); }}
+              focusKey={activeSessionId} />
           </div>
         </div>
-        {activePreview && previewVisible && (
-          <CodePreviewPanel
+        {activePreview && (
+          <DocumentPreview
+            visible={previewVisible}
             items={previewItems}
             activeId={activePreview.id}
             onSelect={setSelectedPreviewId}
             onClose={() => setPreviewVisible(false)}
+            onCloseTab={closePreviewTab}
             width={previewWidth}
             onResize={setPreviewWidth}
           />
         )}
       </div>
     </TooltipProvider>
+    </DocumentPreviewContext.Provider>
   );
 }
 
@@ -667,6 +583,8 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
 
 const TOOL_LABELS: Record<string, string> = {
   scan_easy_language_env: "扫描易语言环境",
+  update_plan: "更新计划",
+  search_user_modules: "查询模块库",
   search_jingyi_module: "查询精易模块",
   ask_user_choice: "等待选择",
   read_file: "读取文件",
@@ -677,8 +595,13 @@ const TOOL_LABELS: Record<string, string> = {
   inspect_ecode_context: "整理项目上下文",
   generate_efile_from_ecode: "回编 ecode 工程",
   generate_efile_from_code: "生成 .e 文件",
+  generate_gui_project: "生成窗口界面",
+  apply_search_replace: "修改源码",
   compile_efile: "编译",
   build_ecode_project: "回编并编译",
+  start_project_closed_loop: "启动完整闭环",
+  finish_project_closed_loop: "完成闭环验证",
+  restore_project_snapshot: "回滚闭环快照",
   closed_loop_build: "闭环编译",
   save_text_file: "保存文件",
   pick_file: "选择文件",
@@ -693,377 +616,20 @@ function toolLabel(name: string): string {
 // Trace rendering
 // ---------------------------------------------------------------------------
 
-/** Strip leaked ReAct protocol artifacts (raw JSON / XML tool-call blocks)
- *  from text that is shown to the user in the assistant bubble. */
-function sanitizeProtocolText(text: string): string {
-  let cleaned = text;
-
-  // Remove XML-style tool call blocks: <tool_call>...</tool_call>
-  cleaned = cleaned.replace(/<tool_call>\s*[\s\S]*?<\/tool_call>/gi, "").trim();
-
-  // Remove standalone XML fragments: <function=...>...</function>
-  cleaned = cleaned.replace(/<function=[^>]*>[\s\S]*?<\/function>/gi, "").trim();
-
-  // Remove <parameter=...>...</parameter> fragments
-  cleaned = cleaned.replace(/<parameter=[^>]*>[\s\S]*?<\/parameter>/gi, "").trim();
-
-  const protocolJson = extractProtocolJson(cleaned);
-  if (protocolJson) {
-    const parsed = parseProtocolJson(protocolJson.json);
-    if (parsed) {
-      if (typeof parsed.final_answer === "string") {
-        cleaned = `${cleaned.slice(0, protocolJson.start)}${parsed.final_answer}${cleaned.slice(protocolJson.end)}`.trim();
-      } else if (typeof parsed.answer === "string") {
-        cleaned = `${cleaned.slice(0, protocolJson.start)}${parsed.answer}${cleaned.slice(protocolJson.end)}`.trim();
-      } else if ("tool_calls" in parsed || "thought" in parsed) {
-        cleaned = `${cleaned.slice(0, protocolJson.start)}${cleaned.slice(protocolJson.end)}`.trim();
-      }
-    }
-  }
-
-  // Remove leaked raw JSON protocol objects containing tool_calls or thought.
-  // Uses bracket matching to handle nested objects correctly.
-  cleaned = cleaned.replace(/\{[\s\S]{0,20}"(?:thought|tool_calls)"[\s\S]*$/gm, (match) => {
-    return stripProtocolJson(match);
-  });
-
-  // Also handle JSON at start of text
-  if (cleaned.startsWith("{")) {
-    cleaned = stripProtocolJson(cleaned);
-  }
-
-  return cleaned.trim() || text.trim();
-}
-
-function extractProtocolJson(text: string): { json: string; start: number; end: number } | null {
-  const firstBrace = text.indexOf("{");
-  if (firstBrace < 0) return null;
-  if (!/"(?:thought|tool_calls|final_answer|answer)"/.test(text.slice(firstBrace, firstBrace + 120))) {
-    return null;
-  }
-
-  let depth = 0;
-  let inStr = false;
-  let esc = false;
-  for (let i = firstBrace; i < text.length; i++) {
-    const c = text[i];
-    if (esc) { esc = false; continue; }
-    if (c === "\\") { esc = true; continue; }
-    if (c === '"') { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (c === "{") depth++;
-    else if (c === "}") {
-      depth--;
-      if (depth === 0) {
-        return { json: text.slice(firstBrace, i + 1), start: firstBrace, end: i + 1 };
-      }
-    }
-  }
-  return null;
-}
-
-function parseProtocolJson(jsonStr: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(jsonStr);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function stripProtocolJson(text: string): string {
-  const start = text.indexOf("{");
-  if (start < 0) return text;
-
-  let depth = 0;
-  let inStr = false;
-  let esc = false;
-  let end = -1;
-
-  for (let i = start; i < text.length; i++) {
-    const c = text[i];
-    if (esc) { esc = false; continue; }
-    if (c === "\\") { esc = true; continue; }
-    if (c === '"') { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (c === "{") depth++;
-    else if (c === "}") {
-      depth--;
-      if (depth === 0) { end = i; break; }
-    }
-  }
-
-  if (end < 0) return "";
-
-  const jsonStr = text.slice(start, end + 1);
-  try {
-    const parsed = JSON.parse(jsonStr);
-    if (typeof parsed === "object" && parsed !== null) {
-      if (typeof parsed.final_answer === "string") return parsed.final_answer + text.slice(end + 1);
-      if (typeof parsed.answer === "string") return parsed.answer + text.slice(end + 1);
-      if ("tool_calls" in parsed || "thought" in parsed) {
-        const remainder = text.slice(end + 1).trim();
-        return remainder;
-      }
-    }
-  } catch { /* not valid JSON */ }
-
-  return text;
-}
-
 /** Build the markdown body that is shown in the assistant bubble while or
  *  after the agent is running. We use markdown so MarkdownView keeps code
  *  highlighting and link rendering. */
 function renderTraceForBubble(trace: AgentTrace, isFinal: boolean): string {
-  const lines: string[] = [];
+  if (trace.finalAnswer) return trace.finalAnswer;
   if (!isFinal) {
-    const lastStep = trace.steps[trace.steps.length - 1];
-    if (lastStep) {
-      if (lastStep.finishReason === "format_retry" && trace.steps.length > 1) {
-        lines.push(`*第 ${trace.steps.length} 步：继续处理中...*`);
-      } else {
-        const toolNames = lastStep.toolCalls
-          .map((tc) => toolLabel(tc.name))
-          .join("、");
-        if (toolNames) {
-          lines.push(`*第 ${trace.steps.length} 步：${toolNames}...*`);
-        } else {
-          lines.push(`*第 ${trace.steps.length} 步：推理中...*`);
-        }
-      }
-    } else {
-      lines.push("*推理中...*");
-    }
-    lines.push("");
+    return "";
   }
-  if (trace.finalAnswer) {
-    lines.push(sanitizeProtocolText(trace.finalAnswer));
-    lines.push("");
-  } else if (isFinal) {
-    lines.push("_(No final answer)_");
-    lines.push("");
-  }
-  return lines.join("\n");
+  return trace.outcome === "aborted" ? "已停止生成。" : "本次未生成完整回复。";
 }
 
 // ---------------------------------------------------------------------------
 // CodePreviewPanel: right-side EPL code preview
 // ---------------------------------------------------------------------------
-
-function CodePreviewPanel({
-  items,
-  activeId,
-  onSelect,
-  onClose,
-  width,
-  onResize,
-}: {
-  items: EplPreviewData[];
-  activeId: string;
-  onSelect: (id: string) => void;
-  onClose: () => void;
-  width: number;
-  onResize: (w: number) => void;
-}) {
-  const [copied, setCopied] = useState(false);
-  const dragging = useRef(false);
-  const activePreview = items.find((item) => item.id === activeId) ?? items[0];
-
-  const handleOpen = async () => {
-    if (!activePreview?.path) return;
-    try {
-      await openPath(activePreview.path);
-    } catch (err) {
-      toast.error(`打开失败：${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
-
-  const handleReveal = async () => {
-    if (!activePreview?.path) return;
-    try {
-      await revealItemInDir(activePreview.path);
-    } catch (err) {
-      toast.error(`打开目录失败：${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
-
-  const handleSaveAs = async () => {
-    if (!activePreview) return;
-    try {
-      const ext = "txt";
-      const originalName = activePreview.path?.split(/[\\/]/).pop()
-        ?? activePreview.title.replace(/[\\/:*?"<>|]/g, "_");
-      const name = /\.(epl|txt)$/i.test(originalName)
-        ? originalName
-        : `${originalName}.txt`;
-      const target = await saveDialog({
-        defaultPath: name,
-        filters: [{ name: "易语言代码", extensions: [ext, "epl"] }],
-      });
-      if (!target) return;
-      await writeTextFile(target, activePreview.code);
-      toast.success("代码已保存");
-    } catch (err) {
-      toast.error(`保存失败：${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
-
-  const handleCopy = async () => {
-    if (!activePreview) return;
-    try {
-      await navigator.clipboard.writeText(activePreview.code);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch { /* ignore */ }
-  };
-
-  const handleDragStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    dragging.current = true;
-    const startX = e.clientX;
-    const startWidth = width;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-
-    const onMove = (ev: MouseEvent) => {
-      if (!dragging.current) return;
-      const newWidth = Math.min(800, Math.max(280, startWidth - (ev.clientX - startX)));
-      onResize(newWidth);
-    };
-    const onUp = () => {
-      dragging.current = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }, [width, onResize]);
-
-  if (!activePreview) return null;
-
-  return (
-    <div className="code-preview-panel" style={{ width }}>
-      <div
-        className="code-preview-resize-handle"
-        onMouseDown={handleDragStart}
-      />
-      <div className="code-preview-header">
-        <div className="code-preview-heading">
-          <span className="code-preview-title">易语言代码</span>
-          <span className="code-preview-count">{items.length} 个片段</span>
-        </div>
-        <span className="code-preview-spacer" />
-        <div className="flex items-center gap-0.5">
-          {activePreview.path && (
-            <>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    className="code-preview-icon-button"
-                    onClick={handleOpen}
-                    aria-label="打开文件"
-                  >
-                    <File className="h-3.5 w-3.5" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>打开文件</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    className="code-preview-icon-button"
-                    onClick={handleReveal}
-                    aria-label="打开目录"
-                  >
-                    <FolderOpen className="h-3.5 w-3.5" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>打开目录</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    className="code-preview-icon-button"
-                    onClick={handleSaveAs}
-                    aria-label="另存为"
-                  >
-                    <DownloadSimple className="h-3.5 w-3.5" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>另存为</TooltipContent>
-              </Tooltip>
-            </>
-          )}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                className="code-preview-icon-button"
-                onClick={handleCopy}
-                aria-label="复制代码"
-              >
-                {copied ? <Check className="h-3.5 w-3.5" /> : <CopySimple className="h-3.5 w-3.5" />}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>{copied ? "已复制" : "复制代码"}</TooltipContent>
-          </Tooltip>
-          <button
-            type="button"
-            className="code-preview-close"
-            onClick={onClose}
-            aria-label="关闭预览"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      </div>
-      <div className="code-preview-content">
-        <section className="code-preview-main">
-          <div className="code-preview-meta">
-            {items.length > 1 ? (
-              <Select value={activePreview.id} onValueChange={onSelect}>
-                <SelectTrigger className="code-preview-select">
-                  <SelectValue placeholder="选择易语言文件" />
-                </SelectTrigger>
-                <SelectContent>
-                  {items.map((item) => (
-                    <SelectItem key={item.id} value={item.id}>
-                      {item.title}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : (
-              <div className="code-preview-current-row">
-                <span className="code-preview-current-title" title={activePreview.title}>
-                  {activePreview.title}
-                </span>
-                <span className="code-preview-current-badge">
-                  {activePreview.sourceLabel}
-                </span>
-              </div>
-            )}
-            {activePreview.path && (
-              <div className="code-preview-current-path" title={activePreview.path}>
-                {shortenPath(activePreview.path)}
-              </div>
-            )}
-          </div>
-          <div className="code-preview-body">
-            <EplRenderer code={activePreview.code} theme={1} showLineNumbers={false} />
-          </div>
-        </section>
-      </div>
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // MessageBubble: assistant turns get a collapsible trace panel underneath.
@@ -1080,9 +646,11 @@ const MessageBubble = memo(function MessageBubble({
   const isUser = message.role === "user";
   const trace = message.agentTrace;
   const pendingChoice = !isUser ? trace?.pendingUserChoice : undefined;
-  const displayContent = isUser
-    ? message.content
-    : sanitizeProtocolText(message.content || t("chat.emptyAssistantMessage"));
+  const displayContent = message.content;
+  const reasoning = [
+    ...(trace?.steps.map(step => step.reasoningContent).filter(Boolean) ?? []),
+    message.reasoningContent,
+  ].filter(Boolean).join("\n\n");
 
   return (
     <div
@@ -1096,15 +664,23 @@ const MessageBubble = memo(function MessageBubble({
           "flex max-w-[85%] flex-col gap-2 rounded-2xl px-4 py-3 text-sm leading-6",
           isUser
             ? "user-message-bubble"
-            : "bg-transparent px-0 text-foreground",
-          message.isStreaming && "streaming-cursor",
+            : "assistant-message-content bg-transparent px-0 text-foreground",
         )}
       >
+        {!isUser && reasoning && <ReasoningDisclosure text={reasoning} running={Boolean(message.isStreaming && !displayContent && !message.activeToolCallId)} />}
+        {!isUser && trace && trace.toolCallCount > 0 && (
+          <AgentTracePanel trace={trace} running={Boolean(message.isStreaming)} activeToolId={message.activeToolCallId} />
+        )}
         {isUser ? (
           <p className="whitespace-pre-wrap break-words">{displayContent}</p>
         ) : (
-          <MarkdownView content={displayContent} />
+          <div className="assistant-response">
+            {displayContent && <MarkdownView content={displayContent} />}
+            {message.isStreaming && (!trace?.toolCallCount || displayContent) && (!reasoning || displayContent) && <div className="assistant-activity" role="status" aria-label={displayContent ? "正在生成回复" : "正在思考"}><span className="assistant-activity-dot" />{!displayContent && "正在思考"}</div>}
+          </div>
         )}
+
+        {!isUser && !message.isStreaming && displayContent && <ReplyActions text={displayContent} />}
 
         {pendingChoice && (
           <AgentChoicePrompt
@@ -1114,13 +690,38 @@ const MessageBubble = memo(function MessageBubble({
           />
         )}
 
-        {!isUser && trace && trace.steps.length > 0 && (
-          <AgentTracePanel trace={trace} />
-        )}
       </div>
     </div>
   );
 });
+
+function ReasoningDisclosure({ text, running }: { text: string; running: boolean }) {
+  const [open, setOpen] = useState(false);
+  const summary = text.split(/\r?\n/).filter(line => line.trim()).at(-1)?.replace(/[*`#]/g, "");
+  return <div className="assistant-reasoning" data-running={running}>
+    <button type="button" className="assistant-reasoning-toggle" aria-expanded={open} onClick={() => setOpen(value => !value)}>
+      <Brain size={15} /><span>{running ? "思考中" : "思考过程"}</span>
+      {!open && <span className="assistant-reasoning-summary">{summary}</span>}
+      <CaretRight size={12} className={open ? "is-expanded" : ""} />
+    </button>
+    {open && <div className="assistant-reasoning-body"><MarkdownView content={text} /></div>}
+  </div>;
+}
+
+function ReplyActions({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), 1200);
+    } catch { toast.error("复制失败"); }
+  };
+  return <div className="assistant-actions"><button type="button" aria-label={copied ? "已复制回复" : "复制回复"} title={copied ? "已复制" : "复制回复"} onClick={() => void copy()}>{copied ? <Check size={15} /> : <CopySimple size={15} />}</button></div>;
+}
 
 function AgentChoicePrompt({
   request,
@@ -1156,47 +757,118 @@ function AgentChoicePrompt({
 // AgentTracePanel: a compact, collapsible visualisation of all ReAct steps.
 // ---------------------------------------------------------------------------
 
-function AgentTracePanel({ trace }: { trace: AgentTrace }) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-  const stepCount = trace.steps.length;
-  const elapsedMs = Math.max(0, trace.endedAt - trace.startedAt);
-
-  const summary = useMemo(() => {
-    return t("chat.traceSummary", {
-      stepCount,
-      elapsed: formatMs(elapsedMs),
-      outcome: outcomeLabel(trace.outcome),
-    });
-  }, [stepCount, elapsedMs, trace.outcome, t]);
-
+function AgentTracePanel({ trace, running, activeToolId }: { trace: AgentTrace; running: boolean; activeToolId?: string }) {
+  const [disclosure, setDisclosure] = useState<{ phase: boolean; open: boolean } | null>(null);
+  const open = disclosure?.phase === running ? disclosure.open : running;
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
+  const elapsedMs = Math.max(0, (running ? now : trace.endedAt) - trace.startedAt);
   const codeDiff = useMemo(() => extractCodeDiff(trace), [trace]);
-
-  return (
-    <div className="agent-trace-panel overflow-hidden">
+  const steps = trace.steps.filter(step => step.toolCalls.length > 0);
+  const currentCall = activeToolId ? steps.flatMap(step => step.toolCalls).find(call => call.id === activeToolId) : null;
+  const completedItems = trace.plan?.items.filter(item => item.status === "done" || item.status === "skipped").length ?? 0;
+  const summary = currentCall ? toolLabel(currentCall.name)
+    : trace.plan?.items.length ? `${completedItems}/${trace.plan.items.length} 项计划已完成`
+      : `${trace.toolCallCount} 次工具调用`;
+  const artifacts = useMemo(() => {
+    const paths = new Set<string>();
+    for (const step of trace.steps) for (const result of step.toolResults) {
+      const rc = extractResultContent(result.content);
+      if (result.ok && rc.success !== false && rc.outputPath && /\.(e|exe|ec)$/i.test(rc.outputPath)) paths.add(rc.outputPath);
+    }
+    return [...paths];
+  }, [trace]);
+  let previousThought = "";
+  return <>
+    <div className="agent-trace-panel" data-running={running} data-expanded={open}>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-2 px-0 py-1.5 text-xs text-muted-foreground hover:text-foreground transition"
+        aria-expanded={open}
+        onClick={() => setDisclosure({ phase: running, open: !open })}
+        className="agent-process-toggle"
       >
-        {open ? (
-          <CaretDown className="h-3.5 w-3.5" />
-        ) : (
-          <CaretRight className="h-3.5 w-3.5" />
-        )}
-        <span className="opacity-80">处理过程</span>
-        <span className="ml-auto opacity-60">{summary}</span>
+        {running ? <CircleNotch size={14} className="animate-spin" /> : <Check size={14} className={trace.outcome === "answer" ? "" : "invisible"} />}
+        <span>{running ? activeToolId ? "正在执行" : "正在思考" : outcomeLabel(trace.outcome)}</span>
+        <span className="agent-process-summary">{summary}</span>
+        <span className="agent-process-duration">{formatMs(elapsedMs)}</span>
+        {open ? <CaretDown size={12} /> : <CaretRight size={12} />}
       </button>
       {open && (
-        <div className="pl-5 pr-0 py-1 space-y-2 text-xs">
-          {trace.steps.map((step) => (
-            <AgentStepSummary key={step.index} step={step} />
-          ))}
+        <div className="agent-process-body">
+          {steps.map(step => {
+            const thought = parseThought(step.assistantText);
+            const showThought = thought && thought !== previousThought && thought !== trace.finalAnswer;
+            if (thought) previousThought = thought;
+            return <Fragment key={step.index}>
+              {showThought && <div className="agent-preamble"><MarkdownView content={thought} /></div>}
+              <AgentStepSummary step={step} running={running} activeToolId={activeToolId} />
+            </Fragment>;
+          })}
+          {running && !activeToolId && <div className="agent-next-status" role="status"><span className="assistant-activity-dot" />正在整理下一步…</div>}
           {codeDiff && <CodeDiffPanel diff={codeDiff} />}
         </div>
       )}
     </div>
+    {artifacts.length > 0 && <div className="agent-artifacts">{artifacts.map(path => <button type="button" key={path} title={path} onClick={() => void openPath(path).catch(error => toast.error(`打开失败：${String(error)}`))}><FileText size={14} />{fileName(path)}<span>打开</span></button>)}</div>}
+  </>;
+}
+
+// ---------------------------------------------------------------------------
+// AgentPlanChecklist: the visible TODO list the model maintains via update_plan.
+// Pure presentational; status drives the icon/'strikethrough.
+// ---------------------------------------------------------------------------
+
+function AgentPlanChecklist({ plan }: { plan: NonNullable<AgentTrace["plan"]> }) {
+  const doneCount = plan.items.filter(
+    (item) => item.status === "done" || item.status === "skipped",
+  ).length;
+  return (
+    <div className="agent-plan-checklist mb-1 rounded-md border border-border/60 bg-secondary/30 px-3 py-2">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <span>执行计划</span>
+        <span className="ml-auto opacity-70">
+          {doneCount}/{plan.items.length}
+        </span>
+      </div>
+      <ul className="mt-1.5 space-y-1">
+        {plan.items.map((item) => (
+          <li key={item.id} className="flex items-start gap-2 text-xs leading-relaxed">
+            <span className="mt-0.5 shrink-0">{planStatusIcon(item.status)}</span>
+            <span
+              className={
+                item.status === "done"
+                  ? "line-through opacity-55"
+                  : item.status === "skipped"
+                  ? "line-through opacity-40"
+                  : item.status === "in_progress"
+                  ? "text-foreground"
+                  : "opacity-80"
+              }
+            >
+              {item.title}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
+}
+
+function planStatusIcon(status: string) {
+  switch (status) {
+    case "done":
+      return <span className="text-green-500">✓</span>;
+    case "in_progress":
+      return <span className="text-blue-500 animate-pulse">▸</span>;
+    case "skipped":
+      return <span className="opacity-50">–</span>;
+    default:
+      return <span className="opacity-50">○</span>;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,6 +879,7 @@ function parseThought(text: string): string | null {
   if (!text) return null;
   try {
     const trimmed = text.trim();
+    if (!trimmed.startsWith("{")) return trimmed;
     const start = trimmed.indexOf("{");
     if (start < 0) return null;
     let depth = 0;
@@ -1236,33 +909,22 @@ function parseThought(text: string): string | null {
 // ---------------------------------------------------------------------------
 
 function formatToolArgs(name: string, args: Record<string, unknown>): string {
-  switch (name) {
-    case "read_file":
-      return String(args.file_path ?? "");
-    case "parse_efile":
-    case "export_efile_to_ecode":
-    case "compile_efile":
-      return String(args.target_path ?? "");
-    case "summarize_ecode_project":
-    case "analyze_ecode_project":
-    case "inspect_ecode_context":
-    case "build_ecode_project":
-      return String(args.ecode_dir ?? "");
-    case "generate_efile_from_ecode":
-      return String(args.ecode_dir ?? args.output_path ?? "");
-    case "generate_efile_from_code": {
-      const code = String(args.code ?? "");
-      return code.length > 60 ? code.slice(0, 60) + "..." : code;
-    }
-    case "save_text_file":
-      return String(args.path ?? "");
-    case "ask_user_choice":
-      return String(args.question ?? "");
-    default: {
-      const raw = JSON.stringify(args);
-      return raw.length > 80 ? raw.slice(0, 80) + "..." : raw;
-    }
+  if (name === "update_plan") {
+    const items = Array.isArray(args.items) ? args.items as Array<{ title?: string; status?: string }> : [];
+    const done = items.filter(item => item.status === "done" || item.status === "skipped").length;
+    return `${done}/${items.length}` + (items.find(item => item.status === "in_progress")?.title ? ` · ${items.find(item => item.status === "in_progress")!.title}` : "");
   }
+  if (name === "generate_gui_project") {
+    const project = args.project as { windows?: Array<{ title?: string; controls?: unknown[] }> } | undefined;
+    const windows = project?.windows ?? [];
+    return `${windows.map(window => window.title || "窗口").join("、")} · ${windows.reduce((count, window) => count + (window.controls?.length ?? 0), 0)} 个控件`;
+  }
+  if (/search/.test(name) && name !== "apply_search_replace") return String(args.query ?? args.keyword ?? "");
+  if (name === "ask_user_choice") return String(args.question ?? "");
+  const path = args.file_path ?? args.path ?? args.target_path ?? args.output_path ?? args.ecode_dir ?? args.root_path;
+  if (typeof path === "string" && path) return fileName(path);
+  if (typeof args.code === "string") return `${args.code.split("\n").length} 行代码`;
+  return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -1271,14 +933,29 @@ function formatToolArgs(name: string, args: Record<string, unknown>): string {
 
 interface ToolResultContent {
   success?: boolean;
+  readyForEdit?: boolean;
+  workflowId?: string;
+  ecodeDir?: string;
+  snapshotPath?: string;
+  workflowStatePath?: string;
+  buildReportPath?: string;
+  sourcePath?: string;
+  stage?: string;
   outputPath?: string;
   filePath?: string;
   encoding?: string;
   bytes?: number;
   truncated?: boolean;
+  startLine?: number;
+  startChar?: number;
+  nextStartChar?: number | null;
+  hash?: string;
   error?: string;
   stderr?: string;
   stdout?: string;
+  nextInstruction?: string;
+  repairInstruction?: string;
+  changedFiles?: Array<Record<string, unknown>>;
   fileContent?: string;
   outputExcerpt?: string;
   raw: unknown;
@@ -1289,14 +966,32 @@ function extractResultContent(content: unknown): ToolResultContent {
   const c = content as Record<string, unknown>;
   return {
     success: typeof c.success === "boolean" ? c.success : undefined,
+    readyForEdit: typeof c.ready_for_edit === "boolean" ? c.ready_for_edit : undefined,
+    workflowId: typeof c.workflow_id === "string" ? c.workflow_id : undefined,
+    ecodeDir: typeof c.ecode_dir === "string" ? c.ecode_dir : undefined,
+    snapshotPath: typeof c.snapshot_path === "string" ? c.snapshot_path : undefined,
+    workflowStatePath: typeof c.workflow_state_path === "string" ? c.workflow_state_path : undefined,
+    buildReportPath: typeof c.build_report_path === "string" ? c.build_report_path : undefined,
+    sourcePath: typeof c.source_path === "string" ? c.source_path : undefined,
+    stage: typeof c.stage === "string" ? c.stage : undefined,
     outputPath: typeof c.output_path === "string" ? c.output_path : undefined,
     filePath: typeof c.path === "string" ? c.path : undefined,
     encoding: typeof c.encoding === "string" ? c.encoding : undefined,
     bytes: typeof c.bytes === "number" ? c.bytes : undefined,
-    truncated: typeof c.truncated === "boolean" ? c.truncated : undefined,
+    truncated: c.is_partial === true || c.truncated === true,
+    startLine: typeof c.start_line === "number" ? c.start_line : undefined,
+    startChar: typeof c.start_char === "number" ? c.start_char : undefined,
+    nextStartChar: typeof c.next_start_char === "number" ? c.next_start_char : null,
+    hash: typeof c.code_hash === "string" ? c.code_hash : undefined,
     error: typeof c.error === "string" ? c.error : undefined,
     stderr: typeof c.stderr === "string" ? c.stderr : undefined,
     stdout: typeof c.stdout === "string" ? c.stdout : undefined,
+    nextInstruction: typeof c.next_instruction === "string" ? c.next_instruction : undefined,
+    repairInstruction: typeof c.repair_instruction === "string" ? c.repair_instruction : undefined,
+    changedFiles: Array.isArray(c.changed_files)
+      ? c.changed_files.filter((item): item is Record<string, unknown> =>
+        Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      : undefined,
     fileContent: typeof c.content === "string" ? c.content : undefined,
     outputExcerpt: typeof c.output_excerpt === "string" ? c.output_excerpt : undefined,
     raw: content,
@@ -1305,7 +1000,7 @@ function extractResultContent(content: unknown): ToolResultContent {
 
 function extractToolFailureSummary(rc: ToolResultContent): string | null {
   if (rc.success !== false) return null;
-  const text = [rc.error, rc.stderr, rc.stdout]
+  const text = [rc.error, rc.repairInstruction, rc.stderr, rc.stdout]
     .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
     .join("\n");
   if (!text.trim()) return null;
@@ -1392,165 +1087,63 @@ function FileActions({ filePath }: { filePath: string }) {
 // AgentStepSummary: detailed view of a single ReAct step.
 // ---------------------------------------------------------------------------
 
-function AgentStepSummary({ step }: { step: AgentStep }) {
-  const [expanded, setExpanded] = useState(false);
-  const thought = useMemo(() => parseThought(step.assistantText), [step.assistantText]);
-  const elapsed = formatMs(Math.max(0, step.endedAt - step.startedAt));
-
-  const toolSummary = step.toolCalls.length > 0
-    ? step.toolCalls.map((tc) => toolLabel(tc.name)).join("、")
-    : step.finishReason === "answer"
-      ? "生成回复"
-      : step.finishReason === "format_retry"
-        ? "自检修正"
-        : step.finishReason === "error"
-          ? "错误"
-          : "推理";
-
-  const hasDetails = step.finishReason !== "format_retry" && (step.toolCalls.length > 0 || thought);
-
-  return (
-    <div className="agent-step rounded-md overflow-hidden">
-      <button
-        type="button"
-        onClick={() => hasDetails && setExpanded((v) => !v)}
-        className={cn(
-          "w-full flex items-center gap-2 px-2 py-1.5 text-left",
-          hasDetails && "hover:bg-background/40 cursor-pointer",
-          !hasDetails && "cursor-default",
-        )}
-      >
-        {hasDetails ? (
-          expanded ? <CaretDown className="h-3 w-3 shrink-0" /> : <CaretRight className="h-3 w-3 shrink-0" />
-        ) : (
-          <span className="w-3 shrink-0" />
-        )}
-        <span className="font-medium opacity-80">第 {step.index} 步</span>
-        <span className="opacity-60 truncate flex-1">{toolSummary}</span>
-        <span className="opacity-50 shrink-0">{elapsed}</span>
-      </button>
-
-      {expanded && (
-        <div className="px-3 pb-2 pt-1 space-y-2">
-          {thought && (
-            <p className="italic text-muted-foreground">{thought}</p>
-          )}
-          {step.toolCalls.map((tc, i) => {
-            const result = step.toolResults[i];
-            const rc = result ? extractResultContent(result.content) : null;
-            return (
-              <ToolCallCard
-                key={tc.id}
-                call={tc}
-                result={result ?? null}
-                rc={rc}
-              />
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
+function AgentStepSummary({ step, running, activeToolId }: { step: AgentStep; running: boolean; activeToolId?: string }) {
+  return <div className="agent-step">{step.toolCalls.map(call => {
+    const result = step.toolResults.find(item => item.toolCallId === call.id) ?? null;
+    return <ToolCallRow key={call.id} call={call} result={result} running={running} active={activeToolId === call.id} />;
+  })}</div>;
 }
 
-// ---------------------------------------------------------------------------
-// ToolCallCard: single tool call + its result
-// ---------------------------------------------------------------------------
+function toolIcon(name: string) {
+  if (name === "update_plan") return ListChecks;
+  if (/gui/.test(name)) return Layout;
+  if (/compile|build|loop/.test(name)) return TerminalWindow;
+  if (/save|replace|generate/.test(name)) return PencilSimple;
+  if (/search|scan|analyze|inspect|summarize/.test(name)) return MagnifyingGlass;
+  return FileText;
+}
 
-function ToolCallCard({
-  call,
-  result,
-  rc,
-}: {
-  call: ToolCall;
-  result: ToolResult | null;
-  rc: ToolResultContent | null;
-}) {
-  const [showResult, setShowResult] = useState(false);
-  const ok = result?.ok ?? true;
-  const argPreview = formatToolArgs(call.name, call.arguments);
-  const failureSummary = rc ? extractToolFailureSummary(rc) : null;
-
-  return (
-    <div className="agent-tool-card">
-      <div className="flex items-center gap-2">
-        <span className={cn(
-          "agent-tool-badge",
-          ok ? "agent-tool-badge-ok" : "agent-tool-badge-err",
-        )}>
-          {ok ? <Check className="h-2.5 w-2.5" /> : <X className="h-2.5 w-2.5" />}
-        </span>
-        <span className="font-medium">{toolLabel(call.name)}</span>
-        {result && (
-          <span className="opacity-50 ml-auto">{formatMs(result.durationMs)}</span>
-        )}
-      </div>
-
-      {argPreview && (
-        <p className="text-muted-foreground truncate mt-0.5 pl-5 font-mono text-[10px]">
-          {argPreview}
-        </p>
-      )}
-
-      {rc && (
-        <div className="mt-1 pl-5 space-y-1">
-          {rc.filePath && rc.encoding && (
-            <p className="text-muted-foreground">
-              {rc.filePath} · {rc.encoding} · {rc.bytes != null ? `${rc.bytes} 字节` : ""}
-              {rc.truncated && " · 已截断"}
-            </p>
-          )}
-          {rc.success !== undefined && (
-            <p className={rc.success ? "text-green-600 dark:text-green-400" : "text-red-500"}>
-              {rc.success ? "成功" : "失败"}
-              {rc.outputPath && ` → ${rc.outputPath.split(/[\\/]/).pop()}`}
-            </p>
-          )}
-          {failureSummary && (
-            <p className="text-red-500 break-all">
-              {failureSummary}
-            </p>
-          )}
-          {rc.error && !rc.stderr && (
-            <p className="text-red-500 break-all">{rc.error}</p>
-          )}
-          {rc.outputPath && rc.success && (
-            <FileActions filePath={rc.outputPath} />
-          )}
-
-          {(rc.stderr || rc.stdout || rc.fileContent) && (
-            <button
-              type="button"
-              onClick={() => setShowResult((v) => !v)}
-              className="text-muted-foreground hover:text-foreground transition text-[10px] underline underline-offset-2"
-            >
-              {showResult ? "收起详情" : "查看详情"}
-            </button>
-          )}
-          {showResult && (
-            <div className="agent-result-block">
-              {rc.stderr && (
-                <pre className="text-red-400 whitespace-pre-wrap break-all">
-                  {rc.stderr.slice(0, 2000)}
-                </pre>
-              )}
-              {rc.stdout && (
-                <pre className="whitespace-pre-wrap break-all">
-                  {rc.stdout.slice(0, 1000)}
-                </pre>
-              )}
-              {rc.fileContent && (
-                <pre className="whitespace-pre-wrap break-all">
-                  {rc.fileContent.slice(0, 2000)}
-                  {(rc.fileContent.length > 2000) && "\n... (已截断)"}
-                </pre>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+function ToolCallRow({ call, result, running, active }: { call: ToolCall; result: ToolResult | null; running: boolean; active: boolean }) {
+  const [open, setOpen] = useState(false);
+  const openPreview = useContext(DocumentPreviewContext);
+  const rc = result ? extractResultContent(result.content) : null;
+  const failed = Boolean(result && (!result.ok || rc?.success === false));
+  const state = result ? failed ? "failed" : "done" : running ? active ? "running" : "queued" : "stopped";
+  const Icon = toolIcon(call.name);
+  const preview = toolPreviewDocument(call, result);
+  const summary = formatToolArgs(call.name, call.arguments);
+  const error = result?.error ?? (rc && extractToolFailureSummary(rc)) ?? rc?.error;
+  const path = rc?.outputPath ?? rc?.filePath ?? rc?.sourcePath;
+  const items = call.name === "update_plan" && Array.isArray(call.arguments.items) ? call.arguments.items as NonNullable<AgentTrace["plan"]>["items"] : null;
+  return <div className="agent-tool-row" data-state={state}>
+    <div className="agent-tool-line">
+      <button type="button" className="agent-tool-toggle" aria-expanded={open} aria-label={`${open ? "收起" : "展开"}${toolLabel(call.name)}详情`} onClick={() => setOpen(value => !value)}>
+        <span className="agent-tool-leading">{state === "running" ? <CircleNotch size={15} className="animate-spin" /> : <Icon size={15} />}<CaretRight className="agent-tool-chevron" size={13} /></span>
+        <span className="agent-tool-title">{toolLabel(call.name)}</span>
+      </button>
+      {summary && <><span className="agent-tool-separator">·</span>{preview && openPreview
+        ? <button type="button" className="agent-tool-file" title={preview.path ?? preview.title} onClick={() => openPreview(preview)}>{summary}</button>
+        : <button type="button" className="agent-tool-summary" title={summary} onClick={() => setOpen(value => !value)}>{summary}</button>}</>}
+      <span className="agent-tool-state">{state === "running" ? "执行中" : state === "queued" ? "等待执行" : state === "failed" ? "失败" : state === "stopped" ? "未完成" : ""}</span>
     </div>
-  );
+    {failed && <div className="agent-tool-error" role="status">{error || "执行失败，展开查看详情。"}</div>}
+    {open && <div className="agent-tool-details">
+      {items && <AgentPlanChecklist plan={{ items, updatedAt: 0 }} />}
+      {preview && <button type="button" className="agent-preview-link" onClick={() => openPreview?.(preview)}><FileText size={14} />{preview.title}<span>在右侧预览</span></button>}
+      {rc?.fileContent && <CodeBlock code={rc.fileContent} language={documentLanguage(rc.filePath ?? "", rc.fileContent)} startLine={rc.startLine} />}
+      {rc?.truncated && <p className="text-muted-foreground">当前为文件片段，可在右侧继续读取。</p>}
+      {(rc?.stderr || rc?.stdout || error || rc?.repairInstruction) && <pre className="agent-tool-log">{[error, rc?.repairInstruction, rc?.stderr, rc?.stdout].filter(Boolean).join("\n")}</pre>}
+      {rc?.changedFiles && <div className="agent-changed-files">{rc.changedFiles.map((file, index) => <div key={index}>{String(file.relativePath ?? file.path ?? "文件")} <span>+{Number(file.addedLines ?? 0)} / −{Number(file.removedLines ?? 0)}</span></div>)}</div>}
+      {path && <div className="agent-detail-path" title={path}>{shortenPath(path)}<FileActions filePath={path} /></div>}
+      {[rc?.buildReportPath, rc?.snapshotPath, rc?.workflowStatePath, rc?.ecodeDir].filter((item): item is string => Boolean(item)).map(item => <div className="agent-detail-path" key={item} title={item}>{shortenPath(item)}<FileActions filePath={item} /></div>)}
+      <ToolDiagnostics call={call} result={result} />
+    </div>}
+  </div>;
+}
+
+function ToolDiagnostics({ call, result }: { call: ToolCall; result: ToolResult | null }) {
+  const [open, setOpen] = useState(false);
+  return <details className="agent-tool-diagnostics" onToggle={event => setOpen(event.currentTarget.open)}><summary>调用数据</summary>{open && <pre>{JSON.stringify({ tool: call.name, arguments: call.arguments, result: result?.content, error: result?.error }, null, 2)}</pre>}</details>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1667,15 +1260,6 @@ function CodeDiffPanel({ diff }: { diff: CodeDiffData }) {
 // EPL code extraction from trace — for right-side preview panel
 // ---------------------------------------------------------------------------
 
-interface EplPreviewData {
-  id: string;
-  code: string;
-  title: string;
-  path?: string;
-  sourceLabel: string;
-  stepIndex: number;
-}
-
 function isLikelyEplContent(content: string, path = ""): boolean {
   const normalized = content.replace(/\r\n/g, "\n").trim();
   if (normalized.length < 10) return false;
@@ -1685,129 +1269,49 @@ function isLikelyEplContent(content: string, path = ""): boolean {
   return /^\.版本|^\.支持库|^\.程序集|^\.子程序|^\.全局变量/m.test(normalized);
 }
 
-function extractEplPreviewItems(trace: AgentTrace | null): EplPreviewData[] {
-  if (!trace) return [];
-
-  const previewMap = new Map<string, EplPreviewData>();
-
-  const upsertPreview = (preview: {
-    code: string;
-    title: string;
-    path?: string;
-    sourceLabel: string;
-    stepIndex: number;
-  }) => {
-    if (!isLikelyEplContent(preview.code, preview.path ?? "")) return;
-    const id = preview.path
-      ? preview.path.toLowerCase()
-      : `${preview.sourceLabel}:${preview.title}`;
-    previewMap.set(id, {
-      id,
-      code: preview.code.replace(/\r\n/g, "\n"),
-      title: preview.title,
-      path: preview.path,
-      sourceLabel: preview.sourceLabel,
-      stepIndex: preview.stepIndex,
-    });
-  };
-
-  for (const step of trace.steps) {
-    for (let index = 0; index < step.toolCalls.length; index += 1) {
-      const call = step.toolCalls[index];
-      const result = step.toolResults[index];
-      if (!result?.ok) continue;
-
-      if (call.name === "read_file") {
-        const rc = extractResultContent(result.content);
-        const path = rc.filePath ?? String(call.arguments.file_path ?? "");
-        if (rc.fileContent) {
-          upsertPreview({
-            code: rc.fileContent,
-            title: path.split(/[\\/]/).pop() ?? "源码",
-            path,
-            sourceLabel: "提取",
-            stepIndex: step.index,
-          });
-        }
-      }
-
-      if (call.name === "save_text_file") {
-        const path = String(call.arguments.path ?? "");
-        const content = typeof call.arguments.content === "string"
-          ? call.arguments.content
-          : null;
-        if (content) {
-          upsertPreview({
-            code: content,
-            title: path.split(/[\\/]/).pop() ?? "优化后源码",
-            path,
-            sourceLabel: "修改",
-            stepIndex: step.index,
-          });
-        }
-      }
-
-      if (call.name === "generate_efile_from_code") {
-        const code = typeof call.arguments.code === "string"
-          ? call.arguments.code
-          : null;
-        if (code) {
-          upsertPreview({
-            code,
-            title: "生成的代码",
-            sourceLabel: "生成",
-            stepIndex: step.index,
-          });
-        }
-      }
-    }
+function toolPreviewDocument(call: ToolCall, result: ToolResult | null): PreviewDocument | null {
+  if (!result?.ok) return null;
+  const rc = extractResultContent(result.content);
+  if (rc.success === false) return null;
+  const data = (result.content && typeof result.content === "object" ? result.content : {}) as Record<string, unknown>;
+  let path = String(rc.filePath ?? call.arguments.file_path ?? call.arguments.path ?? "");
+  let code: string | undefined;
+  let loadFromDisk = false;
+  if (call.name === "read_file") code = rc.fileContent;
+  if (call.name === "save_text_file" && typeof call.arguments.content === "string") code = call.arguments.content;
+  if (call.name === "generate_efile_from_code" && typeof call.arguments.code === "string") {
+    const title = fileName(String(rc.outputPath ?? "生成的代码.e")) + ".txt";
+    return { id: `generated:${call.id}`, title, code: call.arguments.code, language: "epl", sourceLabel: "生成" };
   }
+  if (call.name === "generate_gui_project" && typeof data.layout_path === "string") {
+    path = data.layout_path; loadFromDisk = true;
+  }
+  if (call.name === "apply_search_replace") {
+    path = String(call.arguments.file_path ?? call.arguments.path ?? rc.filePath ?? ""); loadFromDisk = true;
+  }
+  if (!path || !isTextPath(path) || (code === undefined && !loadFromDisk)) return null;
+  return {
+    id: path.replaceAll("\\", "/").toLowerCase(), title: fileName(path), path, code: code ?? "",
+    language: documentLanguage(path, code), sourceLabel: call.name === "read_file" ? "读取" : "修改",
+    partial: rc.truncated, startLine: rc.startLine, startChar: rc.startChar,
+    nextStartChar: rc.nextStartChar, hash: rc.hash, loadFromDisk,
+    revision: call.id,
+  };
+}
 
-  return [...previewMap.values()].sort((a, b) => {
-    if (b.stepIndex !== a.stepIndex) return b.stepIndex - a.stepIndex;
-    return a.title.localeCompare(b.title, "zh-CN");
-  });
+function extractEplPreviewItems(trace: AgentTrace | null): PreviewDocument[] {
+  if (!trace) return [];
+  const files = new Map<string, PreviewDocument>();
+  for (const step of trace.steps) for (const call of step.toolCalls) {
+    const document = toolPreviewDocument(call, step.toolResults.find(result => result.toolCallId === call.id) ?? null);
+    if (document) files.set(document.id, document);
+  }
+  return [...files.values()];
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Extract partial `thought` from an incomplete JSON stream.
- *  Candidate final answers stay hidden until the Agent has completed its
- *  internal self-check, so rejected code is not briefly shown in the chat. */
-function extractStreamingThought(buf: string): string | null {
-  for (const key of ['"thought"']) {
-    const idx = buf.lastIndexOf(key);
-    if (idx < 0) continue;
-    // Find the colon after the key, then the opening quote of the value
-    const afterKey = buf.indexOf(":", idx + key.length);
-    if (afterKey < 0) continue;
-    const quoteStart = buf.indexOf('"', afterKey + 1);
-    if (quoteStart < 0) continue;
-    // Collect chars after the opening quote, handling escaped chars
-    let value = "";
-    let escape = false;
-    for (let i = quoteStart + 1; i < buf.length; i++) {
-      const c = buf[i];
-      if (escape) {
-        if (c === "n") value += "\n";
-        else if (c === "t") value += "\t";
-        else if (c === "\\") value += "\\";
-        else if (c === '"') value += '"';
-        else if (c === "/") value += "/";
-        else value += c;
-        escape = false;
-        continue;
-      }
-      if (c === "\\") { escape = true; continue; }
-      if (c === '"') break; // end of value
-      value += c;
-    }
-    if (value.length > 0) return value;
-  }
-  return null;
-}
 
 function formatMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;

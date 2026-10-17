@@ -5,12 +5,11 @@ import type {
   ToolCall,
   ToolDefinition,
 } from "@/types/llm";
-import { BaseLLMProvider, LLMError } from "./base";
+import { BaseLLMProvider, LLMError, LLMOutputLimitError } from "./base";
 import {
   buildOpenAIEndpoint,
   createSseJsonEventParser,
   extractTextFromOpenAIJson,
-  extractToolCallsFromOpenAIJson,
   isOpenAIUsageOnlyChunk,
   parseSseJsonEvents,
   safeParseJson,
@@ -24,7 +23,8 @@ export class OpenAIChatCompletionsProvider extends BaseLLMProvider {
     callbacks: StreamCallbacks,
     options?: StreamOptions,
   ): Promise<void> {
-    this.abortController = new AbortController();
+    const controller = new AbortController();
+    this.abortController = controller;
 
     type OpenAIToolCall = {
       id: string;
@@ -33,7 +33,7 @@ export class OpenAIChatCompletionsProvider extends BaseLLMProvider {
     };
     type OpenAIMsg =
       | { role: "system" | "user"; content: string }
-      | { role: "assistant"; content: string; tool_calls?: OpenAIToolCall[] }
+      | { role: "assistant"; content: string; reasoning_content?: string; tool_calls?: OpenAIToolCall[] }
       | { role: "tool"; tool_call_id: string; content: string };
 
     const nativeToolsEnabled = options?.nativeTools !== false;
@@ -64,6 +64,8 @@ export class OpenAIChatCompletionsProvider extends BaseLLMProvider {
         return {
           role: "assistant",
           content: message.content ?? "",
+          ...(/^(deepseek-flash|deepseek-v4-pro|deepseek-reasoner)$/.test(this.config.model) || message.reasoningContent !== undefined
+            ? { reasoning_content: message.reasoningContent ?? "" } : {}),
           tool_calls: message.toolCalls.map((call) => ({
             id: call.id,
             type: "function" as const,
@@ -78,6 +80,8 @@ export class OpenAIChatCompletionsProvider extends BaseLLMProvider {
       return {
         role: message.role === "assistant" ? "assistant" : message.role === "system" ? "system" : "user",
         content: message.content,
+        ...(message.role === "assistant" && (message.reasoningContent !== undefined || /^(deepseek-flash|deepseek-v4-pro|deepseek-reasoner)$/.test(this.config.model))
+          ? { reasoning_content: message.reasoningContent ?? "" } : {}),
       };
     });
 
@@ -113,22 +117,58 @@ export class OpenAIChatCompletionsProvider extends BaseLLMProvider {
         },
         requestBody,
         handleStreamChunk,
+        120,
+        controller.signal,
       );
 
     let fullText = "";
     let nativeToolCalls: ToolCall[] = [];
+    let reasoningContent = "";
+    const toolFragments = new Map<number, { id: string; name: string; arguments: string }>();
     let parsedResponseJson: unknown = null;
+    let outputTruncated = false;
+    let sawFinish = false;
+    const inspectFinish = (json: unknown) => {
+      if (!json || typeof json !== "object") return;
+      const choices = (json as { choices?: { finish_reason?: string }[] }).choices;
+      if (Array.isArray(choices)) {
+        if (choices.some(choice => Boolean(choice?.finish_reason))) sawFinish = true;
+        if (choices.some(choice => choice?.finish_reason === "length")) outputTruncated = true;
+      }
+    };
+    // DeepSeek streams names/arguments in separate deltas. Parse only after the
+    // terminal event, so a partial JSON argument can never become a tool call.
+    const collectToolState = (json: unknown) => {
+      const choice = (json as { choices?: { delta?: Record<string, unknown>; message?: Record<string, unknown> }[] })?.choices?.[0];
+      const part = choice?.delta ?? choice?.message;
+      if (!part) return;
+      if (typeof part.reasoning_content === "string") {
+        reasoningContent += part.reasoning_content;
+        callbacks.onReasoningToken?.(part.reasoning_content);
+      }
+      if (!Array.isArray(part.tool_calls)) return;
+      part.tool_calls.forEach((raw, position) => {
+        const call = raw as { index?: number; id?: string; function?: { name?: string; arguments?: string } };
+        const index = call.index ?? position;
+        const state = toolFragments.get(index) ?? { id: "", name: "", arguments: "" };
+        if (call.id) state.id = call.id;
+        if (call.function?.name) state.name += call.function.name;
+        if (typeof call.function?.arguments === "string") state.arguments += call.function.arguments;
+        toolFragments.set(index, state);
+      });
+    };
     let sawSseEvent = false;
     const sseParser = createSseJsonEventParser((json) => {
       sawSseEvent = true;
       parsedResponseJson = json;
+      inspectFinish(json);
       if (isOpenAIUsageOnlyChunk(json)) return;
       const text = extractTextFromOpenAIJson(json);
       if (text) {
         fullText += text;
         callbacks.onToken(text);
       }
-      nativeToolCalls.push(...extractToolCallsFromOpenAIJson(json));
+      collectToolState(json);
     });
 
     function handleStreamChunk(chunk: string) {
@@ -144,7 +184,7 @@ export class OpenAIChatCompletionsProvider extends BaseLLMProvider {
       return;
     }
 
-    if (this.abortController.signal.aborted) return;
+    if (controller.signal.aborted) return;
     sseParser.flush();
 
     if (response.status < 200 || response.status >= 300) {
@@ -164,22 +204,40 @@ export class OpenAIChatCompletionsProvider extends BaseLLMProvider {
           const events = parseSseJsonEvents(response.text);
           for (const json of events) {
             parsedResponseJson = json;
+            inspectFinish(json);
             if (isOpenAIUsageOnlyChunk(json)) continue;
             fullText += extractTextFromOpenAIJson(json);
-            nativeToolCalls.push(...extractToolCallsFromOpenAIJson(json));
+            collectToolState(json);
           }
         }
       } else {
         parsedResponseJson = safeParseJson(response.text);
+        inspectFinish(parsedResponseJson);
         fullText = extractTextFromOpenAIJson(parsedResponseJson);
-        nativeToolCalls = extractToolCallsFromOpenAIJson(parsedResponseJson);
+        collectToolState(parsedResponseJson);
       }
 
+      if (outputTruncated) {
+        callbacks.onError(new LLMOutputLimitError(this.config.maxTokens));
+        return;
+      }
+      if (isSseResponse && !sawFinish) {
+        callbacks.onError(new LLMError("DeepSeek 响应流提前断开，未收到结束标记，未执行本轮工具调用。", 502));
+        return;
+      }
+      nativeToolCalls = [...toolFragments.entries()].sort(([a], [b]) => a - b).map(([, call]) => {
+        if (!call.id || !call.name) throw new Error("DeepSeek 工具调用缺少 id 或名称，未执行本轮工具。");
+        let args: unknown;
+        try { args = JSON.parse(call.arguments); }
+        catch { throw new Error(`DeepSeek 工具 ${call.name} 的参数不完整，未执行本轮工具。`); }
+        if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error(`工具 ${call.name} 参数必须是 JSON 对象。`);
+        return { id: call.id, name: call.name, arguments: args as Record<string, unknown>, rawArguments: call.arguments };
+      });
       if (nativeToolCalls.length > 0) {
         for (const call of nativeToolCalls) {
           callbacks.onToolCall?.(call);
         }
-        callbacks.onComplete(fullText);
+        callbacks.onComplete(fullText, { reasoningContent });
         return;
       }
 
@@ -195,7 +253,7 @@ export class OpenAIChatCompletionsProvider extends BaseLLMProvider {
       }
 
       if (!sawSseEvent) callbacks.onToken(fullText);
-      callbacks.onComplete(fullText);
+      callbacks.onComplete(fullText, { reasoningContent });
     } catch (err) {
       if ((err as Error).name === "AbortError") return;
       callbacks.onError(err instanceof Error ? err : new Error(String(err)));

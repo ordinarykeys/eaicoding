@@ -445,12 +445,12 @@ async function invokeBackend(
   if (command === "llm_proxy_request") {
     const request = rawArgs.request && typeof rawArgs.request === "object"
       ? rawArgs.request as {
-          url?: unknown;
-          method?: unknown;
-          headers?: unknown;
-          body?: unknown;
-          timeoutSecs?: unknown;
-        }
+        url?: unknown;
+        method?: unknown;
+        headers?: unknown;
+        body?: unknown;
+        timeoutSecs?: unknown;
+      }
       : {};
     const url = typeof request.url === "string" ? request.url : "";
     const method = typeof request.method === "string" ? request.method : "POST";
@@ -530,11 +530,11 @@ async function invokeBackend(
       typeof rawArgs.outputDir === "string" && rawArgs.outputDir.trim()
         ? rawArgs.outputDir.trim()
         : path.join(
-            process.env.LOCALAPPDATA ?? os.tmpdir(),
-            "eaicoding-desktop",
-            "ecode",
-            `${path.basename(sourcePath, path.extname(sourcePath))}-${Date.now()}`,
-          );
+          process.env.LOCALAPPDATA ?? os.tmpdir(),
+          "eaicoding-desktop",
+          "ecode",
+          `${path.basename(sourcePath, path.extname(sourcePath))}-${Date.now()}`,
+        );
     await fs.mkdir(outputDir, { recursive: true });
     const result = await runProcess(
       tools.e2txtExe,
@@ -661,8 +661,8 @@ async function invokeBackend(
       stdout: result.stdout,
       stderr:
         result.exitCode === 0 &&
-        !outputReady &&
-        !(result.stdout.includes("SUCC:") || result.stderr.includes("SUCC:"))
+          !outputReady &&
+          !(result.stdout.includes("SUCC:") || result.stderr.includes("SUCC:"))
           ? `${result.stderr}\ne2txt 已退出，但目标 .e 文件未在预期时间内确认。`.trim()
           : result.stderr,
       source_path: null,
@@ -729,13 +729,13 @@ async function invokeBackend(
     const statusOk = result.exitCode === 0 || result.exitCode === 1;
     const stderr = statusOk && !outputExists
       ? [
-          `ecl.exe 未生成目标 EXE：${outputPath}`,
-          `退出码：${result.exitCode ?? "未知"}`,
-          `静态链接：${staticLink}`,
-          result.stderr.trim() || result.stdout.trim()
-            ? `编译器输出：\n${[result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n")}`
-            : "没有捕获到编译器输出。",
-        ].join("\n")
+        `ecl.exe 未生成目标 EXE：${outputPath}`,
+        `退出码：${result.exitCode ?? "未知"}`,
+        `静态链接：${staticLink}`,
+        result.stderr.trim() || result.stdout.trim()
+          ? `编译器输出：\n${[result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n")}`
+          : "没有捕获到编译器输出。",
+      ].join("\n")
       : result.stderr;
     return {
       success: statusOk && outputExists,
@@ -772,8 +772,8 @@ export async function runSmoke(options: SmokeOptions): Promise<{
   };
 
   globalObject.window = globalObject;
-  globalObject.window.addEventListener ??= () => {};
-  globalObject.window.removeEventListener ??= () => {};
+  globalObject.window.addEventListener ??= () => { };
+  globalObject.window.removeEventListener ??= () => { };
   globalObject.__EAICODING_LOCAL_EMBEDDING_MODEL_PATH__ = path.join(
     options.repoRoot,
     "public",
@@ -810,11 +810,11 @@ export async function runSmoke(options: SmokeOptions): Promise<{
   globalObject.window.__TAURI_INTERNALS__ = {
     invoke: (cmd, args = {}) => invokeBackend(options.repoRoot, cmd, args),
     transformCallback: () => callbackId++,
-    unregisterCallback: () => {},
+    unregisterCallback: () => { },
   };
 
   const config: LLMConfig = {
-    provider: "openai",
+    provider: "deepseek",
     baseUrl: options.baseUrl,
     apiKey: options.apiKey,
     model: options.model,

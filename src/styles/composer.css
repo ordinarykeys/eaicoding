@@ -1,0 +1,54 @@
+.chat-composer-host { padding: 8px 24px 4px; }
+.harness-composer-dock { width: 100%; max-width: 952px; margin: 0 auto; }
+.harness-composer { position: relative; display: flex; flex-direction: column; gap: 12px; width: 100%; padding: 8px 0 0; border: 0; border-radius: 10px; background: var(--card); box-shadow: 0 2px 8px #00000008, 0 6px 20px #00000005; font: 14px/24px var(--font-sans); }
+.dark .harness-composer { box-shadow: 0 2px 8px #00000020; }
+.harness-composer-input { display: block; box-sizing: border-box; width: 100%; flex: none; height: 36px; min-height: 36px; max-height: 168px; margin: 0; padding: 4px 14px 0; resize: none; overflow-y: auto; border: 0; border-radius: 0; outline: none; box-shadow: none; background: transparent; color: var(--foreground); caret-color: var(--primary); font: inherit; overflow-wrap: anywhere; }
+.harness-composer-input:focus, .harness-composer-input:focus-visible { border: 0; outline: none; box-shadow: none; }
+.harness-composer-input::placeholder { color: var(--muted-foreground); opacity: .75; }
+.harness-composer-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 2px 8px 6px; }
+.harness-composer-tools, .harness-composer-trailing { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.harness-composer-trailing { margin-left: auto; flex: none; }
+.harness-composer-add { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 50%; background: var(--secondary); color: var(--foreground); cursor: pointer; }
+.harness-model-trigger { display: flex; align-items: center; justify-content: center; gap: 4px; height: 28px; min-width: 0; max-width: min(360px, 52vw); padding: 0 4px 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--muted-foreground); font: 13px/20px var(--font-sans); cursor: pointer; }
+.harness-composer-add:hover, .harness-model-trigger:hover { background: var(--accent); }
+.harness-model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.harness-model-trigger > svg { flex: none; transition: transform 120ms ease; }
+.harness-model-trigger[aria-expanded="true"] > svg { transform: rotate(180deg); }
+.harness-composer-send { display: grid; flex: none; place-items: center; width: 34px; height: 34px; transform: translateY(-2px); border: 0; border-radius: 8px; background: var(--primary); color: var(--primary-foreground); cursor: pointer; }
+.harness-composer-send:hover:not(:disabled) { filter: brightness(1.08); }
+.harness-composer-send:disabled { opacity: .4; cursor: default; }
+.harness-composer button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.harness-composer button:disabled { cursor: default; opacity: .45; }
+.harness-composer-hint { min-height: 20px; padding: 4px 0 0; color: var(--muted-foreground); font: 11px/18px var(--font-sans); text-align: center; }
+.harness-model-picker, .harness-command-root { position: relative; }
+.harness-model-menu, .harness-command-menu { position: absolute; bottom: calc(100% + 12px); z-index: 60; min-width: 248px; max-width: calc(100vw - 40px); padding: 6px; border: 0; border-radius: 8px; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 0 0 .5px var(--border), 0 3px 16px #00000018; }
+.harness-model-menu { position: fixed; z-index: 1100; bottom: auto; min-width: min(240px, calc(100vw - 24px)); width: max-content; max-width: min(420px, calc(100vw - 24px)); padding: 4px; }
+.harness-command-menu { left: 0; }
+.harness-menu-heading { padding: 7px 10px; color: var(--muted-foreground); font-size: 11px; line-height: 18px; }
+.harness-model-options { max-height: min(320px, 48vh); overflow-y: auto; }
+.harness-command-menu > button { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--foreground); cursor: pointer; text-align: left; font: 13px/20px var(--font-sans); }
+.harness-model-options > button { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 34px; padding: 5px 7px; border: 0; border-radius: 6px; background: transparent; color: var(--foreground); text-align: left; font: 13px/18px var(--font-sans); cursor: pointer; }
+.harness-model-options > button > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.harness-model-check { display: grid; place-items: center; flex: 0 0 14px; color: var(--foreground); }
+.harness-model-options > button:disabled { cursor: default; opacity: .45; }
+.harness-model-trigger:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.harness-model-options strong { display: block; font-weight: 400; overflow-wrap: anywhere; }
+.harness-model-options small, .harness-command-menu small { display: block; color: var(--muted-foreground); font-size: 11px; line-height: 18px; }
+.harness-model-options > button:hover, .harness-model-options > button:focus, .harness-command-menu > button:hover { outline: none; background: var(--accent); }
+.harness-model-search { display: flex; align-items: center; gap: 8px; padding: 6px 8px; color: var(--muted-foreground); }
+.harness-model-search input { width: 100%; padding: 4px 0; border: 0; outline: 0; background: transparent; color: var(--foreground); font-size: 13px; }
+.harness-menu-empty { padding: 14px 10px; font-size: 12px; color: var(--muted-foreground); }
+.harness-composer-files { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 14px 0; }
+.harness-file-chip { display: flex; align-items: center; gap: 6px; max-width: 260px; padding: 3px 7px; border-radius: 8px; background: var(--secondary); color: var(--foreground); font-size: 12px; }
+.harness-file-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.harness-file-chip button { flex: none; padding: 3px; cursor: pointer; }
+.chat-message-content { max-width: 920px; }
+.harness-chat-column[data-empty="true"] .chat-message-scroll { flex: 0 1 auto; margin-top: auto; }
+.harness-chat-column[data-empty="true"] .chat-empty-welcome { min-height: 0; padding: 20px 0 12px; }
+.harness-chat-column[data-empty="true"] .chat-composer-host { margin-bottom: auto; }
+.module-library-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted-foreground); font-size: 12px; }
+@media (max-width: 760px) {
+  .chat-composer-host { padding: 8px 12px 4px; }
+  .harness-composer-tools, .harness-composer-trailing { gap: 6px; }
+  .harness-composer-row { gap: 6px; }
+}

@@ -66,7 +66,12 @@ fn pick_root(root_path: Option<String>) -> PathBuf {
         }
     }
 
-    for candidate in [r"D:\e", r"C:\e", r"D:\Program Files\e", r"C:\Program Files (x86)\e"] {
+    for candidate in [
+        r"D:\e",
+        r"C:\e",
+        r"D:\Program Files\e",
+        r"C:\Program Files (x86)\e",
+    ] {
         let path = PathBuf::from(candidate);
         if path.join("e.exe").exists() || path.join("lib").exists() {
             return path;
@@ -275,15 +280,23 @@ pub fn scan_easy_language_env(root_path: Option<String>) -> Result<EasyLanguageE
         root: path_string(&root),
         exists,
         is_compile_ready,
-        e_exe: root.join("e.exe").exists().then(|| path_string(&root.join("e.exe"))),
-        el_exe: root.join("el.exe").exists().then(|| path_string(&root.join("el.exe"))),
+        e_exe: root
+            .join("e.exe")
+            .exists()
+            .then(|| path_string(&root.join("e.exe"))),
+        el_exe: root
+            .join("el.exe")
+            .exists()
+            .then(|| path_string(&root.join("el.exe"))),
         help_dir: help_dir.exists().then(|| path_string(&help_dir)),
         lib_dir: lib_dir.exists().then(|| path_string(&lib_dir)),
         ecom_dir: ecom_dir.exists().then(|| path_string(&ecom_dir)),
         sdk_dir: sdk_dir.exists().then(|| path_string(&sdk_dir)),
         tools_dir: tools_dir.exists().then(|| path_string(&tools_dir)),
         linker_dir: linker_dir.exists().then(|| path_string(&linker_dir)),
-        static_lib_dir: static_lib_dir.exists().then(|| path_string(&static_lib_dir)),
+        static_lib_dir: static_lib_dir
+            .exists()
+            .then(|| path_string(&static_lib_dir)),
         counts: EasyLanguageEnvCounts {
             support_library_files: support_libraries.len(),
             module_files: modules.len(),

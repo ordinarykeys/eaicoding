@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
@@ -17,12 +18,12 @@ use crate::eagent_tools::detect_eagent_tools;
 
 #[cfg(target_os = "windows")]
 fn hide_window(cmd: &mut tokio::process::Command) -> &mut tokio::process::Command {
-    cmd.creation_flags(0x08000000) // CREATE_NO_WINDOW
+    cmd.kill_on_drop(true).creation_flags(0x08000000) // CREATE_NO_WINDOW
 }
 
 #[cfg(not(target_os = "windows"))]
 fn hide_window(cmd: &mut tokio::process::Command) -> &mut tokio::process::Command {
-    cmd
+    cmd.kill_on_drop(true)
 }
 
 fn decode_tool_output(bytes: &[u8]) -> String {
@@ -113,7 +114,7 @@ fn ensure_parent_dir(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn copy_dir_all(from: &Path, to: &Path) -> Result<(), String> {
+pub(crate) fn copy_dir_all(from: &Path, to: &Path) -> Result<(), String> {
     fs::create_dir_all(to).map_err(|err| format!("创建目录失败 {}：{}", to.display(), err))?;
     for entry in
         fs::read_dir(from).map_err(|err| format!("读取目录失败 {}：{}", from.display(), err))?
@@ -135,6 +136,30 @@ fn copy_dir_all(from: &Path, to: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+// Always build into a fresh sibling. Existing user artifacts never count as
+// evidence of success and survive a failed or cancelled compiler invocation.
+struct PendingArtifact(PathBuf);
+impl PendingArtifact {
+    fn new(output: &Path) -> Self {
+        let ext = output.extension().unwrap_or_default().to_string_lossy();
+        Self(output.with_file_name(format!(
+            "eaicoding-pending-{:016x}.{}",
+            rand::random::<u64>(),
+            ext
+        )))
+    }
+    fn publish(&self, output: &Path) -> Result<(), String> {
+        fs::copy(&self.0, output)
+            .map_err(|e| format!("保存构建结果失败 {}：{}", output.display(), e))?;
+        Ok(())
+    }
+}
+impl Drop for PendingArtifact {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 fn list_files(root: &Path, limit: usize) -> Vec<String> {
@@ -163,6 +188,7 @@ fn list_files(root: &Path, limit: usize) -> Vec<String> {
     files
 }
 
+#[cfg(test)]
 fn wait_for_path(path: &Path, timeout: Duration, poll_interval: Duration) -> bool {
     let started = Instant::now();
 
@@ -180,7 +206,29 @@ fn wait_for_path(path: &Path, timeout: Duration, poll_interval: Duration) -> boo
     }
 }
 
-fn stage_module_dependencies(e_root: &Path, module_paths: &[String]) -> Result<Vec<String>, String> {
+/// Async variant: polling with tokio::time::sleep keeps the (up to 10s) wait
+/// from pinning a tokio worker thread the way thread::sleep did.
+async fn wait_for_path_async(path: &Path, timeout: Duration, poll_interval: Duration) -> bool {
+    let started = Instant::now();
+
+    loop {
+        if path.exists() {
+            return true;
+        }
+
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            return false;
+        }
+
+        tokio::time::sleep(poll_interval.min(timeout.saturating_sub(elapsed))).await;
+    }
+}
+
+fn stage_module_dependencies(
+    e_root: &Path,
+    module_paths: &[String],
+) -> Result<Vec<String>, String> {
     if module_paths.is_empty() {
         return Ok(Vec::new());
     }
@@ -199,6 +247,12 @@ fn stage_module_dependencies(e_root: &Path, module_paths: &[String]) -> Result<V
             .file_name()
             .ok_or_else(|| format!("无法识别模块文件名：{}", source.display()))?;
         let target = ecom_dir.join(file_name);
+        // A configured installation can already contain the requested module.
+        // Copying a file onto itself would truncate it on some platforms.
+        if source.canonicalize().ok() == target.canonicalize().ok() && target.is_file() {
+            staged.push(target.to_string_lossy().to_string());
+            continue;
+        }
         fs::copy(&source, &target).map_err(|err| {
             format!(
                 "复制模块失败 {} -> {}：{}",
@@ -233,7 +287,10 @@ fn escape_json_string(value: &str) -> String {
         .to_string()
 }
 
-fn write_ecode_module_refs(ecode_dir: &Path, module_paths: &[String]) -> Result<Vec<String>, String> {
+fn write_ecode_module_refs(
+    ecode_dir: &Path,
+    module_paths: &[String],
+) -> Result<Vec<String>, String> {
     if module_paths.is_empty() {
         return Ok(Vec::new());
     }
@@ -263,8 +320,14 @@ fn write_ecode_module_refs(ecode_dir: &Path, module_paths: &[String]) -> Result<
     Ok(refs)
 }
 
-fn stage_local_ecom_modules(e_root: &Path, easy_language_root: Option<&str>) -> Result<Vec<String>, String> {
-    let Some(root) = easy_language_root.map(str::trim).filter(|item| !item.is_empty()) else {
+fn stage_local_ecom_modules(
+    e_root: &Path,
+    easy_language_root: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let Some(root) = easy_language_root
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    else {
         return Ok(Vec::new());
     };
     let source_ecom = PathBuf::from(root).join("ecom");
@@ -378,7 +441,15 @@ pub struct ParseResult {
 ///
 /// Usage: `eparser32.exe <ECodeParser.dll> <eroot> <input.e|.ec> <output.txt>`
 #[tauri::command]
-pub async fn parse_efile(app: AppHandle, file_path: String) -> Result<ParseResult, String> {
+pub async fn parse_efile(
+    app: AppHandle,
+    file_path: String,
+    request_id: Option<String>,
+) -> Result<ParseResult, String> {
+    crate::task_cancel::cancellable(request_id, parse_efile_inner(app, file_path)).await
+}
+
+async fn parse_efile_inner(app: AppHandle, file_path: String) -> Result<ParseResult, String> {
     let detected = detect_eagent_tools(app);
     let exe = detected
         .eparser_exe
@@ -519,7 +590,8 @@ pub struct ECodeProjectMapResult {
 }
 
 fn decode_text_file(path: &Path) -> Result<String, String> {
-    let bytes = fs::read(path).map_err(|err| format!("读取文件失败 {}：{}", path.display(), err))?;
+    let bytes =
+        fs::read(path).map_err(|err| format!("读取文件失败 {}：{}", path.display(), err))?;
     match String::from_utf8(bytes.clone()) {
         Ok(text) => Ok(text),
         Err(_) => Ok(encoding_rs::GBK.decode(&bytes).0.to_string()),
@@ -657,7 +729,9 @@ fn collect_line_calls(line: &str, calls: &mut Vec<String>) {
             let marker_index = start + offset;
             let before = line[..marker_index].trim_end();
             let candidate = before
-                .split(|ch: char| ch.is_whitespace() || ch == '＝' || ch == '=' || ch == '+' || ch == '＋')
+                .split(|ch: char| {
+                    ch.is_whitespace() || ch == '＝' || ch == '=' || ch == '+' || ch == '＋'
+                })
                 .filter(|item| !item.trim().is_empty())
                 .last()
                 .unwrap_or("")
@@ -669,7 +743,9 @@ fn collect_line_calls(line: &str, calls: &mut Vec<String>) {
                 && candidate.chars().count() <= 40
                 && (candidate.contains('_')
                     || candidate.contains('.')
-                    || candidate.chars().any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch)))
+                    || candidate
+                        .chars()
+                        .any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch)))
             {
                 push_limited_unique(calls, candidate.to_string(), 16);
             }
@@ -766,7 +842,7 @@ pub async fn summarize_ecode_project_for_agent(
     }
 
     let include_modules = include_modules.unwrap_or(false);
-    let max_files = max_files.unwrap_or(40).clamp(1, 120);
+    let max_files = max_files.unwrap_or(40).clamp(1, 500);
     let mut source_paths = Vec::new();
     let mut skipped_module_file_count = 0;
     collect_ecode_source_files(
@@ -880,8 +956,31 @@ fn normalize_ecode_project_text_files(ecode_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// True if the file contains any line ending that is not already CRLF:
+/// a bare LF (not preceded by CR) or a bare CR (not followed by LF).
+fn has_non_crlf_line_ending(bytes: &[u8]) -> bool {
+    for (index, byte) in bytes.iter().enumerate() {
+        match byte {
+            b'\n' => {
+                if index == 0 || bytes[index - 1] != b'\r' {
+                    return true;
+                }
+            }
+            b'\r' => {
+                if index + 1 >= bytes.len() || bytes[index + 1] != b'\n' {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn normalize_ecode_text_file_line_endings(dir: &Path) -> Result<(), String> {
-    for entry in fs::read_dir(dir).map_err(|err| format!("读取目录失败 {}：{}", dir.display(), err))? {
+    for entry in
+        fs::read_dir(dir).map_err(|err| format!("读取目录失败 {}：{}", dir.display(), err))?
+    {
         let entry = entry.map_err(|err| format!("读取目录项失败：{}", err))?;
         let path = entry.path();
         if path.is_dir() {
@@ -900,12 +999,17 @@ fn normalize_ecode_text_file_line_endings(dir: &Path) -> Result<(), String> {
             continue;
         }
 
-        let bytes = fs::read(&path).map_err(|err| format!("读取文件失败 {}：{}", path.display(), err))?;
-        if !bytes.windows(1).any(|item| item == b"\n") {
+        let bytes =
+            fs::read(&path).map_err(|err| format!("读取文件失败 {}：{}", path.display(), err))?;
+        if !has_non_crlf_line_ending(&bytes) {
+            // Already pure CRLF (or no line breaks) — skip the decode/rewrite.
             continue;
         }
         let text = decode_tool_output(&bytes);
-        let normalized = text.replace("\r\n", "\n").replace('\r', "\n").replace('\n', "\r\n");
+        let normalized = text
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .replace('\n', "\r\n");
         fs::write(&path, normalized.as_bytes())
             .map_err(|err| format!("写入规范化文本失败 {}：{}", path.display(), err))?;
     }
@@ -917,7 +1021,9 @@ fn validate_ecode_source_declarations(
     dir: &Path,
     findings: &mut Vec<String>,
 ) -> Result<(), String> {
-    for entry in fs::read_dir(dir).map_err(|err| format!("读取目录失败 {}：{}", dir.display(), err))? {
+    for entry in
+        fs::read_dir(dir).map_err(|err| format!("读取目录失败 {}：{}", dir.display(), err))?
+    {
         let entry = entry.map_err(|err| format!("读取目录项失败：{}", err))?;
         let path = entry.path();
         if path.is_dir() {
@@ -966,6 +1072,27 @@ fn declaration_line_has_initializer(line: &str) -> bool {
     comma_count >= 4 && (line.contains('"') || line.contains('“') || line.contains('”'))
 }
 
+fn e2txt_succeeded(exit_ok: bool, stdout: &str, stderr: &str) -> bool {
+    // e2txt can report SUCC and emit a .e after dropping invalid event code.
+    // Its parser error records must invalidate that output, even on exit 0.
+    let has_parser_error = stdout.lines().chain(stderr.lines()).any(|line| {
+        let lower = line.trim().to_ascii_lowercase();
+        let tagged_error = lower
+            .split_once('[')
+            .map(|(_, level)| {
+                level.starts_with("错误]")
+                    || level.starts_with("error]")
+                    || level.starts_with("fatal]")
+            })
+            .unwrap_or(false);
+        tagged_error
+            || lower.starts_with("err:")
+            || lower.starts_with("error:")
+            || lower.starts_with("fatal:")
+    });
+    exit_ok && (stdout.contains("SUCC:") || stderr.contains("SUCC:")) && !has_parser_error
+}
+
 async fn run_e2txt(
     e2txt: &str,
     args: Vec<String>,
@@ -983,12 +1110,25 @@ async fn run_e2txt(
         .map_err(|err| format!("启动 e2txt 失败：{}", err))?;
     let stdout = decode_tool_output(&output.stdout);
     let stderr = decode_tool_output(&output.stderr);
-    let success = output.status.success() && (stdout.contains("SUCC:") || stderr.contains("SUCC:"));
+    let success = e2txt_succeeded(output.status.success(), &stdout, &stderr);
     Ok((success, stdout, stderr))
 }
 
 #[tauri::command]
 pub async fn export_efile_to_ecode(
+    app: AppHandle,
+    source_path: String,
+    output_dir: Option<String>,
+    request_id: Option<String>,
+) -> Result<ECodeProjectResult, String> {
+    crate::task_cancel::cancellable(
+        request_id,
+        export_efile_to_ecode_inner(app, source_path, output_dir),
+    )
+    .await
+}
+
+async fn export_efile_to_ecode_inner(
     app: AppHandle,
     source_path: String,
     output_dir: Option<String>,
@@ -1042,6 +1182,19 @@ pub async fn generate_efile_from_ecode(
     app: AppHandle,
     ecode_dir: String,
     output_path: String,
+    request_id: Option<String>,
+) -> Result<ECodeProjectResult, String> {
+    crate::task_cancel::cancellable(
+        request_id,
+        generate_efile_from_ecode_inner(app, ecode_dir, output_path),
+    )
+    .await
+}
+
+async fn generate_efile_from_ecode_inner(
+    app: AppHandle,
+    ecode_dir: String,
+    output_path: String,
 ) -> Result<ECodeProjectResult, String> {
     let detected = detect_eagent_tools(app.clone());
     let e2txt = detected
@@ -1087,12 +1240,13 @@ pub async fn generate_efile_from_ecode(
     };
     ensure_parent_dir(&output)?;
 
+    let pending = PendingArtifact::new(&output);
     let mut args = e2txt_base_args();
     args.extend([
         "-src".to_string(),
         ecode_dir.to_string_lossy().to_string(),
         "-dst".to_string(),
-        output.to_string_lossy().to_string(),
+        pending.0.to_string_lossy().to_string(),
         "-mode".to_string(),
         "t2e".to_string(),
     ]);
@@ -1101,19 +1255,22 @@ pub async fn generate_efile_from_ecode(
         .parent()
         .map(|path| path.to_path_buf());
     let (success, stdout, stderr) = run_e2txt(&e2txt, args, current_dir.as_deref()).await?;
-    let output_ready = wait_for_path(
-        &output,
+    let output_ready = wait_for_path_async(
+        &pending.0,
         Duration::from_secs(10),
         Duration::from_millis(100),
-    );
+    )
+    .await;
+    if success && output_ready {
+        pending.publish(&output)?;
+    }
     let stderr = if success && !output_ready {
         if stderr.trim().is_empty() {
             "e2txt 已返回成功，但目标 .e 文件在等待 10 秒后仍未出现。".to_string()
         } else {
             format!(
                 "{}\n{}",
-                stderr,
-                "e2txt 已返回成功，但目标 .e 文件在等待 10 秒后仍未出现。"
+                stderr, "e2txt 已返回成功，但目标 .e 文件在等待 10 秒后仍未出现。"
             )
         }
     } else {
@@ -1126,13 +1283,27 @@ pub async fn generate_efile_from_ecode(
         stderr,
         source_path: None,
         ecode_dir: Some(ecode_dir.to_string_lossy().to_string()),
-        output_path: Some(output.to_string_lossy().to_string()),
+        output_path: (success && output_ready).then(|| output.to_string_lossy().to_string()),
         files: list_files(&ecode_dir, 200),
     })
 }
 
 #[tauri::command]
 pub async fn generate_efile_from_code(
+    app: AppHandle,
+    code: String,
+    output_path: String,
+    module_paths: Option<Vec<String>>,
+    request_id: Option<String>,
+) -> Result<ECodeProjectResult, String> {
+    crate::task_cancel::cancellable(
+        request_id,
+        generate_efile_from_code_inner(app, code, output_path, module_paths),
+    )
+    .await
+}
+
+async fn generate_efile_from_code_inner(
     app: AppHandle,
     code: String,
     output_path: String,
@@ -1156,10 +1327,7 @@ pub async fn generate_efile_from_code(
         .join(format!("project-{}", timestamp));
 
     copy_dir_all(Path::new(&template_dir), &work_dir)?;
-    let module_refs = write_ecode_module_refs(
-        &work_dir,
-        module_paths.as_deref().unwrap_or(&[]),
-    )?;
+    let module_refs = write_ecode_module_refs(&work_dir, module_paths.as_deref().unwrap_or(&[]))?;
 
     let code_file = work_dir.join("代码").join("程序集1.static.e.txt");
     fs::write(&code_file, normalize_e_code_for_template(&code))
@@ -1174,7 +1342,8 @@ pub async fn generate_efile_from_code(
     };
 
     let mut result =
-        generate_efile_from_ecode(app, work_dir.to_string_lossy().to_string(), output_path).await?;
+        generate_efile_from_ecode_inner(app, work_dir.to_string_lossy().to_string(), output_path)
+            .await?;
     if !module_refs.is_empty() {
         result.stdout = format!(
             "已写入模块引用：\n{}\n\n{}",
@@ -1187,8 +1356,81 @@ pub async fn generate_efile_from_code(
 
 /// Compile an .e project through ecl.exe. ecl is optional and may be unusable on
 /// modern Windows, but this path is explicit and does not drive the GUI IDE.
+#[derive(Serialize)]
+pub struct GuiProjectResult {
+    #[serde(flatten)]
+    project: ECodeProjectResult,
+    layout_path: String,
+    window_count: usize,
+    control_count: usize,
+}
+
+#[tauri::command]
+pub async fn generate_gui_project(
+    app: AppHandle,
+    project: crate::gui_project::GuiProject,
+    output_path: Option<String>,
+    module_paths: Option<Vec<String>>,
+    request_id: Option<String>,
+) -> Result<GuiProjectResult, String> {
+    crate::task_cancel::cancellable(request_id, async {
+        project.validate()?;
+        let tools = detect_eagent_tools(app.clone());
+        let template = tools
+            .ecode_template_dir
+            .path
+            .ok_or("内置文本工程模板缺失")?;
+        let id = format!("{}-{:016x}", std::process::id(), rand::random::<u64>());
+        let work_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("generated-ecode")
+            .join(format!("gui-{}", id));
+        copy_dir_all(Path::new(&template), &work_dir)?;
+        let layout_path = crate::gui_project::write_gui_project(&work_dir, &project)?;
+        write_ecode_module_refs(&work_dir, module_paths.as_deref().unwrap_or(&[]))?;
+        let output = output_path
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| work_dir.join("窗口程序.e").to_string_lossy().to_string());
+        let result =
+            generate_efile_from_ecode_inner(app, work_dir.to_string_lossy().to_string(), output)
+                .await?;
+        Ok(GuiProjectResult {
+            project: result,
+            layout_path,
+            window_count: project.windows.len(),
+            control_count: project.windows.iter().map(|w| w.controls.len()).sum(),
+        })
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn compile_efile(
+    app: AppHandle,
+    source_path: String,
+    output_path: Option<String>,
+    static_link: Option<bool>,
+    module_paths: Option<Vec<String>>,
+    easy_language_root: Option<String>,
+    request_id: Option<String>,
+) -> Result<CompileResult, String> {
+    crate::task_cancel::cancellable(
+        request_id,
+        compile_efile_inner(
+            app,
+            source_path,
+            output_path,
+            static_link,
+            module_paths,
+            easy_language_root,
+        ),
+    )
+    .await
+}
+
+async fn compile_efile_inner(
     app: AppHandle,
     source_path: String,
     output_path: Option<String>,
@@ -1201,14 +1443,27 @@ pub async fn compile_efile(
         .ecl_exe
         .path
         .ok_or_else(|| "内置 ecl.exe 缺失，无法执行命令行编译检查".to_string())?;
-    let e_root = detected
-        .e_root
-        .path
-        .ok_or_else(|| "内置易语言运行环境缺失或解压失败，请重新安装应用".to_string())?;
-    let e_exe = detected
-        .e_exe
-        .path
-        .ok_or_else(|| "内置易语言运行环境缺失或解压失败，请重新安装应用".to_string())?;
+    let (e_root, e_exe) = if let Some(root) = easy_language_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let exe = Path::new(root).join("e.exe");
+        if !exe.is_file() {
+            return Err(format!("指定的易语言目录缺少 e.exe：{}", root));
+        }
+        (root.to_string(), exe.to_string_lossy().to_string())
+    } else {
+        let root = detected
+            .e_root
+            .path
+            .ok_or_else(|| "内置易语言运行环境缺失或解压失败，请重新安装应用".to_string())?;
+        let exe = detected
+            .e_exe
+            .path
+            .ok_or_else(|| "内置易语言运行环境缺失或解压失败，请重新安装应用".to_string())?;
+        (root, exe)
+    };
 
     let source = PathBuf::from(&source_path);
     if !source.exists() {
@@ -1220,11 +1475,10 @@ pub async fn compile_efile(
         .map(PathBuf::from)
         .unwrap_or_else(|| source.with_extension("exe"));
     ensure_parent_dir(&output)?;
+    let pending = PendingArtifact::new(&output);
 
-    let mut staged_modules = stage_local_ecom_modules(
-        Path::new(&e_root),
-        easy_language_root.as_deref(),
-    )?;
+    let mut staged_modules =
+        stage_local_ecom_modules(Path::new(&e_root), easy_language_root.as_deref())?;
     staged_modules.extend(stage_module_dependencies(
         Path::new(&e_root),
         module_paths.as_deref().unwrap_or(&[]),
@@ -1233,7 +1487,7 @@ pub async fn compile_efile(
     let mut args = vec![
         "make".to_string(),
         source.to_string_lossy().to_string(),
-        output.to_string_lossy().to_string(),
+        pending.0.to_string_lossy().to_string(),
         "-epath".to_string(),
         e_exe.clone(),
         "-nologo".to_string(),
@@ -1264,10 +1518,17 @@ pub async fn compile_efile(
     let mut stderr = decode_tool_output_with_preference(&result.stderr, true);
     let exit_code = result.status.code();
     let status_ok = result.status.success() || matches!(exit_code, Some(1));
-    let output_exists = output.exists();
+    let output_exists = pending.0.metadata().map(|m| m.len() > 0).unwrap_or(false);
+    if status_ok && output_exists {
+        pending.publish(&output)?;
+    }
 
     if !staged_modules.is_empty() {
-        stdout = format!("已同步/放置依赖模块：\n{}\n\n{}", staged_modules.join("\n"), stdout);
+        stdout = format!(
+            "已同步/放置依赖模块：\n{}\n\n{}",
+            staged_modules.join("\n"),
+            stdout
+        );
     }
 
     if !status_ok {
@@ -1286,14 +1547,11 @@ pub async fn compile_efile(
     }
 
     if status_ok && !output_exists {
-        let detail = [
-            stderr.trim(),
-            stdout.trim(),
-        ]
-        .into_iter()
-        .filter(|item| !item.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
+        let detail = [stderr.trim(), stdout.trim()]
+            .into_iter()
+            .filter(|item| !item.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
         stderr = format!(
             "ecl.exe 未生成目标 EXE：{}\n退出码：{}\n静态链接：{}\n{}",
             output.display(),
@@ -1313,18 +1571,83 @@ pub async fn compile_efile(
         success: status_ok && output_exists,
         stdout,
         stderr,
-        output_path: output_exists.then(|| output.to_string_lossy().to_string()),
+        output_path: (status_ok && output_exists).then(|| output.to_string_lossy().to_string()),
     })
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn e2txt_rejects_parser_errors_even_when_it_outputs_succ() {
+        let errors = [
+            "2026-10-16 [错误] [ TxtSourceLoader::ParseCodeRange ] 未知的方法类型: 被激活",
+            "2026-10-16 [错误] 未知的对象属性: 字体加粗",
+            "[ERROR] unknown function",
+            "ERR: cannot parse method",
+        ];
+        for error in errors {
+            assert!(!super::e2txt_succeeded(true, "SUCC: generated.e", error));
+            assert!(!super::e2txt_succeeded(
+                true,
+                &format!("{}\nSUCC: generated.e", error),
+                ""
+            ));
+        }
+        assert!(super::e2txt_succeeded(
+            true,
+            "SUCC: generated.e",
+            "[警告] optional setting"
+        ));
+        assert!(super::e2txt_succeeded(
+            true,
+            "SUCC: generated.e",
+            "[信息] [行代码] 调试输出 (“[错误]”）"
+        ));
+        assert!(super::e2txt_succeeded(true, "", "SUCC: generated.e"));
+        assert!(!super::e2txt_succeeded(false, "SUCC: generated.e", ""));
+        assert!(!super::e2txt_succeeded(true, "output exists", ""));
+    }
+
     use super::{
         declaration_line_has_initializer, decode_tool_output_with_preference,
         normalize_ecode_project_text_files, validate_ecode_project_before_generate, wait_for_path,
     };
     use std::fs;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn build_staging_preserves_old_artifact_until_new_output_exists() {
+        let root =
+            std::env::temp_dir().join(format!("eaicoding-artifact-{:016x}", rand::random::<u64>()));
+        fs::create_dir_all(&root).unwrap();
+        let output = root.join("program.exe");
+        fs::write(&output, b"previous build").unwrap();
+        let pending_path;
+        {
+            let pending = super::PendingArtifact::new(&output);
+            pending_path = pending.0.clone();
+            assert!(!pending.0.exists());
+            assert!(pending.publish(&output).is_err());
+            assert_eq!(fs::read(&output).unwrap(), b"previous build");
+            fs::write(&pending.0, b"new build").unwrap();
+            pending.publish(&output).unwrap();
+            assert_eq!(fs::read(&output).unwrap(), b"new build");
+        }
+        assert!(!pending_path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn staging_modules_from_active_installation_does_not_overwrite_itself() {
+        let root =
+            std::env::temp_dir().join(format!("eaicoding-module-{:016x}", rand::random::<u64>()));
+        fs::create_dir_all(root.join("ecom")).unwrap();
+        let module = root.join("ecom/test.ec");
+        fs::write(&module, b"module contents").unwrap();
+        super::stage_module_dependencies(&root, &[module.to_string_lossy().to_string()]).unwrap();
+        assert_eq!(fs::read(&module).unwrap(), b"module contents");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn wait_for_path_handles_delayed_file_creation() {
@@ -1406,9 +1729,10 @@ mod tests {
                 .as_millis()
         ));
         fs::create_dir_all(temp_root.join("代码")).expect("create temp dir");
-        let source = temp_root.join("代码").join("窗口程序集_启动窗口.form.e.txt");
-        fs::write(&source, ".版本 2\n.程序集 窗口程序集_启动窗口\n")
-            .expect("write source");
+        let source = temp_root
+            .join("代码")
+            .join("窗口程序集_启动窗口.form.e.txt");
+        fs::write(&source, ".版本 2\n.程序集 窗口程序集_启动窗口\n").expect("write source");
 
         normalize_ecode_project_text_files(&temp_root).expect("normalize");
         let bytes = fs::read(&source).expect("read normalized");

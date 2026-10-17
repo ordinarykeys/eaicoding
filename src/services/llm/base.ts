@@ -12,6 +12,14 @@ export class LLMError extends Error {
   }
 }
 
+/** A complete response with an explicit length stop; never a usable tool turn. */
+export class LLMOutputLimitError extends LLMError {
+  constructor(readonly maxTokens?: number) {
+    super("DeepSeek 输出达到 Token 上限，结果不完整，未执行本轮工具调用。", 400);
+    this.name = "LLMOutputLimitError";
+  }
+}
+
 export abstract class BaseLLMProvider {
   protected config: LLMConfig;
   protected abortController: AbortController | null = null;

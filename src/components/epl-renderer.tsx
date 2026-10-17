@@ -5,7 +5,7 @@
  * 解析成 IDE 里的多列表格，普通代码行用流程线图标和 token 着色渲染。
  */
 
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { memo, useLayoutEffect, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -1417,7 +1417,7 @@ export interface EplRendererProps {
   className?: string;
 }
 
-export function EplRenderer({
+export const EplRenderer = memo(function EplRenderer({
   code,
   theme = 1,
   showLineNumbers = true,
@@ -1718,4 +1718,4 @@ export function EplRenderer({
       })}
     </div>
   );
-}
+});

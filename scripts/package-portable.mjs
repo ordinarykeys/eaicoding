@@ -69,7 +69,7 @@ async function zipPortable() {
 
   return new Promise((resolveZip, reject) => {
     const output = createWriteStream(zipPath);
-    const archive = archiver("zip", { zlib: { level: 0 } });
+    const archive = archiver("zip", { zlib: { level: 6 } });
 
     output.on("close", () => resolveZip(zipPath));
     archive.on("warning", (err) => {

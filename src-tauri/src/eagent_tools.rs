@@ -3,8 +3,16 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 use zip::ZipArchive;
+
+// Tool paths never change while the app is running once everything has been
+// found, but detection walks dozens of paths and may unzip the bundled
+// e-root — and callers (parse/compile/export) re-run it on every invocation.
+// Cache the first fully-successful detection; incomplete results are not
+// cached so a user can install missing tools and retry without restarting.
+static DETECTED_TOOLS: Mutex<Option<EAgentTools>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCheck {
@@ -182,13 +190,36 @@ fn ensure_bundled_eroot(app: &AppHandle) -> Option<PathBuf> {
 
 #[tauri::command]
 pub fn detect_eagent_tools(app: AppHandle) -> EAgentTools {
+    if let Ok(cache) = DETECTED_TOOLS.lock() {
+        if let Some(tools) = cache.as_ref() {
+            return tools.clone();
+        }
+    }
+
+    let tools = detect_eagent_tools_uncached(&app);
+
+    let complete = tools.ebuild_exe.exists
+        && tools.e2txt_exe.exists
+        && tools.ecode_template_dir.exists
+        && tools.e_root.exists
+        && tools.ecl_exe.exists;
+    if complete {
+        if let Ok(mut cache) = DETECTED_TOOLS.lock() {
+            *cache = Some(tools.clone());
+        }
+    }
+
+    tools
+}
+
+fn detect_eagent_tools_uncached(app: &AppHandle) -> EAgentTools {
     #[cfg(debug_assertions)]
     let root = find_local_root();
 
     #[cfg(not(debug_assertions))]
     let root: Option<PathBuf> = None;
 
-    let bundled_root = resource_tools_root(&app).or_else(|| {
+    let bundled_root = resource_tools_root(app).or_else(|| {
         root.as_ref().map(|project_root| {
             project_root
                 .join("tauri-app")
@@ -198,13 +229,13 @@ pub fn detect_eagent_tools(app: AppHandle) -> EAgentTools {
         })
     });
 
-    let bundled_eparser_exe = bundled_or_local_resource(&app, r"eparser32\eparser32.exe");
-    let bundled_eparser_dll = bundled_or_local_resource(&app, r"ecodeparser\ECodeParser.dll");
-    let bundled_ebuild_exe = bundled_or_local_resource(&app, r"ebuild\EBuild.exe");
-    let bundled_e2txt_exe = bundled_or_local_resource(&app, r"e2txt\e2txt.exe");
-    let bundled_template_dir = bundled_or_local_resource(&app, r"templates\console.ecode");
-    let bundled_ecl_exe = bundled_or_local_resource(&app, r"ecl\ecl.exe");
-    let bundled_e_root = ensure_bundled_eroot(&app);
+    let bundled_eparser_exe = bundled_or_local_resource(app, r"eparser32\eparser32.exe");
+    let bundled_eparser_dll = bundled_or_local_resource(app, r"ecodeparser\ECodeParser.dll");
+    let bundled_ebuild_exe = bundled_or_local_resource(app, r"ebuild\EBuild.exe");
+    let bundled_e2txt_exe = bundled_or_local_resource(app, r"e2txt\e2txt.exe");
+    let bundled_template_dir = bundled_or_local_resource(app, r"templates\console.ecode");
+    let bundled_ecl_exe = bundled_or_local_resource(app, r"ecl\ecl.exe");
+    let bundled_e_root = ensure_bundled_eroot(app);
 
     let ebuild_exe = bundled_ebuild_exe;
     let e2txt_exe = bundled_e2txt_exe;

@@ -1,0 +1,100 @@
+# 开发与验证
+
+更新于 2026-10-17。命令默认从仓库根目录执行，目标平台为 Windows。
+
+## 安装与运行
+
+建议使用 Node.js 22、npm、Rust stable、WebView2，以及包含 C++ 桌面开发组件和 Windows SDK 的 Visual Studio Build Tools。使用桌面工程能力时，还需准备 README 说明的 `e.zip`，或在设置中选择可用的本机易语言环境。
+
+```powershell
+npm ci
+npm run tauri -- dev
+```
+
+`npm run dev` 仅启动前端，无法独立提供真实的 Tauri 文件、加密和编译能力。界面测试会模拟这些能力。
+
+`postinstall`、`predev` 和 `prebuild` 调用 `scripts/prepare-ort.mjs`，从锁定的 `onnxruntime-web` 依赖复制匹配的 JS/WASM 到 `public/ort/`。这些文件不提交 Git。若禁用安装脚本，可手动运行：
+
+```powershell
+node scripts/prepare-ort.mjs
+```
+
+更新 ONNX 依赖时应同时核对所需的 threaded/asyncify 文件名，避免 JS 与 WASM 版本不一致。本地嵌入模型与预建索引在 `public/models/`，不是 DeepSeek 模型权重。
+
+## 常规检查
+
+```powershell
+npm run build
+npm run test:agent-runtime
+npm run test:code-highlight
+npm run test:agent-choice
+npm run test:agent-epl
+npm run test:agent-retrieval
+cargo fmt --check --manifest-path src-tauri/Cargo.toml
+cargo test --offline --lib --manifest-path src-tauri/Cargo.toml
+```
+
+Rust 离线命令要求依赖已缓存。新环境首次安装依赖时，可先运行 `cargo fetch --manifest-path src-tauri/Cargo.toml`，或去掉 `--offline` 完成首次构建。
+
+| 检查 | 覆盖内容 |
+| --- | --- |
+| 生产构建 | TypeScript、Vite 打包与本地运行时准备 |
+| Agent runtime | 原生工具分片、推理重放、模型限制、配置迁移、截断恢复、网络重试、取消、最新修改构建约束及无固定总步数 |
+| 代码高亮 | 逐字符追加与全量分词一致，覆盖 CRLF、多行语法、替换、语言和主题切换 |
+| 实现选择 | 历史待选择兼容、明确选择的延续，以及模型自主选型策略 |
+| EPL 诊断 | 易语言声明、完整示例、控制结构及机械重复源码 |
+| 检索 | 7 组查询的接口证据、线程/HTTP 组合与候选分类 |
+| Rust 单元测试 | 文件范围/哈希、取消、工程生成、编码、依赖准备、转换器日志和构建暂存 |
+
+Agent runtime 使用虚构密钥及模拟 Tauri IPC，不会访问真实模型或编译用户工程。显式 `maxSteps` 测试与超过 70 轮的用例共同检查桌面默认循环和集成约束。
+
+## 浏览器界面回归
+
+浏览器回归需要 Playwright，可使用独立目录安装，避免改变项目锁文件：
+
+```powershell
+npm install --prefix .tmp/browser-tools --no-save --package-lock=false playwright
+node .tmp/browser-tools/node_modules/playwright/cli.js install chromium
+$env:EAICODING_PLAYWRIGHT_MODULE = (Resolve-Path .tmp/browser-tools/node_modules/playwright/index.mjs).Path
+npm run test:ui
+```
+
+也可以使用已有 Playwright 模块，并指定系统浏览器，例如：
+
+```powershell
+$env:EAICODING_PLAYWRIGHT_MODULE = 'C:\tools\browser-tests\node_modules\playwright\index.mjs'
+$env:EAICODING_BROWSER_CHANNEL = 'msedge'
+npm run test:ui
+```
+
+脚本依赖当前 `dist/`，请先完成 `npm run build`。它启动本地测试服务器和临时浏览器上下文，模拟密钥、文件、模型流和工具结果，不使用个人会话或密钥。截图写入 `.tmp/ui-validation/`，不提交 Git。
+
+覆盖设置弹窗、加密/存储失败回滚、模型选择及持久化、输入法与草稿、10,000 条模拟模块分页、Markdown/推理分离、工具过程、文件页签/分页/哈希、停止和中断恢复、窄窗口、主题及代码卡片。持续流还会断言 DOM 与行高稳定、底部对齐及上翻阅读保持。
+
+## 原生 GUI 验证
+
+```powershell
+npm run test:native-gui -- -EasyLanguageRoot D:\e
+```
+
+该脚本调用默认忽略的 Rust 原生窗口 fixture，使用仓库工具链回编 `.e` 并编译 `.exe`，启动隔离的测试程序，核对中文窗口标题、五类控件和按钮更新编辑框的事件，最后关闭它自己的进程。产物位于 `.tmp/native-gui-*`。需要可用的易语言安装与 Windows 桌面会话，不要把它当作无桌面的单元测试。
+
+## 可选的真实模型检查
+
+`npm run test:provider` 需要显式设置 `PROVIDER_BASE_URL`、`PROVIDER_API_KEY`、`PROVIDER_MODEL`，协议为 `openai-chat-completions`，只支持 DeepSeek。默认小额输出仅用于接口冒烟；长代码任务可通过 `PROVIDER_MAX_TOKENS` 指定额度。
+
+通过当前终端的环境变量传入密钥，执行后清除，不写入源码或提交的配置。真实模型检查会产生 API 请求和费用，不属于离线回归。本轮没有执行该项。
+
+## 打包与提交
+
+安装包：`npm run tauri -- build`；便携版：`npm run package:portable`。完整工具链包 `e.zip` 需提前准备，分发步骤见 README。本轮只构建和验证源码，没有发布新安装包或 Release。
+
+提交源码、锁文件、回归脚本和文档。`node_modules/`、`dist/`、`.tmp/`、`public/ort/`、Rust `target/`、密钥环境文件、本地归档和 `e.zip` 不提交；运行时由依赖准备，环境包单独分发。
+
+## 本轮验证记录
+
+2026-10-17 已通过生产构建、Agent runtime、高亮、选择、EPL 与 7 组检索回归，以及 Edge 界面回归。Rust 单元测试为 20 项通过、1 项原生 fixture 默认忽略；原生 GUI 另按上述脚本执行。格式使用 `cargo fmt` 统一后检查。
+
+浏览器持续流测试记录反向位移 0、高度收缩 0、底部最大间隙 0 像素，这是本机模拟数据的结果。Vite 仍提示部分产物超过 500 kB、部分模块混合静态/动态导入；不影响此次构建通过，仍需后续优化。
+
+自动化通过不代表真实 DeepSeek 的延迟和生成质量、任意用户工程依赖或完整编译子进程树取消已经验收。

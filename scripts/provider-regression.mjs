@@ -19,7 +19,7 @@ function parseProviderCases() {
   }
 
   const protocol = env("PROVIDER_PROTOCOL") || "openai-chat-completions";
-  const provider = env("PROVIDER_NAME") || "openai";
+  const provider = "deepseek";
   const baseUrl = env("PROVIDER_BASE_URL");
   const apiKey = env("PROVIDER_API_KEY");
   const model = env("PROVIDER_MODEL");
@@ -29,8 +29,8 @@ function parseProviderCases() {
       [
         "缺少真实 provider 回归配置。",
         "最小配置：PROVIDER_BASE_URL、PROVIDER_API_KEY、PROVIDER_MODEL。",
-        "可选：PROVIDER_PROTOCOL=openai-chat-completions|openai-responses|anthropic-messages|gemini-generate-content，PROVIDER_NAME=openai|anthropic|provider|gemini。",
-        "多服务商可传 PROVIDER_REGRESSION_CASES JSON 数组。",
+        "仅支持 DeepSeek，协议为 openai-chat-completions。",
+        "多个 DeepSeek 模型可传 PROVIDER_REGRESSION_CASES JSON 数组。",
       ].join("\n"),
     );
   }

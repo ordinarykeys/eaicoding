@@ -1,6 +1,6 @@
 import type { ChatMessage, ChatSession } from "@/types/llm";
 
-const DEFAULT_TITLES = new Set(["新会话", "新聊天", "手机会话"]);
+const DEFAULT_TITLES = new Set(["新会话", "新聊天", "手机会话", "新编程任务"]);
 const UPLOAD_PREFIX = "用户上传了以下本地文件";
 const SUPPLEMENT_MARKER = "用户补充说明：";
 const MAX_SESSION_TITLE_CHARS = 80;
@@ -126,7 +126,7 @@ function isInstructionTitle(title: string): boolean {
   );
 }
 
-export function deriveSessionTitle(input: string, fallback = "新会话"): string {
+export function deriveSessionTitle(input: string, fallback = "新编程任务"): string {
   const intent = extractUserIntent(input);
   if (intent) return intent;
 
@@ -138,7 +138,7 @@ export function deriveSessionTitle(input: string, fallback = "新会话"): strin
   if (filenames.length > 1) return normalizeTitleCandidate(filenames.slice(0, 2).join("、"));
 
   const cleanFallback = normalizeTitleCandidate(fallback);
-  return cleanFallback || "新会话";
+  return cleanFallback || "新编程任务";
 }
 
 export function shouldReplaceSessionTitle(title: string): boolean {

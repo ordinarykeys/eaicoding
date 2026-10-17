@@ -96,12 +96,14 @@ fn public_params(params: &[RawParam]) -> Vec<JingyiParam> {
         if name.is_empty() && param_type.is_empty() {
             continue;
         }
-        if name.starts_with("局_")
-            || name.starts_with("局")
-            || matches!(name, "i" | "n" | "len")
-            || name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        {
+        // 局部变量在参数表末尾：遇到 `局_` 前缀即停止。
+        // 常见循环变量名（i/n/len）单独跳过；其余纯 ASCII 参数名
+        // （如 url/data）是正常公开参数，必须保留。
+        if name.starts_with("局_") {
             break;
+        }
+        if matches!(name, "i" | "n" | "len") {
+            continue;
         }
         out.push(JingyiParam {
             name: name.to_string(),
@@ -171,6 +173,30 @@ fn load_items() -> Result<(String, Vec<JingyiItem>), String> {
         raw.module.clone()
     };
     Ok((module, flatten_items(raw)))
+}
+
+/// Parsed knowledge base plus per-item param tokens, built once per process.
+/// Parsing the 2.4MB embedded JSON and tokenizing every item on every search
+/// call dominated query latency before this cache existed.
+struct KnowledgeCache {
+    module: String,
+    items: Vec<JingyiItem>,
+    param_tokens: Vec<Vec<String>>,
+}
+
+static KNOWLEDGE: std::sync::LazyLock<Result<KnowledgeCache, String>> =
+    std::sync::LazyLock::new(|| {
+        let (module, items) = load_items()?;
+        let param_tokens = items.iter().map(param_name_tokens).collect();
+        Ok(KnowledgeCache {
+            module,
+            items,
+            param_tokens,
+        })
+    });
+
+fn knowledge() -> Result<&'static KnowledgeCache, String> {
+    KNOWLEDGE.as_ref().map_err(|err| err.clone())
 }
 
 fn tokenize(text: &str) -> Vec<String> {
@@ -247,12 +273,11 @@ fn param_name_tokens(item: &JingyiItem) -> Vec<String> {
     )
 }
 
-fn expand_query_terms(tokens: &[String], items: &[JingyiItem]) -> Vec<String> {
+fn expand_query_terms(tokens: &[String], param_tokens: &[Vec<String>]) -> Vec<String> {
     let token_set = tokens.iter().cloned().collect::<HashSet<_>>();
     let mut votes: HashMap<String, f64> = HashMap::new();
 
-    for item in items {
-        let item_tokens = param_name_tokens(item);
+    for item_tokens in param_tokens {
         if item_tokens.is_empty() {
             continue;
         }
@@ -266,7 +291,7 @@ fn expand_query_terms(tokens: &[String], items: &[JingyiItem]) -> Vec<String> {
         let weight = (overlap as f64).powf(1.4);
         for token in item_tokens {
             if !token_set.contains(token.as_str()) {
-                *votes.entry(token).or_insert(0.0) += weight;
+                *votes.entry(token.clone()).or_insert(0.0) += weight;
             }
         }
     }
@@ -317,13 +342,12 @@ fn capability_alias_text(item: &JingyiItem) -> String {
     let mut aliases: Vec<&str> = Vec::new();
 
     let has_url_or_address = params.contains("网址") || params.contains("地址");
-    let has_http_request_shape =
-        params.contains("访问方式")
-            || params.contains("提交信息")
-            || params.contains("协议头")
-            || params.contains("cookies")
-            || name.contains("xmlhttp")
-            || class_name.contains("xmlhttp");
+    let has_http_request_shape = params.contains("访问方式")
+        || params.contains("提交信息")
+        || params.contains("协议头")
+        || params.contains("cookies")
+        || name.contains("xmlhttp")
+        || class_name.contains("xmlhttp");
     if has_url_or_address && has_http_request_shape {
         aliases.extend([
             "http",
@@ -488,7 +512,10 @@ fn score_item(item: &JingyiItem, query: &str, tokens: &[String]) -> f64 {
         }
     }
 
-    let matched_tokens = tokens.iter().filter(|token| full_text.contains(token.as_str())).count();
+    let matched_tokens = tokens
+        .iter()
+        .filter(|token| full_text.contains(token.as_str()))
+        .count();
     if matched_tokens > 1 {
         score += (matched_tokens as f64).powf(1.35) * 12.0;
     }
@@ -588,13 +615,12 @@ fn is_main_http_item(item: &JingyiItem) -> bool {
         .collect::<Vec<_>>()
         .join(" ");
     let has_url_or_address = params.contains("网址") || params.contains("地址");
-    let has_request_shape =
-        params.contains("访问方式")
-            || params.contains("提交信息")
-            || params.contains("协议头")
-            || params.contains("cookies")
-            || text.contains("xmlhttp")
-            || text.contains("发送请求");
+    let has_request_shape = params.contains("访问方式")
+        || params.contains("提交信息")
+        || params.contains("协议头")
+        || params.contains("cookies")
+        || text.contains("xmlhttp")
+        || text.contains("发送请求");
     has_url_or_address && has_request_shape
 }
 
@@ -615,10 +641,9 @@ fn is_main_thread_item(item: &JingyiItem) -> bool {
         .map(|param| param.name.to_lowercase())
         .collect::<Vec<_>>()
         .join(" ");
-    let has_target_proc =
-        params.contains("要启动的子程序")
-            || params.contains("欲执行的子程序")
-            || params.contains("子程序指针");
+    let has_target_proc = params.contains("要启动的子程序")
+        || params.contains("欲执行的子程序")
+        || params.contains("子程序指针");
     let has_thread_output = params.contains("线程id") || params.contains("线程句柄");
     name.contains("启动") && has_target_proc && has_thread_output
 }
@@ -681,46 +706,79 @@ fn diversify_routes(scored_routes: Vec<(f64, JingyiRoute)>, limit: usize) -> Vec
     selected.into_iter().map(|(_, route)| route).collect()
 }
 
-fn build_routes(items: &[JingyiItem], query: &str, tokens: &[String], limit: usize) -> Vec<JingyiRoute> {
-    let mut by_family: HashMap<String, Vec<JingyiItem>> = HashMap::new();
+fn build_routes(
+    items: &[JingyiItem],
+    query: &str,
+    tokens: &[String],
+    limit: usize,
+) -> Vec<JingyiRoute> {
+    // Score each item exactly once; sorting on cached scores avoids the
+    // O(N log N) repeated score_item calls a sort_by comparator would make.
+    let mut by_family: HashMap<String, Vec<(f64, &JingyiItem)>> = HashMap::new();
     for item in items {
         if let Some(family) = family_for(item) {
-            by_family.entry(family).or_default().push(item.clone());
+            by_family
+                .entry(family)
+                .or_default()
+                .push((score_item(item, query, tokens), item));
         }
     }
 
     let mut routes = Vec::new();
     for (family, mut family_items) in by_family {
-        family_items.sort_by(|a, b| cmp_score(score_item(a, query, tokens), score_item(b, query, tokens)));
+        family_items.sort_by(|a, b| cmp_score(a.0, b.0));
         let score = family_items
             .iter()
             .take(5)
-            .map(|item| score_item(item, query, tokens))
+            .map(|(score, _)| *score)
             .sum::<f64>()
             / family_items.len().min(5) as f64;
         if score <= 0.0 {
             continue;
         }
-        let kind = route_type(&family, &family_items);
-        let primary = family_items.iter().take(if kind == "object_workflow" { 4 } else { 3 }).cloned().collect::<Vec<_>>();
-        let supporting = family_items.iter().skip(primary.len()).take(8).cloned().collect::<Vec<_>>();
-        routes.push((score, JingyiRoute {
-            family: family.clone(),
-            route_type: kind.clone(),
-            summary: if kind == "object_workflow" {
-                format!("对象/类调用链：{family}")
-            } else {
-                format!("同族函数方案：{family}")
+        let sorted_items = family_items
+            .iter()
+            .map(|(_, item)| (*item).clone())
+            .collect::<Vec<_>>();
+        let kind = route_type(&family, &sorted_items);
+        let primary = sorted_items
+            .iter()
+            .take(if kind == "object_workflow" { 4 } else { 3 })
+            .cloned()
+            .collect::<Vec<_>>();
+        let supporting = sorted_items
+            .iter()
+            .skip(primary.len())
+            .take(8)
+            .cloned()
+            .collect::<Vec<_>>();
+        routes.push((
+            score,
+            JingyiRoute {
+                family: family.clone(),
+                route_type: kind.clone(),
+                summary: if kind == "object_workflow" {
+                    format!("对象/类调用链：{family}")
+                } else {
+                    format!("同族函数方案：{family}")
+                },
+                evidence: vec![
+                    format!("route_type={kind}"),
+                    format!(
+                        "primary={}",
+                        primary
+                            .iter()
+                            .map(|item| item.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" / ")
+                    ),
+                ],
+                count: sorted_items.len(),
+                primary_options: primary,
+                supporting_options: supporting,
+                options: sorted_items.into_iter().take(20).collect(),
             },
-            evidence: vec![
-                format!("route_type={kind}"),
-                format!("primary={}", primary.iter().map(|item| item.name.as_str()).collect::<Vec<_>>().join(" / ")),
-            ],
-            count: family_items.len(),
-            primary_options: primary,
-            supporting_options: supporting,
-            options: family_items.into_iter().take(20).collect(),
-        }));
+        ));
     }
     routes.sort_by(|a, b| cmp_score(a.0, b.0));
     diversify_routes(routes, limit)
@@ -732,9 +790,10 @@ pub async fn search_jingyi_module_rust(
     limit: Option<usize>,
 ) -> Result<JingyiSearchResult, String> {
     let safe_limit = limit.unwrap_or(8).clamp(1, 20);
-    let (module, items) = load_items()?;
+    let cache = knowledge()?;
+    let (module, items) = (cache.module.clone(), &cache.items);
     let query_tokens = tokenize(&query);
-    let tokens = expand_query_terms(&query_tokens, &items);
+    let tokens = expand_query_terms(&query_tokens, &cache.param_tokens);
     let mut scored = items
         .iter()
         .cloned()

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { invokeTask, throwIfAborted } from "@/services/tauri-task";
 
 export interface LlmProxyResponse {
   status: number;
@@ -35,7 +36,9 @@ export async function streamJsonViaTauri(
   body: Record<string, unknown>,
   onChunk: (text: string) => void,
   timeoutSecs = 120,
+  signal?: AbortSignal,
 ): Promise<LlmProxyResponse> {
+  throwIfAborted(signal);
   const requestId =
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -44,14 +47,14 @@ export async function streamJsonViaTauri(
   const unlisten = await listen<LlmProxyStreamChunk>(
     "llm-proxy-stream-chunk",
     (event) => {
-      if (event.payload.requestId === requestId) {
+      if (!signal?.aborted && event.payload.requestId === requestId) {
         onChunk(event.payload.text);
       }
     },
   );
 
   try {
-    return await invoke<LlmProxyResponse>("llm_proxy_stream", {
+    return await invokeTask<LlmProxyResponse>("llm_proxy_stream", {
       request: {
         requestId,
         url,
@@ -60,7 +63,7 @@ export async function streamJsonViaTauri(
         body,
         timeoutSecs,
       },
-    });
+    }, signal);
   } finally {
     unlisten();
   }

@@ -6,6 +6,7 @@ import {
 } from "@phosphor-icons/react";
 import { useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
+import { DialogTrigger } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Tooltip,
@@ -18,8 +19,7 @@ import { getSessionDisplayTitle } from "@/lib/session-title";
 import { cn } from "@/lib/utils";
 
 interface SidebarProps {
-  currentView: "chat" | "settings";
-  onNavigate: (view: "chat" | "settings") => void;
+  settingsOpen: boolean;
   onClose: () => void;
   width: number;
   onResize: (width: number) => void;
@@ -27,7 +27,7 @@ interface SidebarProps {
   maxWidth: number;
 }
 
-export function Sidebar({ currentView, onNavigate, onClose, width, onResize, minWidth, maxWidth }: SidebarProps) {
+export function Sidebar({ settingsOpen, onClose, width, onResize, minWidth, maxWidth }: SidebarProps) {
   const sessions = useChatStore((s) => s.sessions);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const createSession = useChatStore((s) => s.createSession);
@@ -37,7 +37,6 @@ export function Sidebar({ currentView, onNavigate, onClose, width, onResize, min
 
   const handleNew = () => {
     const id = createSession();
-    onNavigate("chat");
     setActiveSession(id);
   };
 
@@ -75,7 +74,7 @@ export function Sidebar({ currentView, onNavigate, onClose, width, onResize, min
             onClick={handleNew}
           >
             <Plus className="h-4 w-4" weight="bold" />
-            新聊天
+            新建任务
           </Button>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -83,6 +82,7 @@ export function Sidebar({ currentView, onNavigate, onClose, width, onResize, min
                 variant="ghost"
                 size="icon"
                 className="h-9 w-9 rounded-lg text-muted-foreground hover:bg-sidebar-accent"
+                aria-label="收起侧栏"
                 onClick={onClose}
               >
                 <SidebarSimple className="h-4 w-4" />
@@ -93,13 +93,13 @@ export function Sidebar({ currentView, onNavigate, onClose, width, onResize, min
         </div>
 
         <div className="px-4 pb-1 pt-2 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground/75">
-          最近
+          最近任务
         </div>
 
         <ScrollArea className="flex-1 px-2 py-1">
           {sessions.length === 0 && (
             <p className="px-3 py-3 text-xs leading-5 text-muted-foreground">
-              暂无聊天
+              暂无编程任务
             </p>
           )}
           <div className="space-y-0.5">
@@ -110,13 +110,12 @@ export function Sidebar({ currentView, onNavigate, onClose, width, onResize, min
                 key={session.id}
                 className={cn(
                   "group grid min-w-0 cursor-pointer grid-cols-[minmax(0,1fr)_24px] items-center gap-2 rounded-md px-3 py-1.5 text-[13px] transition-colors hover:bg-sidebar-accent",
-                  activeSessionId === session.id && currentView === "chat"
+                  activeSessionId === session.id
                     ? "bg-sidebar-accent text-sidebar-accent-foreground"
                     : "text-sidebar-foreground/80",
                 )}
                 onClick={() => {
                   setActiveSession(session.id);
-                  onNavigate("chat");
                 }}
                 title={displayTitle}
               >
@@ -141,17 +140,21 @@ export function Sidebar({ currentView, onNavigate, onClose, width, onResize, min
         </ScrollArea>
 
         <div className="px-2 py-2">
-          <Button
-            variant="ghost"
-            className={cn(
-              "h-9 w-full justify-start gap-2 rounded-md bg-transparent px-3 text-sm text-muted-foreground hover:bg-sidebar-accent",
-              currentView === "settings" && "text-foreground",
-            )}
-            onClick={() => onNavigate("settings")}
-          >
-            <GearSix className="h-4 w-4" />
-            设置
-          </Button>
+          <DialogTrigger asChild>
+            <Button
+              variant="ghost"
+              aria-label="设置"
+              aria-keyshortcuts="Control+, Meta+,"
+              className={cn(
+                "h-9 w-full justify-start gap-2 rounded-md bg-transparent px-3 text-sm text-muted-foreground hover:bg-sidebar-accent",
+                settingsOpen && "text-foreground",
+              )}
+            >
+              <GearSix className="h-4 w-4" />
+              设置
+              <kbd className="settings-shortcut" aria-hidden="true">Ctrl+,</kbd>
+            </Button>
+          </DialogTrigger>
         </div>
         <div
           className="sidebar-resize-handle"

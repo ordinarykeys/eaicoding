@@ -1,7 +1,7 @@
 export const zhCN = {
   chat: {
     apiKeyMissing: "请先在设置页配置 API Key",
-    welcomeTitle: "今天想做什么？",
+    welcomeTitle: "开始你的易语言编程任务",
     welcomeDescription:
       "描述要生成、修复或验证的易语言功能，EAiCoding 会帮你完成从分析到结果的处理。",
     emptyAssistantMessage: "_（空）_",
@@ -62,7 +62,7 @@ export const zhCN = {
     addApiProfile: "添加 API 配置",
     desktopPetTitle: "桌面宠物 Clawd 螃蟹",
     desktopPetDescription:
-      "使用 clawd-on-desk 的螃蟹动画，会根据 AI 推理状态切换 idle / thinking / typing / building / happy / error 等动画。双击休眠/唤醒，可拖拽到任意位置。",
+      "桌面螃蟹会随 AI 的推理、编辑和编译状态切换动画。可拖动调整位置，双击休眠或唤醒。",
     showPet: "显示宠物",
     enableSound: "开启提示音（成功 / 通知）",
     resetPetPosition: "重置宠物位置",

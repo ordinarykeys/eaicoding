@@ -28,7 +28,7 @@ export const useChatStore = create<ChatState>()(
       sessions: [],
       activeSessionId: null,
 
-      createSession: (title = "新会话") => {
+      createSession: (title = "新编程任务") => {
         const id = nanoid();
         const now = Date.now();
         const session: ChatSession = {

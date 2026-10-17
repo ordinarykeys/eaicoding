@@ -3,7 +3,8 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
 import type { LLMProvider, LLMProtocol, LLMConfig } from "@/types/llm";
 import { idbStorage } from "@/lib/idb-storage";
-import type { UserKnowledgeDocument } from "@/services/knowledge/user-knowledge";
+import { DEEPSEEK_DEFAULT_MAX_TOKENS, deepSeekModelCatalog, normalizeDeepSeekModel } from "@/lib/deepseek-models";
+import type { UserModuleEntry } from "@/services/knowledge/module-library";
 
 export interface ProviderProfile {
   id: string;
@@ -25,13 +26,13 @@ export interface ProviderModel {
 }
 
 export const DEFAULT_PROVIDER_PROFILE = {
-  name: "默认模型配置",
-  provider: "openai" as LLMProvider,
+  name: "DeepSeek",
+  provider: "deepseek" as LLMProvider,
   protocol: "openai-chat-completions" as LLMProtocol,
-  baseUrl: "https://api.openai.com/v1",
-  model: "gpt-4o",
-  models: [] as ProviderModel[],
-  maxTokens: 4096,
+  baseUrl: "https://api.deepseek.com",
+  model: "deepseek-flash",
+  models: deepSeekModelCatalog(),
+  maxTokens: DEEPSEEK_DEFAULT_MAX_TOKENS,
   temperature: 0.2,
 };
 
@@ -58,8 +59,12 @@ interface SettingsState {
   easyLanguageGenerateDir: string;
   /** Optional directory for compiled 易语言 executables. */
   easyLanguageCompileDir: string;
-  /** User-uploaded local knowledge bases managed from Settings. */
-  userKnowledgeDocuments: UserKnowledgeDocument[];
+  /** When true, the agent pauses for user approval before every source-mutating
+   *  tool call (save_text_file / apply_search_replace). Off by default so the
+   *  autonomous loop is unchanged unless the user opts in. */
+  approveSourceEdits: boolean;
+  /** Registered user .ec module library (metadata only — full APIs/vectors live in IndexedDB). */
+  userModules: UserModuleEntry[];
 
   addProfile: (
     profile: Omit<ProviderProfile, "id" | "apiKeyEncrypted"> & { apiKey: string },
@@ -79,9 +84,10 @@ interface SettingsState {
   setEasyLanguageRoot: (path: string) => void;
   setEasyLanguageGenerateDir: (path: string) => void;
   setEasyLanguageCompileDir: (path: string) => void;
-  addUserKnowledgeDocument: (document: UserKnowledgeDocument) => void;
-  updateUserKnowledgeDocument: (id: string, patch: Partial<UserKnowledgeDocument>) => void;
-  removeUserKnowledgeDocument: (id: string) => void;
+  setApproveSourceEdits: (enabled: boolean) => void;
+  addUserModule: (entry: UserModuleEntry) => void;
+  updateUserModule: (id: string, patch: Partial<UserModuleEntry>) => void;
+  removeUserModule: (id: string) => void;
 
   /** Resolve the active profile + decrypt API key into a usable LLMConfig. */
   resolveLLMConfig: () => Promise<LLMConfig | null>;
@@ -133,7 +139,8 @@ export const useSettingsStore = create<SettingsState>()(
       easyLanguageRoot: "D:\\e",
       easyLanguageGenerateDir: "",
       easyLanguageCompileDir: "",
-      userKnowledgeDocuments: [],
+      approveSourceEdits: false,
+      userModules: [],
 
       addProfile: async (input) => {
         const apiKeyEncrypted = input.apiKey
@@ -147,19 +154,14 @@ export const useSettingsStore = create<SettingsState>()(
           protocol: input.protocol,
           baseUrl: input.baseUrl,
           apiKeyEncrypted,
-          model: input.model,
-          models: input.models,
+          model: normalizeDeepSeekModel(input.model),
+          models: deepSeekModelCatalog(),
           maxTokens: input.maxTokens,
           temperature: input.temperature,
         };
-        set((s) => ({
+        await set((s) => ({
           profiles: s.profiles.length > 0 ? [profile, ...s.profiles.slice(1)] : [profile],
-          modelCatalogs: input.models
-            ? {
-                ...s.modelCatalogs,
-                [id]: input.models,
-              }
-            : s.modelCatalogs,
+          modelCatalogs: { ...s.modelCatalogs, [id]: deepSeekModelCatalog() },
           activeProfileId: id,
         }));
         return id;
@@ -172,17 +174,28 @@ export const useSettingsStore = create<SettingsState>()(
             ? await invoke<string>("encrypt_secret", { plaintext: patch.apiKey })
             : "";
         }
-        set((s) => ({
+        const previous = get();
+        try {
+        await set((s) => ({
           profiles: s.profiles.map((profile) => {
             if (profile.id !== id) return profile;
             const { apiKey: _omit, ...rest } = patch as { apiKey?: string };
             return {
               ...profile,
               ...rest,
+              model: normalizeDeepSeekModel(patch.model ?? profile.model),
+              models: deepSeekModelCatalog(),
               ...(apiKeyEncrypted !== undefined ? { apiKeyEncrypted } : {}),
             };
           }),
+          modelCatalogs: { ...s.modelCatalogs, [id]: deepSeekModelCatalog() },
         }));
+        } catch (error) {
+          // Persist returns a Promise at runtime. Restore the active configuration
+          // if IndexedDB rejects the write, and let the editor display the error.
+          try { await set({ profiles: previous.profiles, modelCatalogs: previous.modelCatalogs }); } catch { /* storage is still unavailable */ }
+          throw error;
+        }
       },
 
       removeProfile: (id) =>
@@ -195,14 +208,14 @@ export const useSettingsStore = create<SettingsState>()(
         }),
 
       setActiveProfile: (id) => set({ activeProfileId: id }),
-      setProfileModels: (id, models) =>
+      setProfileModels: (id, _models) =>
         set((s) => ({
           modelCatalogs: {
             ...s.modelCatalogs,
-            [id]: models,
+            [id]: deepSeekModelCatalog(),
           },
           profiles: s.profiles.map((profile) =>
-            profile.id === id ? { ...profile, models } : profile,
+            profile.id === id ? { ...profile, models: deepSeekModelCatalog() } : profile,
           ),
         })),
       setSystemPrompt: (systemPrompt) => set({ systemPrompt }),
@@ -218,21 +231,22 @@ export const useSettingsStore = create<SettingsState>()(
         set({ easyLanguageGenerateDir }),
       setEasyLanguageCompileDir: (easyLanguageCompileDir) =>
         set({ easyLanguageCompileDir }),
-      addUserKnowledgeDocument: (document) =>
+      setApproveSourceEdits: (approveSourceEdits) => set({ approveSourceEdits }),
+      addUserModule: (entry) =>
         set((s) => ({
-          userKnowledgeDocuments: [document, ...s.userKnowledgeDocuments],
+          userModules: [entry, ...s.userModules.filter((item) => item.id !== entry.id)],
         })),
-      updateUserKnowledgeDocument: (id, patch) =>
+      updateUserModule: (id, patch) =>
         set((s) => ({
-          userKnowledgeDocuments: s.userKnowledgeDocuments.map((document) =>
-            document.id === id
-              ? { ...document, ...patch, updatedAt: Date.now() }
-              : document,
+          userModules: s.userModules.map((entry) =>
+            entry.id === id
+              ? { ...entry, ...patch, updatedAt: patch.updatedAt ?? Date.now() }
+              : entry,
           ),
         })),
-      removeUserKnowledgeDocument: (id) =>
+      removeUserModule: (id) =>
         set((s) => ({
-          userKnowledgeDocuments: s.userKnowledgeDocuments.filter((document) => document.id !== id),
+          userModules: s.userModules.filter((entry) => entry.id !== id),
         })),
 
       resolveLLMConfig: async () => {
@@ -251,10 +265,10 @@ export const useSettingsStore = create<SettingsState>()(
         }
         return {
           provider: profile.provider,
-          protocol: protocolForProvider(profile.provider),
+          protocol: "openai-chat-completions",
           apiKey,
           baseUrl: profile.baseUrl,
-          model: profile.model,
+          model: normalizeDeepSeekModel(profile.model),
           maxTokens: profile.maxTokens,
           temperature: profile.temperature,
           systemPrompt,
@@ -264,12 +278,14 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: "eaicoding-settings",
       storage: createJSONStorage(() => idbStorage),
-      version: 3,
-      migrate: (persistedState) => {
+      version: 7,
+      migrate: (persistedState, fromVersion) => {
         if (!persistedState || typeof persistedState !== "object") {
           return persistedState;
         }
-        const state = persistedState as Partial<SettingsState>;
+        const state = persistedState as Partial<SettingsState> & {
+          userKnowledgeDocuments?: unknown;
+        };
         const profiles = Array.isArray(state.profiles) && state.profiles.length > 0
           ? state.profiles
           : [
@@ -279,22 +295,44 @@ export const useSettingsStore = create<SettingsState>()(
                 apiKeyEncrypted: "",
               },
             ];
-        const normalizedProfiles = profiles.map((profile) => ({
-          ...profile,
-          provider: normalizeProvider(profile.provider),
-          protocol: protocolForProvider(profile.provider),
-        }));
+        const normalizedProfiles = profiles.map((profile) => {
+          // Preserve keys only for profiles already pointing at DeepSeek. Never
+          // send another vendor's saved key to the new default endpoint.
+          const compatible = profile.provider === "deepseek" || /(^|\.)deepseek\.com$/i.test((() => { try { return new URL(profile.baseUrl).hostname; } catch { return ""; } })());
+          // Upgrade the old app default only on the official endpoint. Preserve
+          // custom gateway limits and other explicitly chosen allowances.
+          const officialEndpoint = (() => { try { return new URL(profile.baseUrl).hostname.toLowerCase() === "api.deepseek.com"; } catch { return false; } })();
+          const maxTokens = compatible && Number.isSafeInteger(profile.maxTokens) && profile.maxTokens > 0
+            ? fromVersion < 7 && officialEndpoint && profile.maxTokens === 8192
+              ? DEEPSEEK_DEFAULT_MAX_TOKENS : profile.maxTokens
+            : DEEPSEEK_DEFAULT_MAX_TOKENS;
+          return { ...profile, ...(compatible ? {} : { ...DEFAULT_PROVIDER_PROFILE, apiKeyEncrypted: "" }), maxTokens,
+            provider: "deepseek" as const, protocol: "openai-chat-completions" as const,
+            model: normalizeDeepSeekModel(compatible ? profile.model : DEFAULT_PROVIDER_PROFILE.model),
+            models: deepSeekModelCatalog() };
+        });
         const activeProfileId =
           state.activeProfileId && profiles.some((profile) => profile.id === state.activeProfileId)
             ? state.activeProfileId
             : normalizedProfiles[0]?.id ?? "default";
+
+        // v3 → v4: drop legacy Markdown user-knowledge docs and seed empty module library.
+        // The old field is intentionally discarded — the new "模块库" only accepts .ec uploads.
+        const droppedUserDocs = fromVersion < 4 || "userKnowledgeDocuments" in state;
+        const userModules = Array.isArray(state.userModules) ? state.userModules : [];
+        if (droppedUserDocs) {
+          delete (state as Record<string, unknown>).userKnowledgeDocuments;
+        }
+
         return {
           ...state,
           profiles: normalizedProfiles,
+          modelCatalogs: Object.fromEntries(normalizedProfiles.map(p => [p.id, p.models ?? DEFAULT_PROVIDER_PROFILE.models])),
           activeProfileId,
           systemPrompt: shouldReplaceSystemPrompt(state.systemPrompt)
             ? DEFAULT_SYSTEM_PROMPT
             : state.systemPrompt,
+          userModules,
         };
       },
       partialize: (s) => ({
@@ -309,23 +347,9 @@ export const useSettingsStore = create<SettingsState>()(
         easyLanguageRoot: s.easyLanguageRoot,
         easyLanguageGenerateDir: s.easyLanguageGenerateDir,
         easyLanguageCompileDir: s.easyLanguageCompileDir,
-        userKnowledgeDocuments: s.userKnowledgeDocuments,
+        approveSourceEdits: s.approveSourceEdits,
+        userModules: s.userModules,
       }),
     },
   ),
 );
-
-function normalizeProvider(provider: unknown): LLMProvider {
-  if (provider === "provider") return "anthropic";
-  if (provider === "anthropic" || provider === "gemini" || provider === "openai") {
-    return provider;
-  }
-  return DEFAULT_PROVIDER_PROFILE.provider;
-}
-
-function protocolForProvider(provider: unknown): LLMProtocol {
-  const normalizedProvider = normalizeProvider(provider);
-  if (normalizedProvider === "anthropic") return "anthropic-messages";
-  if (normalizedProvider === "gemini") return "gemini-generate-content";
-  return "openai-chat-completions";
-}

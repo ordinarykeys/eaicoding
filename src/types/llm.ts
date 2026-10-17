@@ -1,10 +1,6 @@
-export type LLMProvider = "openai" | "anthropic" | "provider" | "gemini";
+export type LLMProvider = "deepseek";
 
-export type LLMProtocol =
-  | "openai-chat-completions"
-  | "openai-responses"
-  | "anthropic-messages"
-  | "gemini-generate-content";
+export type LLMProtocol = "openai-chat-completions";
 
 export interface LLMConfig {
   provider: LLMProvider;
@@ -31,8 +27,12 @@ export interface ChatMessage {
   toolName?: string;
   /** Pending tool calls emitted by assistant during this turn */
   toolCalls?: ToolCall[];
+  /** Provider replay state for the current tool sequence; never shown as answer text. */
+  reasoningContent?: string;
   /** Optional structured trace produced by the agent runner */
   agentTrace?: AgentTrace;
+  /** Transient tool currently executing in this assistant turn. */
+  activeToolCallId?: string;
 }
 
 export interface ChatSession {
@@ -46,7 +46,9 @@ export interface ChatSession {
 
 export interface StreamCallbacks {
   onToken: (token: string) => void;
-  onComplete: (fullText: string) => void;
+  /** Provider-supplied reasoning deltas, rendered separately from the answer. */
+  onReasoningToken?: (token: string) => void;
+  onComplete: (fullText: string, metadata?: { reasoningContent?: string }) => void;
   onError: (error: Error) => void;
   /** Native provider tool call, when the upstream API supports function tools. */
   onToolCall?: (call: ToolCall) => void;
@@ -54,9 +56,7 @@ export interface StreamCallbacks {
 
 export interface StreamOptions {
   tools?: ToolDefinition[];
-  /** Some OpenAI-compatible vendors repeatedly emit native tool_calls with
-   *  empty visible content after tool results. The agent can disable native
-   *  tools on later ReAct turns and rely on its text JSON protocol instead. */
+  /** Disable only for structured reviewers that do not use tools. */
   nativeTools?: boolean;
 }
 
@@ -128,12 +128,37 @@ export interface AgentUserChoiceRequest {
   context?: string;
 }
 
+/** A write/build tool call awaiting user approval before it executes. Only
+ *  raised when the run is started with an approval callback (opt-in gate). */
+export interface AgentApprovalRequest {
+  toolName: string;
+  /** Human-readable one-line description of what the call will do. */
+  summary: string;
+  /** Target file path when the call writes source (save_text_file /
+   *  apply_search_replace), else undefined. */
+  targetPath?: string;
+  /** Unified-diff-ish preview of the pending change, when derivable. */
+  diffPreview?: string;
+  /** EL syntax pre-flight findings on the pending content (control-structure
+   *  pairing, repeated statements). Surfaced so the user can reject a patch
+   *  the compiler would later reject, before the expensive .e round-trip. */
+  diagnostics?: string[];
+}
+
+/** User's answer to an AgentApprovalRequest. "pause" suspends the run until
+ *  resume() is called; "reject" feeds a rejection note back to the model. */
+export type AgentApprovalDecision =
+  | { verdict: "approve" }
+  | { verdict: "reject"; reason?: string }
+  | { verdict: "pause" };
+
 /** A single step inside a ReAct trace: an assistant turn that may
  *  contain tool calls plus the tool results that followed. */
 export interface AgentStep {
   index: number;
   /** Visible reasoning / answer tokens streamed from the assistant. */
   assistantText: string;
+  reasoningContent?: string;
   /** Tool calls emitted by the assistant on this step (may be empty). */
   toolCalls: ToolCall[];
   /** Tool execution results — paired with `toolCalls` by `toolCallId`. */
@@ -144,6 +169,24 @@ export interface AgentStep {
   endedAt: number;
 }
 
+export type AgentPlanItemStatus = "pending" | "in_progress" | "done" | "skipped";
+
+/** One visible TODO item in the agent's execution plan. For EL tasks these
+ *  map to closed-loop stages (parse → export → map → analyze → baseline →
+ *  read → edit → build → verify), but the title is free-form. */
+export interface AgentPlanItem {
+  /** 1-based position, stable within a plan revision. */
+  id: number;
+  title: string;
+  status: AgentPlanItemStatus;
+}
+
+/** The agent's self-declared plan, updated via the update_plan tool. */
+export interface AgentPlan {
+  items: AgentPlanItem[];
+  updatedAt: number;
+}
+
 /** Full agent execution trace, persisted on the assistant message. */
 export interface AgentTrace {
   goal: string;
@@ -152,6 +195,8 @@ export interface AgentTrace {
   /** "answer" → 模型给出最终回答；"max_steps" → 达到上限；"error" → 异常 */
   outcome: "answer" | "max_steps" | "error" | "aborted" | "needs_input";
   pendingUserChoice?: AgentUserChoiceRequest;
+  /** Latest execution plan declared by the model (visible TODO checklist). */
+  plan?: AgentPlan;
   startedAt: number;
   endedAt: number;
   /** Total tool-call count across all steps. */

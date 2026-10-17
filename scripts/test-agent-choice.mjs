@@ -133,7 +133,7 @@ try {
 
   const followupUploadedRun = runner.startAgentRun({
     config: {
-      provider: "openai",
+      provider: "deepseek",
       protocol: "openai-chat-completions",
       apiKey: "test",
       baseUrl: "http://127.0.0.1/unused",
@@ -219,7 +219,7 @@ try {
 
   const run = runner.startAgentRun({
     config: {
-      provider: "openai",
+      provider: "deepseek",
       protocol: "openai-chat-completions",
       apiKey: "test",
       baseUrl: "http://127.0.0.1/unused",
@@ -234,21 +234,12 @@ try {
     allowDialog: false,
   });
   const trace = await run.promise;
-  assert(
-    trace.outcome === "needs_input",
-    "First turn for a multi-implementation Jingyi example should stop at structured choice before model prose.",
-    JSON.stringify({ outcome: trace.outcome, finalAnswer: trace.finalAnswer, pending: trace.pendingUserChoice }, null, 2),
-  );
-  assert(
-    trace.pendingUserChoice?.options?.some((option) => option.label.includes("网页_访问_对象")) &&
-      trace.pendingUserChoice?.options?.some((option) => option.label.includes("网页_访问S")),
-    "The structured choice should expose the real Jingyi implementation options.",
-    JSON.stringify(trace.pendingUserChoice, null, 2),
-  );
+  assert(trace.outcome !== "needs_input" && !trace.pendingUserChoice,
+    "Multiple implementation candidates must continue automatically instead of asking the user to choose.", JSON.stringify(trace));
 
   const uploadedRun = runner.startAgentRun({
     config: {
-      provider: "openai",
+      provider: "deepseek",
       protocol: "openai-chat-completions",
       apiKey: "test",
       baseUrl: "http://127.0.0.1/unused",

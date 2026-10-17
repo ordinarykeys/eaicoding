@@ -3,11 +3,22 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const MAX_TIMEOUT_SECS: u64 = 300;
+
+// Shared client: reuses the connection pool / TLS sessions across requests.
+// No global total timeout here — non-stream requests set a per-request
+// timeout, streaming uses an idle-read timeout per chunk instead.
+static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .build()
+        .expect("failed to build shared LLM proxy client")
+});
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -157,15 +168,11 @@ pub async fn llm_proxy_request(request: LlmProxyRequest) -> Result<LlmProxyRespo
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .clamp(1, MAX_TIMEOUT_SECS);
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(timeout_secs))
-        .build()
-        .map_err(|err| format!("Failed to build LLM proxy client: {err}"))?;
-
     let mut builder = match method.as_str() {
-        "GET" => client.get(url),
-        _ => client.post(url),
+        "GET" => HTTP_CLIENT.get(url),
+        _ => HTTP_CLIENT.post(url),
     }
+    .timeout(Duration::from_secs(timeout_secs))
     .headers(build_headers(request.headers)?);
 
     if let Some(body) = request.body {
@@ -194,6 +201,15 @@ pub async fn llm_proxy_request(request: LlmProxyRequest) -> Result<LlmProxyRespo
 pub async fn llm_proxy_stream(
     app: AppHandle,
     request: LlmProxyStreamRequest,
+    request_id: Option<String>,
+) -> Result<LlmProxyResponse, String> {
+    let request_id = request_id.unwrap_or_else(|| request.request_id.clone());
+    crate::task_cancel::cancellable(Some(request_id), llm_proxy_stream_inner(app, request)).await
+}
+
+async fn llm_proxy_stream_inner(
+    app: AppHandle,
+    request: LlmProxyStreamRequest,
 ) -> Result<LlmProxyResponse, String> {
     let url = request.url.trim();
     if url.is_empty() {
@@ -215,14 +231,9 @@ pub async fn llm_proxy_stream(
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .clamp(1, MAX_TIMEOUT_SECS);
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(timeout_secs))
-        .build()
-        .map_err(|err| format!("Failed to build LLM proxy client: {err}"))?;
-
     let mut builder = match method.as_str() {
-        "GET" => client.get(url),
-        _ => client.post(url),
+        "GET" => HTTP_CLIENT.get(url),
+        _ => HTTP_CLIENT.post(url),
     }
     .headers(build_headers(request.headers)?);
 
@@ -230,9 +241,13 @@ pub async fn llm_proxy_stream(
         builder = builder.json(&body);
     }
 
-    let mut response = builder
-        .send()
+    // No total timeout for streaming: a long completion legitimately runs
+    // past any fixed deadline. timeout_secs acts as an idle-read timeout on
+    // the initial response and each chunk instead.
+    let idle_timeout = Duration::from_secs(timeout_secs);
+    let mut response = tokio::time::timeout(idle_timeout, builder.send())
         .await
+        .map_err(|_| format!("LLM proxy request timed out after {timeout_secs}s"))?
         .map_err(|err| format!("LLM proxy request failed: {err}"))?;
     let status = response.status();
     let status_text = status.canonical_reason().unwrap_or("").to_string();
@@ -251,11 +266,12 @@ pub async fn llm_proxy_stream(
 
     let mut text = String::new();
     let mut pending_utf8 = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|err| format!("Failed to read LLM proxy stream: {err}"))?
-    {
+    loop {
+        let chunk = tokio::time::timeout(idle_timeout, response.chunk())
+            .await
+            .map_err(|_| format!("LLM proxy stream idle for more than {timeout_secs}s"))?
+            .map_err(|err| format!("Failed to read LLM proxy stream: {err}"))?;
+        let Some(chunk) = chunk else { break };
         if chunk.is_empty() {
             continue;
         }

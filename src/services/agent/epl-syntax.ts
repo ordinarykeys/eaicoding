@@ -40,13 +40,13 @@ function looksLikeEplCode(code: string, language: string): boolean {
   if (EPL_LANGUAGE_ALIASES.has(normalizedLanguage)) return true;
 
   return (
-    /^\s*\.(版本|程序集|子程序|局部变量|程序集变量|全局变量|参数)\b/m.test(code) ||
-    /^\s*(类名|子程序名|变量名)\s+(基\s*类|返回值类型|类\s*型)\b/m.test(code) ||
+    /^\s*\.(版本|程序集|子程序|局部变量|程序集变量|全局变量|参数)(?=[\s,，]|$)/m.test(code) ||
+    /^\s*(类名|子程序名|变量名)\s+(基\s*类|返回值类型|类\s*型)(?=\s|$)/m.test(code) ||
     /(计次循环首|变量循环首|循环判断首|判断循环首|如果真|如果结束)\s*[（(]/.test(code)
   );
 }
 
-function extractEplCodeBlocks(markdown: string): EplCodeBlock[] {
+export function extractEplCodeBlocks(markdown: string): EplCodeBlock[] {
   const blocks: EplCodeBlock[] = [];
   const fencedPattern = /```([^\n`]*)\n([\s\S]*?)```/g;
   let match: RegExpExecArray | null;
@@ -78,8 +78,8 @@ function firstKeyword(line: string): string | null {
   return match?.[0] ?? null;
 }
 
-function isCompleteExample(code: string): boolean {
-  return /^\s*\.(版本|程序集|子程序|DLL命令)\b/m.test(code);
+export function isCompleteExample(code: string): boolean {
+  return /^\s*\.(版本|程序集|子程序|DLL命令)(?=[\s,，]|$)/m.test(code);
 }
 
 function stripInlineComment(line: string): string {
@@ -268,6 +268,19 @@ export function findEplAnswerDiagnostics(answer: string): EplSyntaxDiagnostic[] 
   return extractEplCodeBlocks(answer).flatMap((block, index) =>
     validateEplCodeBlock(block.code, index + 1),
   );
+}
+
+/**
+ * Validate raw EL source directly (not markdown-fenced). Used for closed-loop
+ * pre-flight on edited .e.txt files: runs the same Chinese control-structure
+ * pairing check the answer validator uses, but over a whole source file, so an
+ * obviously-broken edit (unclosed 如果/计次循环首, stray 结束) can be rejected
+ * before the expensive regenerate+compile round-trip. Unknown keywords are
+ * ignored (no false positives), so only genuine pairing errors surface as
+ * severity "error".
+ */
+export function findEplSourceDiagnostics(code: string): EplSyntaxDiagnostic[] {
+  return validateEplCodeBlock(code, 0);
 }
 
 export function formatEplDiagnostics(diagnostics: EplSyntaxDiagnostic[]): string {

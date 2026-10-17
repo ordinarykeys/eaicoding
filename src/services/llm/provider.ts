@@ -31,7 +31,8 @@ export class MessagesProvider extends BaseLLMProvider {
     callbacks: StreamCallbacks,
     _options?: StreamOptions,
   ): Promise<void> {
-    this.abortController = new AbortController();
+    const controller = new AbortController();
+    this.abortController = controller;
 
     const systemMessage = messages.find((m) => m.role === "system");
     const rest = messages.filter((m) => m.role !== "system");
@@ -113,13 +114,15 @@ export class MessagesProvider extends BaseLLMProvider {
         },
         body,
         (chunk) => sseParser.feed(chunk),
+        120,
+        controller.signal,
       );
     } catch (err) {
       if ((err as Error).name === "AbortError") return;
       callbacks.onError(err instanceof Error ? err : new Error(String(err)));
       return;
     }
-    if (this.abortController.signal.aborted) return;
+    if (controller.signal.aborted) return;
     sseParser.flush();
     if (response.status < 200 || response.status >= 300) {
       const text = response.text;

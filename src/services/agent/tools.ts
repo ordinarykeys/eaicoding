@@ -1,16 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
+import { abortError, invokeTask, throwIfAborted } from "@/services/tauri-task";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import type { AgentChoiceOption, ToolDefinition, ToolResult } from "@/types/llm";
+import type { AgentChoiceOption, ToolDefinition, ToolResult, ToolParameter } from "@/types/llm";
 import type { EasyLanguageEnvScan } from "@/services/easy-language-env";
 import { useSettingsStore } from "@/stores/settings";
 import { JINGYI_ITEMS, type JingyiSearchItem } from "@/services/agent/knowledge/jingyi-data";
 import { enrichJingyiItemsWithDocs } from "@/services/agent/knowledge/jingyi-docs";
 import { semanticSearchJingyiModule } from "@/services/agent/knowledge/jingyi-vector-search";
+import { searchUserModules } from "@/services/knowledge/module-search";
 import {
   applySearchReplaceToText,
   parseSearchReplaceBlock,
   type SearchReplaceResult,
 } from "@/services/agent/search-replace";
+import {
+  finishProjectClosedLoopWorkflow,
+  restoreClosedLoopSnapshot,
+  startProjectClosedLoopWorkflow,
+} from "@/services/agent/closed-loop-workflow";
 
 // ---------------------------------------------------------------------------
 // Backend response shapes (mirror Rust structs in src-tauri/src/*).
@@ -217,6 +224,14 @@ export interface ReadFileResult {
   encoding: string;
   bytes: number;
   truncated: boolean;
+  code_hash?: string;
+  start_char?: number;
+  returned_chars?: number;
+  total_chars?: number;
+  next_start_char?: number | null;
+  start_line?: number;
+  total_lines?: number;
+  is_partial?: boolean;
 }
 
 interface EasyLanguageEnvScanResult extends EasyLanguageEnvScan {}
@@ -226,6 +241,7 @@ interface EasyLanguageEnvScanResult extends EasyLanguageEnvScan {}
 // ---------------------------------------------------------------------------
 
 export interface ToolExecContext {
+  readOnly?: boolean;
   /** Active session id, used by tools that read latest assistant code. */
   sessionId: string | null;
   /** The user message that originated this turn. */
@@ -234,6 +250,7 @@ export interface ToolExecContext {
   allowDialog: boolean;
   /** Callback invoked when a tool wants to surface a transient status to the UI. */
   onStatus?: (status: string) => void;
+  signal?: AbortSignal;
 }
 
 export type ToolExecutor = (
@@ -1696,7 +1713,7 @@ function extractJingyiModulePathsFromInput(input: string): string[] {
   );
 }
 
-function extractLocalPathsByExtension(input: string, extension: string): string[] {
+export function extractLocalPathsByExtension(input: string, extension: string): string[] {
   const normalizedExtension = extension.replace(/^\./, "").toLowerCase();
   const matcher = /[A-Za-z]:\\[^\r\n<>"]+/g;
   const matches = input.match(matcher) ?? [];
@@ -1709,17 +1726,20 @@ function extractLocalPathsByExtension(input: string, extension: string): string[
 }
 
 function cleanLocalPathCandidate(candidate: string, extension: string): string | null {
-  const lower = candidate.toLowerCase();
-  const marker = `.${extension.toLowerCase()}`;
-  const markerIndex = lower.indexOf(marker);
-  if (markerIndex < 0) return null;
+  const marker = new RegExp(`\\.${escapeRegExp(extension)}(?![A-Za-z0-9_])`, "i");
+  const match = marker.exec(candidate);
+  if (!match) return null;
 
-  let path = candidate.slice(0, markerIndex + marker.length);
+  let path = candidate.slice(0, match.index + match[0].length);
   path = path
     .trim()
     .replace(/^[`'"]+|[`'"]+$/g, "")
     .replace(/[)\]）】》>，,。；;：:]+$/g, "");
   return path || null;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function joinLocalPath(dir: string, name: string): string {
@@ -2933,7 +2953,7 @@ export async function searchJingyiKnowledge(query: string, limit = 8) {
       ...semanticItems[index],
     })),
     note:
-      "matches 已合并精确检索、BM25/结构化字段检索、本地向量检索、伪相关反馈和 API 关系展开。implementation_options 是按实现路线分组后的证据：route_type=function_family 表示可直接比较的同族函数，object_workflow 表示对象/类调用链，namespace_overview/candidate_pool 只作补充召回。回答自然语言功能问题时，应优先根据 primary_options 比较多个可用实现，说明返回值、关键参数、对象调用链和适用场景，再给默认推荐或调用 ask_user_choice 让用户选择。生成代码时以实际签名为准。如果用到这些命令，生成 .e 时需要通过 module_paths 引用精易模块，compile_efile 也会自动使用用户消息中的 .ec 路径。",
+      "matches 已合并精确检索、BM25/结构化字段检索、本地向量检索、伪相关反馈和 API 关系展开。implementation_options 是按实现路线分组后的证据：route_type=function_family 表示可直接比较的同族函数，object_workflow 表示对象/类调用链，namespace_overview/candidate_pool 只作补充召回。回答自然语言功能问题时，应优先根据 primary_options 比较多个可用实现，说明返回值、关键参数、对象调用链和适用场景，自主选定最适合需求的默认实现并直接继续。生成代码时以实际签名为准。如果用到这些命令，生成 .e 时需要通过 module_paths 引用精易模块，compile_efile 也会自动使用用户消息中的 .ec 路径。",
   };
 }
 
@@ -2974,28 +2994,28 @@ const readFile: RegisteredTool = {
         },
         max_chars: {
           type: "integer",
-          description: "最多读取的字符数，默认 12000。超长文件会被截断并提示。",
+          description: "每页最多字符数，默认及上限 6000；继续读取时传返回的 next_start_char。",
           nullable: true,
         },
+        start_char: { type: "integer", description: "续页的字符偏移，原样传上一页 next_start_char。", nullable: true },
+        start_line: { type: "integer", description: "从第几行开始，1 起；与 start_char 二选一。", nullable: true },
+        max_lines: { type: "integer", description: "最多读取多少行，仍受每页字符上限约束。", nullable: true },
       },
       required: ["file_path"],
     },
   },
-  executor: async (args) => {
+  executor: async (args, ctx) => {
     const filePath = readString(args, "file_path");
     if (!filePath) throw new Error("缺少必填参数 file_path");
-    const maxChars = typeof args.max_chars === "number" ? args.max_chars : null;
-    const result = await invoke<ReadFileResult>("read_text_file_for_agent", {
+    const maxChars = Math.max(1, Math.min(typeof args.max_chars === "number" ? args.max_chars : 6000, 6000));
+    const result = await invokeTask<ReadFileResult>("read_text_file_for_agent", {
       filePath,
       maxChars,
-    });
-    return {
-      path: result.path,
-      encoding: result.encoding,
-      bytes: result.bytes,
-      truncated: result.truncated,
-      content: result.content,
-    };
+      startChar: typeof args.start_char === "number" ? args.start_char : null,
+      startLine: typeof args.start_line === "number" ? args.start_line : null,
+      maxLines: typeof args.max_lines === "number" ? args.max_lines : null,
+    }, ctx.signal);
+    return result;
   },
 };
 
@@ -3016,11 +3036,11 @@ const scanEasyLanguageEnv: RegisteredTool = {
       },
     },
   },
-  executor: async (args) => {
+  executor: async (args, ctx) => {
     const rootPath = readString(args, "root_path");
-    const result = await invoke<EasyLanguageEnvScanResult>("scan_easy_language_env", {
+    const result = await invokeTask<EasyLanguageEnvScanResult>("scan_easy_language_env", {
       rootPath: rootPath ?? null,
-    });
+    }, ctx.signal);
     return {
       root: result.root,
       exists: result.exists,
@@ -3040,10 +3060,11 @@ const searchJingyiModule: RegisteredTool = {
   definition: {
     name: "search_jingyi_module",
     description:
-      "查询内置精易模块知识库，返回匹配命令/类/全局变量的签名和参数。" +
-      "当用户要实现精易模块相关功能时，先调用本工具查精易模块，再生成易语言代码。" +
-      "如果用户上传并要求使用其他 .ec 模块，应先用 parse_efile 读取该模块公开接口，本工具只作为精易模块或辅助 API 证据。" +
-      "本工具是唯一可作为知识库使用的 API 查询入口，不读取易语言 IDE help 或其他支持库文档。",
+      "查询内置精易模块知识库（1500+ 子程序），返回匹配命令/类/全局变量的签名、参数、返回值证据，外加 implementation_options 实现路线列表。" +
+      "需要写涉及精易模块的代码时调用本工具，不要凭记忆猜参数；用户问'怎么实现/有哪些方式'时按 implementation_options 给多种路线对比。" +
+      "返回的 implementation_options.route_type=function_family 是同族函数方案，object_workflow 是对象/类调用链方案；生成代码用 primary_options 的主入口，supporting_options 仅作辅助（设置请求头、构造参数、读取状态等）。" +
+      "【优先级】用户上传并点名使用非精易 .ec 模块（鱼刺类、OkHttp、团队封装库等）时，先调 search_user_modules，本工具只用于精易模块本身或精易侧的辅助能力，不得覆盖用户指定模块的 API。" +
+      "本工具是精易模块的唯一知识库入口，不读取易语言 IDE help 或其他支持库文档。",
     parameters: {
       type: "object",
       properties: {
@@ -3060,7 +3081,7 @@ const searchJingyiModule: RegisteredTool = {
       required: ["query"],
     },
   },
-  executor: async (args) => {
+  executor: async (args, ctx) => {
     const query = readString(args, "query");
     if (!query) throw new Error("缺少必填参数 query");
     const limit = Math.max(1, Math.min(typeof args.limit === "number" ? args.limit : 8, 20));
@@ -3068,12 +3089,75 @@ const searchJingyiModule: RegisteredTool = {
   },
 };
 
+const searchUserModulesTool: RegisteredTool = {
+  definition: {
+    name: "search_user_modules",
+    description:
+      "查询用户在「设置 → 模块库」上传的 .ec 模块（如鱼刺类、OkHttp 封装等团队自用模块），" +
+      "按命令名/类名/参数/描述返回匹配的公开 API 签名 + implementation_options 实现路线。" +
+      "【优先级】当用户消息提到使用、基于、按上传模块或点名某个 .ec 实现功能时，先调用本工具按需查询；" +
+      "命中后直接基于返回的签名写代码，不要再 parse_efile 把整模块全量拉回来。" +
+      "只在本工具召回不足（count=0）、用户要求列出全部公开接口、或要看模块具体实现（私有子程序）时再 parse_efile。" +
+      "返回的 implementation_options 含 route_type（function_family 同族函数 / object_workflow 对象调用链）；多候选时按 jingyi 同款规则处理：用 primary_options 主入口写代码，supporting_options 仅做辅助；多个同级实现时根据任务和依赖自动选择最合适的一种并继续，不要要求用户选择技术入口。" +
+      "本工具与 search_jingyi_module 互补：精易模块查内置库；用户上传的非精易模块（包括鱼刺类等）查本工具。",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "要查询的命令名/类名或自然语言意图，如「POST 多线程」「Json 解析」「类_网页访问」。",
+        },
+        module_names: {
+          type: "array",
+          description:
+            "可选，限定在哪些模块里查（按友好名子串、不区分大小写）。" +
+            "用户点名某个模块时传入，例如 [\"鱼刺类.多线程\"]；不传则查全部已就绪模块。",
+          items: { type: "string" },
+          nullable: true,
+        },
+        module_ids: {
+          type: "array",
+          description: "可选，按模块 id 精确限定。一般 module_names 已足够，除非用户提供过具体 id。",
+          items: { type: "string" },
+          nullable: true,
+        },
+        limit: {
+          type: "integer",
+          description: "最多返回多少条 matches，默认 10，最大 25。",
+          nullable: true,
+        },
+      },
+      required: ["query"],
+    },
+  },
+  executor: async (args, ctx) => {
+    const query = readString(args, "query");
+    if (!query) throw new Error("缺少必填参数 query");
+    const limit = Math.max(1, Math.min(typeof args.limit === "number" ? args.limit : 10, 25));
+    const moduleNames = readStringArray(args, "module_names");
+    const moduleIds = readStringArray(args, "module_ids");
+    const result = await searchUserModules(query, {
+      limit,
+      moduleNames: moduleNames.length > 0 ? moduleNames : undefined,
+      moduleIds: moduleIds.length > 0 ? moduleIds : undefined,
+    });
+    return {
+      ...result,
+      hint:
+        result.count === 0
+          ? (result.searched_modules.length === 0
+              ? "用户尚未上传任何已就绪的 .ec 模块；如果需求与已知精易模块能力重合，可改用 search_jingyi_module。"
+              : "已查询用户模块库但本次未命中。可换用更具体的命令名/类名再试一次，或调 parse_efile 浏览整个模块的 .程序集 列表。")
+          : "已基于用户模块库返回 implementation_options/matches；生成代码时严格使用其中的 name + signature，不要凭记忆改参数。",
+    };
+  },
+};
+
 const askUserChoice: RegisteredTool = {
   definition: {
     name: "ask_user_choice",
     description:
-      "当工具证据显示存在多种都可行的实现路线、库/API/修复方案，且用户偏好会影响最终代码时，暂停并让用户选择。" +
-      "这是通用交互工具，适用于任何需要用户决策的场景；不要把它用于可以自行明确推荐的普通说明。",
+      "只有缺少用户才能提供的目标、账号或业务约束，或用户明确要求亲自选择时才暂停提问。多个可行 API/实现路线必须由你自主比较并选择，不能因此打断任务。",
     parameters: {
       type: "object",
       properties: {
@@ -3081,6 +3165,7 @@ const askUserChoice: RegisteredTool = {
           type: "string",
           description: "要问用户的简短问题。",
         },
+        required_information: { type: "boolean", description: "仅缺少用户才能提供的必要业务信息时设为 true。技术实现/API 选型不属于必要信息。" },
         options: {
           type: "array",
           description: "2 到 6 个可选方案。每项可为字符串，或 {label,value,description}。",
@@ -3108,11 +3193,14 @@ const askUserChoice: RegisteredTool = {
       required: ["question", "options"],
     },
   },
-  executor: async (args) => {
+  executor: async (args, ctx) => {
     const question = readString(args, "question") ?? "请选择一个方案";
     const options = readChoiceOptions(args, "options");
     if (options.length < 2) {
       throw new Error("ask_user_choice 至少需要 2 个可选方案");
+    }
+    if (!readBoolean(args, "required_information", false) && !/(让我选|我来选|手动选|先给我.*选项)/.test(ctx.userInput)) {
+      return { needs_user_choice: false, instruction: "请你根据用户需求、已有模块、真实签名和实现复杂度自主选择最合适的方案，然后直接继续，不要再次询问技术入口。" };
     }
     return {
       needs_user_choice: true,
@@ -3126,13 +3214,76 @@ const askUserChoice: RegisteredTool = {
   },
 };
 
+const updatePlan: RegisteredTool = {
+  definition: {
+    name: "update_plan",
+    description:
+      "维护一个对用户可见的执行计划清单（TODO）。用于把复杂任务拆成有序步骤并跟踪进度：开始一个较大任务时先建计划，之后每完成一步就更新对应项状态。" +
+      "对易语言项目任务，计划项通常对应闭环阶段：解析 .e → 导出 ecode → 项目地图 → 静态分析 → 原始基线 → 读取源码 → 修改 → 回编编译 → 验证。" +
+      "【使用规则】(1) 每次调用都要提交完整的计划项列表（全量覆盖，不是增量）。(2) 同一时刻最多一个项为 in_progress。(3) 简单的一两步问答不需要建计划。",
+    parameters: {
+      type: "object",
+      properties: {
+        items: {
+          type: "array",
+          description:
+            "完整的计划项列表，按执行顺序排列。每项 {title, status}；status 取值 pending/in_progress/done/skipped，省略时视为 pending。",
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string", description: "该步骤的简短描述。" },
+              status: {
+                type: "string",
+                enum: ["pending", "in_progress", "done", "skipped"],
+                nullable: true,
+              },
+            },
+            required: ["title"],
+          },
+        },
+      },
+      required: ["items"],
+    },
+  },
+  executor: async (args, ctx) => {
+    const rawItems = Array.isArray(args.items) ? args.items : [];
+    const validStatus = new Set(["pending", "in_progress", "done", "skipped"]);
+    const items = rawItems
+      .map((raw, index) => {
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+        const record = raw as Record<string, unknown>;
+        const title = typeof record.title === "string" ? record.title.trim() : "";
+        if (!title) return null;
+        const status =
+          typeof record.status === "string" && validStatus.has(record.status)
+            ? record.status
+            : "pending";
+        return { id: index + 1, title, status };
+      })
+      .filter((item): item is { id: number; title: string; status: string } => item !== null);
+    if (items.length === 0) {
+      throw new Error("update_plan 需要至少一个含 title 的计划项");
+    }
+    // The runner intercepts this result to attach the plan onto the trace;
+    // the echoed payload is what the model sees on the next turn.
+    return {
+      plan_updated: true,
+      items,
+      instruction:
+        "计划已更新并展示给用户。继续执行下一个 pending/in_progress 步骤；完成后再次调用 update_plan 更新状态，不要重复调用相同的计划。",
+    };
+  },
+};
+
 const parseEFile: RegisteredTool = {
   definition: {
     name: "parse_efile",
     description:
       "解析本地 .e 或 .ec 文件，返回反编译源码摘要（子程序列表、参数、局部变量、代码逻辑）、引用的支持库和模块列表。" +
-      "对于 .e 主程序：输出包含完整的子程序结构和代码，以及引用了哪些支持库和 .ec 模块。" +
-      "对于 .ec 模块：输出模块中所有公开子程序的接口信息。注意：模块通常非常大，主程序只使用其中一小部分命令。",
+      "对于 .e 主程序：输出包含完整的子程序结构和代码，以及引用了哪些支持库和 .ec 模块——这是分析/优化主程序的第一步。" +
+      "对于 .ec 模块：输出模块所有公开子程序的接口信息，但通常体量很大（一个模块可能有上千 API）。" +
+      "【优先级提示】.ec 模块如果是用户已上传到「设置 → 模块库」的，应优先用 search_user_modules 按需查询而不是本工具——search 返回结构化匹配，token 占用低；只在 search 召回为空、需要遍历模块全部 .程序集 / 公开接口、或要看具体实现（私有子程序）时才调本工具。" +
+      "切勿对 .e/.ec 调 read_file（二进制格式会返回乱码导致推理失败）。",
     parameters: {
       type: "object",
       properties: {
@@ -3147,7 +3298,7 @@ const parseEFile: RegisteredTool = {
   executor: async (args, ctx) => {
     const targetPath = readString(args, "target_path");
     if (!targetPath) throw new Error("缺少必填参数 target_path");
-    const result = await invoke<ParseResult>("parse_efile", { filePath: targetPath });
+    const result = await invokeTask<ParseResult>("parse_efile", { filePath: targetPath }, ctx.signal);
     const output = result.output ?? "";
     const isModule = targetPath.trim().toLowerCase().endsWith(".ec");
     return {
@@ -3184,17 +3335,17 @@ const exportECode: RegisteredTool = {
       required: ["target_path"],
     },
   },
-  executor: async (args) => {
+  executor: async (args, ctx) => {
     const targetPath = readString(args, "target_path");
     if (!targetPath) throw new Error("缺少必填参数 target_path");
     const outputPath =
       readString(args, "output_path") ??
       readString(args, "output_dir") ??
       makeConfiguredECodeDir(targetPath);
-    const result = await invoke<ECodeProjectResult>("export_efile_to_ecode", {
+    const result = await invokeTask<ECodeProjectResult>("export_efile_to_ecode", {
       sourcePath: targetPath,
       outputDir: outputPath ?? null,
-    });
+    }, ctx.signal);
     const readableFiles = collectReadableECodeFiles(result.files);
     return {
       success: result.success,
@@ -3238,16 +3389,16 @@ const summarizeECodeProject: RegisteredTool = {
       required: ["ecode_dir"],
     },
   },
-  executor: async (args) => {
+  executor: async (args, ctx) => {
     const ecodeDir = readString(args, "ecode_dir");
     if (!ecodeDir) throw new Error("缺少必填参数 ecode_dir");
     const includeModules = readBoolean(args, "include_modules", false);
     const maxFiles = typeof args.max_files === "number" ? args.max_files : null;
-    const result = await invoke<ECodeProjectMapResult>("summarize_ecode_project_for_agent", {
+    const result = await invokeTask<ECodeProjectMapResult>("summarize_ecode_project_for_agent", {
       ecodeDir,
       includeModules,
       maxFiles,
-    });
+    }, ctx.signal);
     return result;
   },
 };
@@ -3279,7 +3430,7 @@ const analyzeECodeProject: RegisteredTool = {
       required: ["ecode_dir"],
     },
   },
-  executor: async (args) => {
+  executor: async (args, ctx) => {
     const ecodeDir = readString(args, "ecode_dir");
     if (!ecodeDir) throw new Error("缺少必填参数 ecode_dir");
     const includeModules = readBoolean(args, "include_modules", false);
@@ -3359,16 +3510,16 @@ const generateEFileFromECode: RegisteredTool = {
       required: ["ecode_dir"],
     },
   },
-  executor: async (args) => {
+  executor: async (args, ctx) => {
     const ecodeDir = readString(args, "ecode_dir");
     if (!ecodeDir) throw new Error("缺少必填参数 ecode_dir");
     const outputPath =
       readString(args, "output_path") ??
       makeConfiguredEFilePath(ecodeDir);
-    const result = await invoke<ECodeProjectResult>("generate_efile_from_ecode", {
+    const result = await invokeTask<ECodeProjectResult>("generate_efile_from_ecode", {
       ecodeDir,
       outputPath: outputPath ?? "",
-    });
+    }, ctx.signal);
     return {
       success: result.success,
       ecode_dir: result.ecode_dir,
@@ -3426,11 +3577,11 @@ const generateEFileFromCode: RegisteredTool = {
         ? extractJingyiModulePathsFromInput(ctx.userInput)
         : []),
     ].filter((item, index, list) => list.indexOf(item) === index);
-    const result = await invoke<ECodeProjectResult>("generate_efile_from_code", {
+    const result = await invokeTask<ECodeProjectResult>("generate_efile_from_code", {
       code,
       outputPath: outputPath ?? "",
       modulePaths: modulePaths.length > 0 ? modulePaths : null,
-    });
+    }, ctx.signal);
     return {
       success: result.success,
       output_path: result.output_path,
@@ -3442,13 +3593,59 @@ const generateEFileFromCode: RegisteredTool = {
   },
 };
 
+const guiEventSchema: ToolParameter = {
+  type: "array", items: { type: "object", properties: {
+    name: { type: "string", description: "事件名，例如 被单击、内容被改变；窗口支持 创建完毕、将被销毁。" },
+    code: { type: "string", description: "事件体易语言代码，不含 .子程序 声明。" },
+  }, required: ["name", "code"] },
+};
+
+const generateGuiProject: RegisteredTool = {
+  definition: {
+    name: "generate_gui_project",
+    description: "从零生成真实易语言窗口工程，包含窗口、控件布局、标题/内容初始化和绑定事件，输出可编辑 ecode_dir、layout_path 和 .e 文件。用户需要窗口/UI/登录框/按钮时使用，随后必须 compile_efile；禁止用控制台模板代替窗口。支持按钮、编辑框、标签、选择框、单选框。已有 GUI 工程请修改其 .form.json/.form.e.txt 并 build_ecode_project。",
+    parameters: { type: "object", properties: {
+      project: { type: "object", properties: { windows: { type: "array", items: {
+        type: "object", properties: {
+          name: { type: "string", description: "首个窗口必须为 _启动窗口；其他窗口使用 加载 命令显示。" },
+          title: { type: "string" }, width: { type: "integer" }, height: { type: "integer" },
+          declarations: { type: "string", description: "可选程序集变量声明，不含 .程序集 或 .子程序。" },
+          code: { type: "string", description: "可选其他子程序完整声明和实现；不要重复 events 中的事件。" },
+          events: guiEventSchema,
+          controls: { type: "array", items: { type: "object", properties: {
+            name: { type: "string" }, type: { type: "string", enum: ["按钮", "编辑框", "标签", "选择框", "单选框"] },
+            left: { type: "integer" }, top: { type: "integer" }, width: { type: "integer" }, height: { type: "integer" },
+            text: { type: "string" }, events: guiEventSchema,
+          }, required: ["name", "type", "left", "top", "width", "height"] } },
+        }, required: ["name", "title", "width", "height", "controls"],
+      } } }, required: ["windows"] },
+      output_path: { type: "string", description: "可选 .e 输出路径。" },
+      module_paths: { type: "array", items: { type: "string" } },
+    }, required: ["project"] },
+  },
+  executor: async (args, ctx) => {
+    if (!args.project || typeof args.project !== "object") throw new Error("缺少窗口工程 project");
+    const modules = Array.from(new Set([...readStringArray(args, "module_paths"), ...extractJingyiModulePathsFromInput(ctx.userInput)]));
+    return invokeTask("generate_gui_project", {
+      project: args.project,
+      outputPath: readString(args, "output_path") ?? makeConfiguredEFilePath("窗口程序.e", "gui") ?? null,
+      modulePaths: modules.length ? modules : null,
+    }, ctx.signal);
+  },
+};
+
 /** Compile an .e file with ecl. */
 const compileEFile: RegisteredTool = {
   definition: {
     name: "compile_efile",
     description:
       "调用 ecl.exe 对 .e 文件进行编译检查。成功返回 output_path；失败返回 stderr/stdout 供修复。" +
-      "如项目依赖 .ec 模块，可通过 module_paths 传入；若用户消息里已给出 .ec 绝对路径，本工具也会自动提取并先放入易语言 ecom 目录再编译。",
+      "如项目依赖 .ec 模块，可通过 module_paths 传入；若用户消息里已给出 .ec 绝对路径，本工具也会自动提取并先放入易语言 ecom 目录再编译。" +
+      "【失败处理】编译失败时根据 stderr 的具体错误修复源码后重试，不要把错误原样交给用户就结束。常见问题：" +
+      "(1)'变量指定格式错误'/'声明行包含默认值' → 检查 .全局变量/.程序集变量/.局部变量 声明，易语言变量声明行不能写默认值。" +
+      "(2) '找不到命令/类' → 检查 module_paths 是否包含相关 .ec；如缺则先 search_user_modules / search_jingyi_module 找到命令所在模块。" +
+      "(3) 控制结构错配 → 检查如果/如果结束、计次循环首/计次循环尾等是否成对。" +
+      "(4) 如果原始基线和修改后都同类 ecl 进程异常，应归类为编译环境问题而非代码问题。",
     parameters: {
       type: "object",
       properties: {
@@ -3488,13 +3685,13 @@ const compileEFile: RegisteredTool = {
       ...extractLocalPathsByExtension(ctx.userInput, "ec"),
     ].filter((item, index, list) => list.indexOf(item) === index);
     const easyLanguageRoot = useSettingsStore.getState().easyLanguageRoot || null;
-    const result = await invoke<CompileResult>("compile_efile", {
+    const result = await invokeTask<CompileResult>("compile_efile", {
       sourcePath: targetPath,
       outputPath: outputPath ?? null,
       staticLink,
       modulePaths: modulePaths.length > 0 ? modulePaths : null,
       easyLanguageRoot,
-    });
+    }, ctx.signal);
     return {
       success: result.success,
       output_path: result.output_path,
@@ -3557,10 +3754,10 @@ const buildECodeProject: RegisteredTool = {
       ...extractLocalPathsByExtension(ctx.userInput, "ec"),
     ].filter((item, index, list) => list.indexOf(item) === index);
 
-    const generated = await invoke<ECodeProjectResult>("generate_efile_from_ecode", {
+    const generated = await invokeTask<ECodeProjectResult>("generate_efile_from_ecode", {
       ecodeDir,
       outputPath: sourceOutputPath ?? "",
-    });
+    }, ctx.signal);
 
     if (!generated.success || !generated.output_path) {
       return {
@@ -3582,13 +3779,13 @@ const buildECodeProject: RegisteredTool = {
       };
     }
 
-    const compiled = await invoke<CompileResult>("compile_efile", {
+    const compiled = await invokeTask<CompileResult>("compile_efile", {
       sourcePath: generated.output_path,
       outputPath: exeOutputPath ?? makeConfiguredExePath(generated.output_path),
       staticLink,
       modulePaths: modulePaths.length > 0 ? modulePaths : null,
       easyLanguageRoot: useSettingsStore.getState().easyLanguageRoot || null,
-    });
+    }, ctx.signal);
 
     return {
       success: compiled.success,
@@ -3652,10 +3849,10 @@ const buildOriginalEFileBaseline: RegisteredTool = {
       ...extractLocalPathsByExtension(ctx.userInput, "ec"),
     ].filter((item, index, list) => list.indexOf(item) === index);
 
-    const exported = await invoke<ECodeProjectResult>("export_efile_to_ecode", {
+    const exported = await invokeTask<ECodeProjectResult>("export_efile_to_ecode", {
       sourcePath: targetPath,
       outputDir: makeConfiguredECodeDir(targetPath),
-    });
+    }, ctx.signal);
 
     if (!exported.success || !exported.ecode_dir) {
       return {
@@ -3679,10 +3876,10 @@ const buildOriginalEFileBaseline: RegisteredTool = {
       };
     }
 
-    const generated = await invoke<ECodeProjectResult>("generate_efile_from_ecode", {
+    const generated = await invokeTask<ECodeProjectResult>("generate_efile_from_ecode", {
       ecodeDir: exported.ecode_dir,
       outputPath: makeConfiguredEFilePath(exported.ecode_dir) ?? "",
-    });
+    }, ctx.signal);
 
     if (!generated.success || !generated.output_path) {
       return {
@@ -3711,13 +3908,13 @@ const buildOriginalEFileBaseline: RegisteredTool = {
       };
     }
 
-    const compiled = await invoke<CompileResult>("compile_efile", {
+    const compiled = await invokeTask<CompileResult>("compile_efile", {
       sourcePath: generated.output_path,
       outputPath: makeConfiguredExePath(generated.output_path),
       staticLink,
       modulePaths: modulePaths.length > 0 ? modulePaths : null,
       easyLanguageRoot: useSettingsStore.getState().easyLanguageRoot || null,
-    });
+    }, ctx.signal);
 
     return {
       success: compiled.success,
@@ -3753,6 +3950,209 @@ const buildOriginalEFileBaseline: RegisteredTool = {
   },
 };
 
+const startProjectClosedLoop: RegisteredTool = {
+  definition: {
+    name: "start_project_closed_loop",
+    description:
+      "启动完整的易语言项目闭环工作流：.e 导出/或接管 ecode_dir → 项目地图 → 原始基线回编编译 → 静态分析 → 上下文包 → 回滚快照 → 工作流状态文件。 " +
+      "优化/修复已有 .e 项目时优先用这个工具，不要手动把 parse/export/summarize/analyze/baseline/snapshot 拆散调用。若 baseline 不通过，先让用户补 .ec 模块或修复 ecl 环境，不要盲改源码。",
+    parameters: {
+      type: "object",
+      properties: {
+        target_path: {
+          type: "string",
+          description: "用户提供的 .e 源程序路径；如果已经有 ecode_dir 可不填。",
+          nullable: true,
+        },
+        ecode_dir: {
+          type: "string",
+          description: "已经导出的文本工程目录；如果提供它，会跳过 .e 导出。",
+          nullable: true,
+        },
+        goal: {
+          type: "string",
+          description: "本轮要完成的具体优化/修复/改造目标。",
+        },
+        include_modules: {
+          type: "boolean",
+          description: "是否把模块源码也纳入项目地图/分析，默认 false。",
+          default: false,
+        },
+        max_files: {
+          type: "integer",
+          description: "项目地图/快照最多纳入的源码文件数，默认 500。",
+          default: 500,
+          nullable: true,
+        },
+        module_paths: {
+          type: "array",
+          description: "编译依赖的 .ec 模块路径；用户消息里的 .ec 路径会自动加入。",
+          items: { type: "string" },
+          nullable: true,
+        },
+        static_link: {
+          type: "boolean",
+          description: "ecl 编译是否静态链接，默认 true。",
+          default: true,
+        },
+        run_baseline: {
+          type: "boolean",
+          description: "是否先做未修改基线回编+编译验证，默认 true。完整闭环必须保持 true。",
+          default: true,
+        },
+      },
+      required: ["goal"],
+    },
+  },
+  executor: async (args, ctx) => {
+    const targetPath = readString(args, "target_path")
+      ?? extractLocalPathsByExtension(ctx.userInput, "e")[0]
+      ?? null;
+    const ecodeDir = readString(args, "ecode_dir");
+    const goal = readString(args, "goal") ?? ctx.userInput;
+    const includeModules = readBoolean(args, "include_modules", false);
+    const maxFiles = typeof args.max_files === "number" ? args.max_files : 500;
+    const modulePaths = [
+      ...readStringArray(args, "module_paths"),
+      ...extractLocalPathsByExtension(ctx.userInput, "ec"),
+    ].filter((item, index, list) => list.indexOf(item) === index);
+
+    return startProjectClosedLoopWorkflow(
+      {
+        targetPath,
+        ecodeDir,
+        goal,
+        includeModules,
+        maxFiles,
+        modulePaths,
+        staticLink: readBoolean(args, "static_link", true),
+        runBaseline: readBoolean(args, "run_baseline", true),
+        onStatus: ctx.onStatus,
+        signal: ctx.signal,
+      },
+      {
+        analyzeProject: analyzeECodeProjectContent,
+        buildContextPack: buildECodeContextPack,
+      },
+    );
+  },
+};
+
+const finishProjectClosedLoop: RegisteredTool = {
+  definition: {
+    name: "finish_project_closed_loop",
+    description:
+      "完成一次易语言项目闭环：对 start_project_closed_loop 创建的 ecode_dir 计算快照 diff → 回编 .e → ecl 编译 → 写 build report → 返回产物/错误/修复指令。 " +
+      "每次修改 .e.txt 后都必须调用它；失败时按 repair_instruction 和 stderr 继续修复后重试。",
+    parameters: {
+      type: "object",
+      properties: {
+        workflow_id: {
+          type: "string",
+          description: "start_project_closed_loop 返回的 workflow_id。",
+          nullable: true,
+        },
+        workflow_state_path: {
+          type: "string",
+          description: "start_project_closed_loop 返回的 workflow_state_path；提供它时可自动读取 ecode_dir/snapshot/module_paths。",
+          nullable: true,
+        },
+        snapshot_path: {
+          type: "string",
+          description: "start_project_closed_loop 返回的 snapshot_path。",
+          nullable: true,
+        },
+        ecode_dir: {
+          type: "string",
+          description: "要回编的文本工程目录。",
+          nullable: true,
+        },
+        module_paths: {
+          type: "array",
+          description: "额外 .ec 模块路径；用户消息里的 .ec 路径会自动加入。",
+          items: { type: "string" },
+          nullable: true,
+        },
+        static_link: {
+          type: "boolean",
+          description: "ecl 编译是否静态链接；默认继承 workflow state，否则 true。",
+          default: true,
+        },
+        source_output_path: {
+          type: "string",
+          description: "可选，回编生成的 .e 路径。",
+          nullable: true,
+        },
+        exe_output_path: {
+          type: "string",
+          description: "可选，编译生成的 .exe 路径。",
+          nullable: true,
+        },
+      },
+    },
+  },
+  executor: async (args, ctx) => {
+    const modulePaths = [
+      ...readStringArray(args, "module_paths"),
+      ...extractLocalPathsByExtension(ctx.userInput, "ec"),
+    ].filter((item, index, list) => list.indexOf(item) === index);
+
+    return finishProjectClosedLoopWorkflow({
+      workflowId: readString(args, "workflow_id"),
+      workflowStatePath: readString(args, "workflow_state_path"),
+      snapshotPath: readString(args, "snapshot_path"),
+      ecodeDir: readString(args, "ecode_dir"),
+      modulePaths,
+      staticLink: readBoolean(args, "static_link", true),
+      sourceOutputPath: readString(args, "source_output_path"),
+      exeOutputPath: readString(args, "exe_output_path"),
+      onStatus: ctx.onStatus,
+        signal: ctx.signal,
+    });
+  },
+};
+
+const restoreProjectSnapshot: RegisteredTool = {
+  definition: {
+    name: "restore_project_snapshot",
+    description:
+      "把 start_project_closed_loop 捕获的快照恢复回 ecode_dir，用于 AI 修改失败后的回滚。恢复后如需验证，应再次调用 finish_project_closed_loop。",
+    parameters: {
+      type: "object",
+      properties: {
+        workflow_id: {
+          type: "string",
+          description: "start_project_closed_loop 返回的 workflow_id。",
+          nullable: true,
+        },
+        workflow_state_path: {
+          type: "string",
+          description: "start_project_closed_loop 返回的 workflow_state_path。",
+          nullable: true,
+        },
+        snapshot_path: {
+          type: "string",
+          description: "start_project_closed_loop 返回的 snapshot_path。",
+          nullable: true,
+        },
+        ecode_dir: {
+          type: "string",
+          description: "文本工程目录；和 workflow_id 一起可推导 snapshot_path。",
+          nullable: true,
+        },
+      },
+    },
+  },
+  executor: async (args, ctx) => restoreClosedLoopSnapshot({
+    workflowId: readString(args, "workflow_id"),
+    workflowStatePath: readString(args, "workflow_state_path"),
+    snapshotPath: readString(args, "snapshot_path"),
+    ecodeDir: readString(args, "ecode_dir"),
+    onStatus: ctx.onStatus,
+        signal: ctx.signal,
+  }),
+};
+
 /** Closed-loop generate → e2txt → ecl → repair → ecl … until success or
  *  max_attempts. The model can call this when it wants the runtime to drive
  *  the entire repair cycle without further LLM round-trips. */
@@ -3775,7 +4175,7 @@ const closedLoopBuild: RegisteredTool = {
       required: ["code"],
     },
   },
-  executor: async (args) => {
+  executor: async (args, ctx) => {
     const code = typeof args.code === "string" ? args.code : null;
     if (!code) throw new Error("缺少必填参数 code");
     const maxAttempts = Math.max(
@@ -3789,17 +4189,17 @@ const closedLoopBuild: RegisteredTool = {
     let lastGenerated: ECodeProjectResult | null = null;
     let lastCompiled: CompileResult | null = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      lastGenerated = await invoke<ECodeProjectResult>("generate_efile_from_code", {
+      lastGenerated = await invokeTask<ECodeProjectResult>("generate_efile_from_code", {
         code,
         outputPath: makeConfiguredEFilePath("generated.e", "generated") ?? "",
-      });
+      }, ctx.signal);
       if (!lastGenerated.success || !lastGenerated.output_path) continue;
-      lastCompiled = await invoke<CompileResult>("compile_efile", {
+      lastCompiled = await invokeTask<CompileResult>("compile_efile", {
         sourcePath: lastGenerated.output_path,
         outputPath: makeConfiguredExePath(lastGenerated.output_path),
         staticLink: true,
         easyLanguageRoot: useSettingsStore.getState().easyLanguageRoot || null,
-      });
+      }, ctx.signal);
       if (lastCompiled.success) {
         return {
           success: true,
@@ -3830,6 +4230,7 @@ const saveTextFile: RegisteredTool = {
       properties: {
         path: { type: "string", description: "目标文件路径。" },
         content: { type: "string", description: "要写入的文本。" },
+        expected_hash: { type: "string", description: "覆盖已有源码时传 read_file 返回的 code_hash，避免覆盖其他编辑。" },
         encoding: {
           type: "string",
           description: "可选，'gbk' 或 'utf-8'，默认按扩展名推断。",
@@ -3840,17 +4241,18 @@ const saveTextFile: RegisteredTool = {
       required: ["path", "content"],
     },
   },
-  executor: async (args) => {
+  executor: async (args, ctx) => {
     const path = readString(args, "path");
     const content = typeof args.content === "string" ? args.content : null;
     if (!path) throw new Error("缺少必填参数 path");
     if (content === null) throw new Error("缺少必填参数 content");
     const encoding = readString(args, "encoding");
-    const result = await invoke<WriteTextResult>("write_text_file", {
+    const result = await invokeTask<WriteTextResult>("write_text_file", {
       filePath: path,
       content,
       encoding,
-    });
+      expectedHash: readString(args, "expected_hash") ?? null,
+    }, ctx.signal);
     return {
       path: result.path,
       bytes: result.bytes,
@@ -3862,14 +4264,17 @@ const applySearchReplace: RegisteredTool = {
   definition: {
     name: "apply_search_replace",
     description:
-      "用 SEARCH/REPLACE 协议精确修改一个文本文件。适合对已 read_file 的源码做小范围补丁；" +
-      "SEARCH 必须唯一匹配，否则工具会失败并要求扩大上下文。",
+      "用 SEARCH/REPLACE 精确修改文本文件，支持大文件；必须传 read_file 返回的 code_hash 为 expected_hash，源码变化时拒绝覆盖。" +
+      "【使用规则】(1) 调用前先用 read_file 分页读取目标片段及上下文，再构造补丁。" +
+      "(2) SEARCH 必须包含足够上下文，在文件中只匹配一处；如果工具返回'匹配多处'或'匹配不到'，说明上下文不够或对不上，应继续 read_file 再扩大上下文重试。" +
+      "(3) 不要整文件覆盖（除非目标文件很小或用户明确要求重写），那种场景请改用 save_text_file。",
     parameters: {
       type: "object",
       properties: {
         path: { type: "string", description: "要修改的文本文件绝对路径。", nullable: true },
         search: { type: "string", description: "原文片段，必须在文件中唯一出现。", nullable: true },
         replace: { type: "string", description: "替换后的文本片段。", nullable: true },
+        expected_hash: { type: "string", description: "最近一次 read_file 返回的 code_hash。" },
         patch: {
           type: "string",
           description:
@@ -3883,9 +4288,10 @@ const applySearchReplace: RegisteredTool = {
           nullable: true,
         },
       },
+      required: ["expected_hash"],
     },
   },
-  executor: async (args): Promise<SearchReplaceResult> => {
+  executor: async (args, ctx): Promise<SearchReplaceResult> => {
     const parsed = typeof args.patch === "string" && args.patch.trim()
       ? parseSearchReplaceBlock(args.patch)
       : null;
@@ -3894,28 +4300,14 @@ const applySearchReplace: RegisteredTool = {
     const replace = parsed?.replace ?? (typeof args.replace === "string" ? args.replace : "");
     if (!path) throw new Error("缺少必填参数 path");
 
-    const read = await invoke<ReadFileResult>("read_text_file_for_agent", {
+    const expectedHash = readString(args, "expected_hash");
+    if (!expectedHash) throw new Error("请先 read_file 读取目标片段，并传其 code_hash 为 expected_hash");
+    throwIfAborted(ctx.signal);
+    return invokeTask<SearchReplaceResult>("apply_text_patch_for_agent", {
       filePath: path,
-      maxChars: null,
-    });
-    if (read.truncated) {
-      throw new Error("目标文件读取被截断，不能安全执行 SEARCH/REPLACE");
-    }
-
-    const applied = applySearchReplaceToText(read.content, { search, replace });
-    const encoding = readString(args, "encoding") ??
-      (read.encoding.toLowerCase().includes("gbk") ? "gbk" : "utf-8");
-    const written = await invoke<WriteTextResult>("write_text_file", {
-      filePath: path,
-      content: applied.content,
-      encoding,
-    });
-    return {
-      path: written.path,
-      changed: applied.replacements > 0,
-      replacements: applied.replacements,
-      bytes: written.bytes,
-    };
+      search, replace, expectedHash,
+      encoding: readString(args, "encoding") ?? null,
+    }, ctx.signal);
   },
 };
 
@@ -4002,6 +4394,7 @@ const pickSavePath: RegisteredTool = {
 export const TOOL_REGISTRY: Record<string, RegisteredTool> = {
   [scanEasyLanguageEnv.definition.name]: scanEasyLanguageEnv,
   [searchJingyiModule.definition.name]: searchJingyiModule,
+  [searchUserModulesTool.definition.name]: searchUserModulesTool,
   [askUserChoice.definition.name]: askUserChoice,
   [readFile.definition.name]: readFile,
   [parseEFile.definition.name]: parseEFile,
@@ -4011,9 +4404,14 @@ export const TOOL_REGISTRY: Record<string, RegisteredTool> = {
   [inspectECodeContext.definition.name]: inspectECodeContext,
   [generateEFileFromECode.definition.name]: generateEFileFromECode,
   [generateEFileFromCode.definition.name]: generateEFileFromCode,
+  [generateGuiProject.definition.name]: generateGuiProject,
   [compileEFile.definition.name]: compileEFile,
   [buildECodeProject.definition.name]: buildECodeProject,
   [buildOriginalEFileBaseline.definition.name]: buildOriginalEFileBaseline,
+  [updatePlan.definition.name]: updatePlan,
+  [startProjectClosedLoop.definition.name]: startProjectClosedLoop,
+  [finishProjectClosedLoop.definition.name]: finishProjectClosedLoop,
+  [restoreProjectSnapshot.definition.name]: restoreProjectSnapshot,
   [closedLoopBuild.definition.name]: closedLoopBuild,
   [saveTextFile.definition.name]: saveTextFile,
   [applySearchReplace.definition.name]: applySearchReplace,
@@ -4028,7 +4426,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = Object.values(TOOL_REGISTRY).m
 /** Public entrypoint used by the agent runner. Always returns a ToolResult,
  *  even for invalid tool names — this lets the model see the failure on the
  *  next turn and recover (instead of crashing the whole run). */
-const TOOL_EXEC_TIMEOUT_MS = 120_000;
+const READ_ONLY_TOOLS = new Set(["scan_easy_language_env", "search_jingyi_module", "search_user_modules", "ask_user_choice", "read_file", "parse_efile", "export_efile_to_ecode", "summarize_ecode_project", "analyze_ecode_project", "inspect_ecode_context", "update_plan", "pick_file"]);
+export const isReadOnlyTool = (name: string) => READ_ONLY_TOOLS.has(name);
+
+const TOOL_EXEC_TIMEOUT_MS = 420_000;
 
 export async function executeTool(
   toolName: string,
@@ -4037,9 +4438,17 @@ export async function executeTool(
   ctx: ToolExecContext,
 ): Promise<ToolResult> {
   const startedAt = Date.now();
+  if (ctx.readOnly && !isReadOnlyTool(toolName)) {
+    return { toolCallId, toolName, ok: false, content: { error: "当前为只读/计划模式，只能分析和给出建议，不能修改、生成或编译项目。" }, error: "只读模式禁止该操作", durationMs: 0 };
+  }
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  ctx.signal?.addEventListener("abort", cancel, { once: true });
+  if (ctx.signal?.aborted) controller.abort();
   const entry = TOOL_REGISTRY[toolName];
   if (!entry) {
+    ctx.signal?.removeEventListener("abort", cancel);
     return {
       toolCallId,
       toolName,
@@ -4050,11 +4459,16 @@ export async function executeTool(
     };
   }
   try {
+    throwIfAborted(controller.signal);
     const content = await Promise.race([
-      entry.executor(args, ctx),
+      entry.executor(args, { ...ctx, signal: controller.signal }),
       new Promise<never>((_, reject) => {
+        controller.signal.addEventListener("abort", () => reject(abortError()), { once: true });
         timeoutId = setTimeout(
-          () => reject(new Error(`工具 ${toolName} 执行超时（${TOOL_EXEC_TIMEOUT_MS / 1000}s）`)),
+          () => {
+            reject(new Error(`工具 ${toolName} 执行超时（${TOOL_EXEC_TIMEOUT_MS / 1000}s）`));
+            controller.abort();
+          },
           TOOL_EXEC_TIMEOUT_MS,
         );
       }),
@@ -4077,6 +4491,7 @@ export async function executeTool(
       durationMs: Date.now() - startedAt,
     };
   } finally {
+    ctx.signal?.removeEventListener("abort", cancel);
     if (timeoutId !== undefined) {
       clearTimeout(timeoutId);
     }
