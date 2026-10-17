@@ -87,7 +87,13 @@ npm run test:native-gui -- -EasyLanguageRoot D:\e
 
 ## 打包与提交
 
-安装包：`npm run tauri -- build`；便携版：`npm run package:portable`。完整工具链包 `e.zip` 需提前准备，分发步骤见 README。本轮只构建和验证源码，没有发布新安装包或 Release。
+安装包：`npm run tauri -- build`；便携版：`npm run package:portable`。完整工具链包 `e.zip` 需提前准备，分发步骤见 README。便携脚本使用 Tauri 生产构建，并验证 PE 产品版本与清单版本一致，避免普通 Cargo 构建或旧程序混入。
+
+完整发布附件使用 `npm run package:release`，依次构建 NSIS 安装包、复用生产程序生成便携版、复制环境包及发布说明、计算 SHA256。输出位于 `release/v<版本>/`；`-- --skip-build` 仅用于已完成同版本安装包构建的情况。版本必须同时更新 `package.json`、`package-lock.json`、Cargo 清单/锁文件及 Tauri 配置，发布说明放在 `docs/releases/v<版本>.md`。
+
+0.1.2 在本机构建 Windows x64 安装包和便携版，并检查版本、工具链、归档及校验值。脚本不创建标签、不上传附件、不发布 GitHub Release；发布页面状态以 GitHub 为准。
+
+本次产物校验覆盖 x64 PE、0.1.2 产品版本、22 个工具链文件、安装器与 ZIP 归档完整性、SHA256 清单；另通过正常启动及 Windows UI Automation 确认便携版窗口响应并显示消息输入框，未发送模型请求。Tauri 会给安装版主程序写入包类型标记，因此安装包内与便携版的主程序整体哈希不同；本次二进制比对确认仅该三字节元数据存在差异。
 
 提交源码、锁文件、回归脚本和文档。`node_modules/`、`dist/`、`.tmp/`、`public/ort/`、Rust `target/`、密钥环境文件、本地归档和 `e.zip` 不提交；运行时由依赖准备，环境包单独分发。
 
