@@ -33,9 +33,7 @@ import {
   type AgentToolTransport,
 } from "@/services/agent/runner-transport";
 import {
-  extractJsonObject,
   parseAgentTurn,
-  tryParseJsonWithRepair,
   type ParsedAgentTurn,
 } from "@/services/agent/runner-parser";
 import {
@@ -47,11 +45,6 @@ import {
   isCompleteExample,
 } from "@/services/agent/epl-syntax";
 import { JINGYI_MODULE_SUMMARY } from "@/services/agent/knowledge/jingyi-module";
-import {
-  buildCompileFollowupText,
-  checkAnswerCompiles,
-  type AnswerCompileCheckResult,
-} from "@/services/agent/answer-compile-check";
 import { extractLocalPathsByExtension } from "@/services/agent/tools";
 import { useSettingsStore } from "@/stores/settings";
 
@@ -71,6 +64,8 @@ export interface AgentRunOptions {
   history: ChatMessage[];
   /** Active session id (used by some tools). May be null. */
   sessionId: string | null;
+  /** Selected conversation workspace, also used by file discovery. */
+  workspaceRoot?: string;
   /** Optional explicit turn limit for integrations/tests. The desktop agent
    *  runs until completion, cancellation, or a concrete failure by default. */
   maxSteps?: number;
@@ -116,96 +111,40 @@ const TOOL_TEXT_PROMPT_LIMIT = 6_000;
 const LLM_MAX_RETRIES = 2;
 const LLM_OUTPUT_RECOVERY_ATTEMPTS = 2;
 const LLM_RETRY_BASE_MS = 1_000;
-const ANSWER_SELF_CHECK_TIMEOUT_MS = 90_000;
-const ANSWER_SELF_CHECK_MAX_REVISIONS = 2;
 const CHOICE_EVIDENCE_SEARCH_LIMIT = 12;
 
 // ---------------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------------
 
-const AGENT_SYSTEM_PROMPT = `你是 易语言 AI Coding Agent 的多轮推理内核（ReAct）。
-你的工作是编写、修改、调试易语言代码和原生窗口工程。根据桌面工具结果推进任务，直到交付代码、工程或有证据的分析结论。
+const AGENT_SYSTEM_PROMPT = `你是 易语言 AI Coding Agent。你负责直接编写、修改、调试易语言源码和原生窗口工程，通过桌面工具完成用户要求。
 
-【可用工具】
-工具通过 DeepSeek 原生 tools 接口提供，每个工具的 description 已经写明了使用规则、优先级关系和常见错误处理。如果 system prompt 跟工具 description 看起来冲突，以工具 description 为准。
+【执行与表达】
+- 根据任务直接行动。简单功能给出完整可用的代码或生成文件，说明控制在几句话内；不要长篇介绍方案、重复需求或以“我可以继续”结束。
+- 使用 DeepSeek 原生 tool_calls，参数必须是完整 JSON；工具返回后继续分析、修改和验证，完成后直接回复 Markdown。不要在正文输出工具 JSON，也不使用 final_answer 包装。
+- 每轮完成一个小操作；有依赖的读取、修改、编译分轮进行。大工程按文件或子程序修改，小改优先 apply_search_replace。
+- 不设固定执行轮数。任务未完成且还能推进时继续；只有完成、用户停止、缺少必要业务信息或实际错误无法解决时结束。如实说明具体阻碍，不能把过程当作结果。
+- 实现路线/API 选型由你根据工具证据自行决定。只有用户才能提供的必要业务信息才用 ask_user_choice。复杂任务用 update_plan，简单任务直接完成。
 
-【工具调用协议】
-需要工具时使用原生 function/tool_calls，参数须符合工具 schema；可附一句简短进度说明。不要把工具调用写进正文 JSON。
-工具结果以 tool 消息返回后，继续使用同一套工具分析和实现。完成任务后直接输出 Markdown 与易语言代码块，不需要 final_answer JSON 包装。
-同一轮允许多个工具调用，有读写依赖时按先读取、后修改、再编译的顺序分轮执行。
-大型工程按文件、子程序拆分修改；小改优先 apply_search_replace，避免一次输出整套工程。工具参数必须是完整 JSON，不要在正文重复工具参数中的源码。每轮完成一个可验证的小操作，再根据工具结果继续，最后回编编译。
-若工具失败，继续推理并尝试更小的步骤；不要重复完全相同的失败调用。
-所有路径必须由用户提供或上一步工具返回，禁止编造路径。
-提到易语言源码时优先使用 \`\`\`epl 代码块。
+【模块库与文件】
+- 优先使用设置中已经上传且就绪的用户 .ec 模块：search_user_modules；未命中再查 search_jingyi_module。用户点名某个模块时按该模块搜索，不要擅自替换。
+- 模块命令名、参数、返回值以工具返回的真实签名为准，不得编造。不要把已上传 .ec 模块说成不可用；搜索不到时用 parse_efile 核实公开接口。
+- .e/.ec 是二进制，使用 parse_efile；.epl/.e.txt/.json 等文本用 read_file。不要用 read_file 读取 .e/.ec/.dll 二进制。
+- 路径来自用户、当前工作区或工具返回。读取已有文件后再改，分页读取时保留 code_hash，修改用 expected_hash 防止覆盖新内容。
 
-【易语言语法硬约束】
-- 控制结构必须使用真实易语言配对：如果/如果结束，如果真/如果真结束，判断开始/判断结束，判断循环首/判断循环尾，计次循环首/计次循环尾，变量循环首/变量循环尾，循环判断首/循环判断尾。
-- 不允许把控制结构的开始语句自行拼接成结束语句；结束语句必须来自真实配对表。
-- 不要连续复制同一条可执行语句来表示“多次执行”。需要执行固定次数时使用计次循环首/计次循环尾；需要并发多个任务时为每个线程准备不同参数或任务队列。
-- 易语言变量声明行不能写默认值/初始化值。例如不要写 \`.全局变量 URL_主站, 文本型, , , "http://..."\`；应写 \`.全局变量 URL_主站, 文本型\`，再在启动子程序或窗口创建完毕事件里赋值。
-- 示例代码中的模块命令名、参数和返回值必须有工具证据：用户上传的 .ec 以 search_user_modules 或 parse_efile 结果为准；精易模块 API 以 search_jingyi_module 返回结果为准；没有证据时不要凭记忆编造对象名或参数个数。
+【生成与验证】
+- 窗口、界面、登录框：generate_gui_project 生成真实控件和事件，再 compile_efile；交付 .e 和 .exe。不要只给按钮事件片段就宣称完成界面。
+- 控制台工程：generate_efile_from_code，再 compile_efile。已有 ecode_dir：修改 .e.txt 后 build_ecode_project。
+- 修复/优化已有 .e：start_project_closed_loop；基线可用后按推荐文件读取、修改；finish_project_closed_loop 验证最新修改。需要撤销用 restore_project_snapshot。也可按 parse → export → 项目地图/分析 → 基线 → 源码 → 修改 → 回编编译推进。
+- 最新源码必须经过构建；旧编译成功不能证明新修改有效。编译失败按 stderr 修复，环境缺失则说明具体依赖。仅在确实成功时声称编译通过。
+- 普通解释和单功能代码片段只做必要检索和语法检查，不强行生成工程、后台编译或反复请另一个模型评审。
+- 最终简短说明结果、实际生成的 .e/.exe 路径和验证情况；已有项目改动附构建报告与回滚位置。不重复粘贴已经写入文件的大段源码，除非用户要求。
 
-【知识库优先（核心原则）】
-"如果有知识库优先使用知识库"。两个一等公民知识库：
-1. 用户模块库（设置 → 模块库 上传的 .ec，如鱼刺类、OkHttp 封装等）→ search_user_modules
-2. 内置精易模块库（1500+ 子程序）→ search_jingyi_module
-用户上传的 .e/.ec/.epl 文件不是"外部知识库"而是"项目事实"。用户点名"用上传模块"时不要用精易模块替代；需求同时含上传模块和辅助能力（例如"用多线程模块写 POST 案例"），就两个 KB 都查再组合。
-不要读取/解析易语言 IDE help 或其他支持库文档作为知识库。
+【易语言语法】
+- 控制结构真实配对：如果/如果结束、如果真/如果真结束、判断开始/判断结束、判断循环首/判断循环尾、计次循环首/计次循环尾、变量循环首/变量循环尾、循环判断首/循环判断尾。
+- 变量声明不能附初始化值，应在子程序内赋值。重复执行用循环，不机械复制语句。代码块使用 epl。
 
-【文件类型 → 工具速查】
-- .e 二进制源程序 → parse_efile（绝不 read_file，乱码会推理失败）
-- .ec 模块 → 优先 search_user_modules；搜不到或要看完整结构时才 parse_efile（绝不 read_file）
-- .epl / .txt / .ini / .json / .csv 文本 → read_file
-- .dll → read_file 或配合 parse_efile 看对应 .ec
-
-【完整闭环优先级（优化/修复已有 .e 项目时必须遵守）】
-优先使用统一工具，而不是手动拼散步骤：
-1. start_project_closed_loop：一次性完成 .e 导出/接管 ecode_dir、项目地图、原始基线回编编译、静态分析、上下文包、回滚快照、状态文件。
-2. 如果 start_project_closed_loop 返回 ready_for_edit=false 或 success=false：停止改源码，先根据 baseline/stderr 让用户补齐 .ec 模块或修复 ecl/易语言环境。
-3. ready_for_edit=true 后，只读取 recommended_reads / recommended_full_reads 指向的 .e.txt，按需用 apply_search_replace 或 save_text_file 修改；禁止修改未读过的文件。
-4. 每次修改后必须调用 finish_project_closed_loop；它会计算 diff、回编 .e、ecl 编译、写 build report。
-5. finish_project_closed_loop 失败时，按 repair_instruction 和 stderr 继续读取/修复/重试；不能只给文字建议。
-6. 如果发现修改方向错误或需要撤销，调用 restore_project_snapshot 回滚，再重新修改和 finish_project_closed_loop。
-7. 最终回答必须包含：改了哪些文件、验证结果、生成的 .e 路径、.exe 路径（若成功）、build_report_path、snapshot_path/回滚方式。
-
-【优化/分析 .e 项目的标准编排】
-1. parse_efile 主程序 → 子程序、支持库、模块依赖一览
-2. export_efile_to_ecode → 文本工程目录 + 文件清单
-3. summarize_ecode_project → 项目地图、入口、recommended_read_order
-4. 用户要"优化/完善/找问题"时调 analyze_ecode_project → findings、重复逻辑、硬编码
-5. build_original_efile_baseline → 原始基线编译；基线就失败时先报告环境/依赖问题，不要乱改源码
-6. inspect_ecode_context → 关键文件轮廓 + recommended_full_reads
-7. read_file 推荐的 <ecode_dir>/代码/*.e.txt（绝不读根目录的 代码.e，那是二进制）
-8. 修改用 save_text_file 覆盖 .e.txt（小改用 apply_search_replace），保留原项目结构，不要把多窗口 GUI 改成单文件 console
-9. build_ecode_project 一步回编+编译验证（或 generate_efile_from_ecode + compile_efile 两步）
-10. 编译失败按 stderr 修复重试；成功后输出 final_answer 附优化说明
-不要看完摘要就给文字建议——用户期望可用代码。export_efile_to_ecode 成功后必须继续 summarize/analyze/inspect/read_file。
-
-【执行计划（多步任务时使用 update_plan）】
-- 当任务需要 3 步以上（典型：优化/修复已有 .e 项目的完整闭环），先调用一次 update_plan 列出你要走的步骤清单，让用户看到进度。步骤建议对齐易语言闭环阶段：解析 → 导出 ecode → 项目地图 → 静态分析 → 原始基线 → 读取源码 → 修改 → 回编编译 → 验证。
-- 每完成一步，调用 update_plan 把该步 status 更新为 done，并把下一步置为 in_progress。同一时刻只应有一个 in_progress。
-- 确实不需要做的步骤用 skipped，不要留在 pending 造成误导。
-- 单功能问答、片段示例等简单任务不必使用 update_plan，避免噪音。
-
-【生成 + 编译入口】
-- 已有 ecode_dir：先 save_text_file 改 .e.txt，再 build_ecode_project（必要时拆 generate_efile_from_ecode + compile_efile）
-- 窗口/UI/登录框：generate_gui_project（真实窗口、控件位置、events 事件体）→ compile_efile。必须交付 .e 和 .exe；只输出按钮事件代码不能算完成界面。
-- 大文件：read_file 用 start_char/start_line 分页，保留 code_hash；修改片段用 apply_search_replace 的 expected_hash。
-- 只有控制台单文件源码：generate_efile_from_code → compile_efile
-- 失败按 stderr 定位原因并修复，再验证最新源码；不要用旧构建结果代替最新修改的验证。任务未完成时继续调用工具，完成后直接回复。重复相同操作且没有新进展时停止并说明具体原因。
-
-【意图匹配 + 事实驱动】
-- 普通知识问答 / 参数解释 / 单功能片段示例：调一次必要的知识工具 → 直接 final_answer。不要因为带代码就强行生成 .e、编译、反复自检。
-- 用户明确要"生成/编译/测试/运行/跑通"或在优化已有 .e：进入生成/编译闭环。
-- 【重要】final_answer 阶段你回答里完整的 EPL 代码块会被**静默编译验证**；编译失败你会收到 stderr 让你重写——这是 KB-first 之外的事实层质量保证。写代码时按真实工具证据来；编译反馈会兜底，但不要把它当借口偷懒。
-
-【杂项】
-- 不允许在没有读取文件内容的情况下对文件内容做任何推断或假设。
-- 每次 tool_calls 返回结果后根据结果继续推理或调用下一步工具，不要急于给出 final_answer。
-- 任务完成或无法继续时输出 final_answer。
-
-【精易模块功能域索引】（详细使用规则见 search_jingyi_module 工具 description）
+【精易模块能力索引】
 ${JINGYI_MODULE_SUMMARY}
 `;
 
@@ -1293,15 +1232,18 @@ function evaluateContinueAfterFinalAnswer(
   // cannot validate a later edit or a newly generated window project.
   let source = -1, generated = -1, verified = -1, compileAttempt = -1;
   let buildAttempt = -1, buildTool = "";
+  const attemptsSinceEdit = new Map<string, number>();
   let position = 0;
   for (const step of trace.steps) for (let i = 0; i < step.toolCalls.length; i++, position++) {
     const name = step.toolCalls[i].name;
     const ok = toolResultSucceeded(step.toolResults[i]);
+    if (ok && ["save_text_file", "apply_search_replace", "restore_project_snapshot", "generate_gui_project", "generate_efile_from_code", "generate_efile_from_ecode"].includes(name)) attemptsSinceEdit.clear();
     if (ok && ["save_text_file", "apply_search_replace", "restore_project_snapshot"].includes(name)) source = position;
     if (["generate_gui_project", "generate_efile_from_code", "generate_efile_from_ecode"].includes(name)) {
       if (ok) generated = position;
     }
     if (["compile_efile", "build_ecode_project", "finish_project_closed_loop"].includes(name)) {
+      attemptsSinceEdit.set(name, (attemptsSinceEdit.get(name) ?? 0) + 1);
       compileAttempt = position;
       if (name !== "compile_efile") { buildAttempt = position; buildTool = name; }
       if (name !== "compile_efile" && ok) generated = position;
@@ -1309,7 +1251,7 @@ function evaluateContinueAfterFinalAnswer(
     }
   }
   const buildExhausted = buildAttempt >= source && buildTool &&
-    (countToolCalls(trace, buildTool) >= 3 || isCompileEnvironmentFailure(findLastToolResult(trace, buildTool)));
+    ((attemptsSinceEdit.get(buildTool) ?? 0) >= 3 || isCompileEnvironmentFailure(findLastToolResult(trace, buildTool)));
   if (source > Math.max(verified, generated) && !buildExhausted) {
     return { shouldContinue: true, reminder: state.closedLoopStarted
       ? "最新源码修改尚未验证，请调用 finish_project_closed_loop。"
@@ -1417,7 +1359,7 @@ function evaluateContinueAfterFinalAnswer(
   if (
     state.closedLoopFinishAttempted &&
     !state.closedLoopBuilt &&
-    countToolCalls(trace, "finish_project_closed_loop") < 3 &&
+    (attemptsSinceEdit.get("finish_project_closed_loop") ?? 0) < 3 &&
     !isCompileEnvironmentFailure(findLastToolResult(trace, "finish_project_closed_loop"))
   ) {
     return {
@@ -1430,7 +1372,7 @@ function evaluateContinueAfterFinalAnswer(
     !state.closedLoopFinishAttempted &&
     state.buildAttempted &&
     !state.builtProject &&
-    countToolCalls(trace, "build_ecode_project") < 3 &&
+    (attemptsSinceEdit.get("build_ecode_project") ?? 0) < 3 &&
     !isCompileEnvironmentFailure(findLastToolResult(trace, "build_ecode_project"))
   ) {
     return {
@@ -1443,7 +1385,7 @@ function evaluateContinueAfterFinalAnswer(
     !state.closedLoopFinishAttempted &&
     state.compileAttempted &&
     !state.compiled &&
-    countToolCalls(trace, "compile_efile") < 3 &&
+    (attemptsSinceEdit.get("compile_efile") ?? 0) < 3 &&
     !isCompileEnvironmentFailure(findLastToolResult(trace, "compile_efile"))
   ) {
     return {
@@ -1467,35 +1409,6 @@ function shouldContinueAfterFinalAnswer(
   answer: string | undefined,
 ): boolean {
   return evaluateContinueAfterFinalAnswer(trace, answer).shouldContinue;
-}
-
-function traceHasProjectWorkflow(trace: AgentTrace): boolean {
-  const projectTools = new Set([
-    "export_efile_to_ecode",
-    "summarize_ecode_project",
-    "analyze_ecode_project",
-    "inspect_ecode_context",
-    "build_original_efile_baseline",
-    "start_project_closed_loop",
-    "finish_project_closed_loop",
-    "restore_project_snapshot",
-    "save_text_file",
-    "generate_efile_from_ecode",
-    "generate_efile_from_code",
-    "build_ecode_project",
-    "compile_efile",
-  ]);
-  return trace.steps.some((step) =>
-    step.toolCalls.some((call) => projectTools.has(call.name)),
-  );
-}
-
-function shouldUseHeavyAnswerSelfCheck(trace: AgentTrace): boolean {
-  return traceHasProjectWorkflow(trace) || hasSuccessfulParseOfExtension(trace, ".ec");
-}
-
-function shouldUseReviewerAnswerSelfCheck(trace: AgentTrace, _answer: string): boolean {
-  return shouldUseHeavyAnswerSelfCheck(trace);
 }
 
 function shouldRequireProjectEditBeforeAnswer(
@@ -1608,217 +1521,7 @@ interface AnswerSelfCheckDecision {
   followup: string;
 }
 
-function limitForSelfCheck(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  const head = text.slice(0, Math.floor(maxChars * 0.58));
-  const tail = text.slice(-Math.floor(maxChars * 0.28));
-  return `${head}\n\n... [自检上下文已截断，省略 ${text.length - maxChars} 字符] ...\n\n${tail}`;
-}
-
-function summarizeTraceForSelfCheck(trace: AgentTrace): string {
-  const lines: string[] = [
-    `目标：${trace.goal}`,
-    `当前步骤数：${trace.steps.length}`,
-    `工具调用次数：${trace.toolCallCount}`,
-  ];
-
-  for (const step of trace.steps.slice(-10)) {
-    if (step.toolCalls.length === 0) {
-      lines.push(`- 第 ${step.index} 步：${step.finishReason}`);
-      continue;
-    }
-    step.toolCalls.forEach((call, index) => {
-      const result = step.toolResults[index];
-      lines.push(
-        `- 第 ${step.index}.${index + 1} 步 ${call.name}: ${summarizeToolResultForSelfCheck(result)}`,
-      );
-    });
-  }
-
-  return limitForSelfCheck(lines.join("\n"), 7_000);
-}
-
-function summarizeToolResultForSelfCheck(result: ToolResult | undefined): string {
-  if (!result) return "无结果";
-  const parts = [toolResultSucceeded(result) ? "成功" : "失败"];
-  if (result.error) parts.push(`错误=${result.error}`);
-  if (result.content && typeof result.content === "object" && !Array.isArray(result.content)) {
-    const payload = result.content as Record<string, unknown>;
-    const importantKeys = [
-      "success",
-      "summary",
-      "public_api_index",
-      "matches",
-      "implementation_options",
-      "related_implementations",
-      "findings",
-      "stderr",
-      "stdout",
-      "error",
-      "output_path",
-      "ecode_dir",
-    ];
-    for (const key of importantKeys) {
-      const value = payload[key];
-      if (value === undefined || value === null) continue;
-      parts.push(`${key}=${limitForSelfCheck(JSON.stringify(value), 900)}`);
-    }
-  } else if (typeof result.content === "string") {
-    parts.push(limitForSelfCheck(result.content, 900));
-  }
-  return limitForSelfCheck(parts.join("；"), 1_800);
-}
-
-function parseAnswerSelfCheckDecision(text: string): AnswerSelfCheckDecision | null {
-  const json = extractJsonObject(text);
-  if (!json) return null;
-  const parsed = tryParseJsonWithRepair(json);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  const obj = parsed as Record<string, unknown>;
-  const pass = obj.pass === true;
-  const confidence =
-    typeof obj.confidence === "number"
-      ? obj.confidence
-      : typeof obj.score === "number"
-        ? obj.score
-        : pass
-          ? 1
-          : 0;
-  const issues = Array.isArray(obj.issues)
-    ? obj.issues.filter((item): item is string => typeof item === "string")
-    : typeof obj.issue === "string"
-      ? [obj.issue]
-      : [];
-  const followup =
-    typeof obj.followup === "string"
-      ? obj.followup
-      : typeof obj.revision_prompt === "string"
-        ? obj.revision_prompt
-        : issues.join("\n");
-
-  return {
-    pass,
-    confidence,
-    issues,
-    followup,
-  };
-}
-
-function makeAnswerSelfCheckMessages(
-  userInput: string,
-  trace: AgentTrace,
-  answer: string,
-  eplDiagnosticsText: string,
-  selectedImplementation: string,
-): ChatMessage[] {
-  const diagnosticSection = eplDiagnosticsText
-    ? `\n\n【本地 EPL 代码信号】\n${eplDiagnosticsText}`
-    : "";
-  const selectedImplementationSection = selectedImplementation
-    ? `\n\n【用户上一轮已选择的实现方式】\n${selectedImplementation}`
-    : "";
-  const prompt = `请作为 EAiCoding 的独立 Reviewer 自检候选最终答案。
-
-你的任务不是重写答案，而是判断它是否可以展示给用户。重点检查：
-1. 是否真正回答了用户当前问题，而不是答偏或只给空泛建议。
-2. 易语言示例是否有工具证据支撑；如果用户上传并要求使用 .ec 模块，应确认答案基于 parse_efile 的模块接口；如果涉及精易模块 API，应确认答案使用了已查询到的签名/实现，不要凭记忆编造。
-3. 代码是否存在明显不可用结构、伪语法、缺少必要声明、控制结构不闭合、机械复制、参数没有变化等问题。
-4. 如果用户要求生成、编译、测试、修复，应确认工具闭环已经完成或失败原因已被真实说明。
-5. 如果只是普通案例问答，不要求强行生成 .e，但应保证示例自洽、语法可信、实现路线符合用户选择。
-6. 如果本地代码信号只是 warning，不要机械否决；请结合用户目标判断它是否确实会导致答案质量问题。
-
-只输出一个 JSON 对象：
-{
-  "pass": true 或 false,
-  "confidence": 0 到 1,
-  "issues": ["不通过时列出具体问题"],
-  "followup": "不通过时写给主 Agent 的下一步指令：需要继续查工具、重写答案或修正哪段代码"
-}
-
-【用户问题】
-${userInput}
-
-【已执行轨迹和工具证据】
-${summarizeTraceForSelfCheck(trace)}${selectedImplementationSection}${diagnosticSection}
-
-【候选最终答案】
-${limitForSelfCheck(answer, 10_000)}`;
-
-  return [
-    {
-      id: "__self_check_sys__",
-      role: "system",
-      content: "你是严谨的 AI Coding Reviewer。只做事实核查和可交付性判断，输出严格 JSON。",
-      timestamp: 0,
-    },
-    {
-      id: `self_check_${nanoid(8)}`,
-      role: "user",
-      content: prompt,
-      timestamp: Date.now(),
-    },
-  ];
-}
-
-// ---------------------------------------------------------------------------
-// Silent compile-validation gate.
-//
-// Runs after all rule-based and reviewer self-checks pass. The point is to
-// catch the failure mode prompts can't reach: "looks correct but ecl rejects
-// it." When a candidate answer contains a complete-looking EPL example, we
-// generate a .e in a temp dir, run ecl, and feed stderr back if it fails so
-// the model can self-correct — the way a human would after a compile error.
-//
-// Module paths gathered from:
-// 1. user input (.ec absolute paths the user pasted, e.g. precompiled jingyi)
-// 2. all ready-state user modules in the library (their stored .ec copies)
-// The compile backend de-dups; passing extras is cheap (mod files are copied
-// to ecom/ but only ones actually referenced by the source affect compilation).
-// ---------------------------------------------------------------------------
-
-function collectCompileModulePaths(userInput: string): string[] {
-  const fromInput = extractLocalPathsByExtension(userInput, "ec");
-  const fromLibrary = useSettingsStore
-    .getState()
-    .userModules.filter((entry) => entry.status === "ready" && entry.storedPath)
-    .map((entry) => entry.storedPath);
-  return Array.from(new Set([...fromInput, ...fromLibrary]));
-}
-
-async function applyCompileGate(
-  userInput: string,
-  answer: string,
-  base: AnswerSelfCheckDecision,
-  signal?: AbortSignal,
-): Promise<AnswerSelfCheckDecision> {
-  if (!base.pass) return base;
-  const modulePaths = collectCompileModulePaths(userInput);
-  let result: AnswerCompileCheckResult;
-  try {
-    result = await checkAnswerCompiles(answer, modulePaths, signal);
-  } catch (err) {
-    throwIfAborted(signal);
-    // Never fail the answer because the *checker* crashed — that would be
-    // worse than letting a possibly-broken answer through. Log and skip.
-    console.warn("[answer-compile-check] checker crashed:", err);
-    return base;
-  }
-  if (!result.attempted || result.ok) return base;
-
-  return {
-    pass: false,
-    confidence: 0,
-    issues: [
-      result.stage === "generate_failed"
-        ? "候选答案中的 EPL 代码块无法落盘成 .e 工程。"
-        : "候选答案中的 EPL 代码块通过 ecl 编译验证失败。",
-    ],
-    followup: buildCompileFollowupText(result),
-  };
-}
-
 async function runAnswerSelfCheck(
-  config: LLMConfig,
   userInput: string,
   history: ChatMessage[],
   trace: AgentTrace,
@@ -1827,12 +1530,6 @@ async function runAnswerSelfCheck(
 ): Promise<AnswerSelfCheckDecision> {
   throwIfAborted(signal);
   const eplDiagnostics = findEplAnswerDiagnostics(answer);
-  const eplDiagnosticsText = eplDiagnostics.length > 0
-    ? formatEplDiagnostics(eplDiagnostics)
-    : "";
-  const eplErrorsText = eplDiagnostics.some((item) => item.severity === "error")
-    ? formatEplDiagnostics(eplDiagnostics.filter((item) => item.severity === "error"))
-    : "";
   const blockingEplDiagnostics = eplDiagnostics.filter(
     (item) => item.severity === "error" || item.kind === "repeated_executable",
   );
@@ -1906,106 +1603,9 @@ async function runAnswerSelfCheck(
     };
   }
 
-  const heavySelfCheck = shouldUseHeavyAnswerSelfCheck(trace);
-  const useReviewerSelfCheck = shouldUseReviewerAnswerSelfCheck(trace, answer);
-
-  if (!useReviewerSelfCheck) {
-    if (eplErrorsText) {
-      return {
-        pass: false,
-        confidence: 0,
-        issues: ["候选答案存在确定的 EPL 结构错误。"],
-        followup: `请修正以下 EPL 结构问题后重写最终答案：\n${eplErrorsText}`,
-      };
-    }
-    return await applyCompileGate(userInput, answer, {
-      pass: true,
-      confidence: 0.86,
-      issues: [],
-      followup: "",
-    }, signal);
-  }
-
-  let checkerText = "";
-
-  const runCheckerOnce = async (): Promise<Error | null> => {
-    checkerText = "";
-    let attemptError: Error | null = null;
-    const provider = createLLMProvider({ ...config, maxTokens: Math.min(config.maxTokens ?? 8192, 8192), systemPrompt: undefined });
-    let timeoutId: number | undefined;
-    try {
-      await Promise.race([
-        abortable(provider.stream(
-          makeAnswerSelfCheckMessages(userInput, trace, answer, eplDiagnosticsText, selectedImplementation),
-          {
-            onToken: (token) => {
-              checkerText += token;
-            },
-            onComplete: (full) => {
-              checkerText = full || checkerText;
-            },
-            onError: (error) => {
-              attemptError = error;
-            },
-          },
-          { nativeTools: false },
-        ), signal, () => provider.abort()),
-        new Promise<never>((_, reject) => {
-          timeoutId = window.setTimeout(() => {
-            provider.abort();
-            reject(new Error(`Answer self-check timed out after ${Math.round(ANSWER_SELF_CHECK_TIMEOUT_MS / 1000)}s`));
-          }, ANSWER_SELF_CHECK_TIMEOUT_MS);
-        }),
-      ]);
-    } catch (error) {
-      attemptError = error instanceof Error ? error : new Error(String(error));
-    } finally {
-      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
-    }
-    return attemptError;
-  };
-
-  // One retry on transport failure: a transient network error here would
-  // otherwise report pass:false and burn several answer-rewrite steps.
-  let checkerError = await runCheckerOnce();
-  if (checkerError) {
-    await abortableDelay(1500, signal);
-    checkerError = await runCheckerOnce();
-  }
-
-  throwIfAborted(signal);
-  const parsed = checkerError ? null : parseAnswerSelfCheckDecision(checkerText);
-  if (parsed) {
-    if (eplErrorsText && parsed.pass) {
-      return {
-        pass: false,
-        confidence: Math.min(parsed.confidence, 0.2),
-        issues: [
-          "本地 EPL 结构检查发现候选答案存在确定的控制结构错误。",
-          ...parsed.issues,
-        ],
-        followup:
-          `请根据本地 EPL 结构检查修正代码后重写最终答案：\n${eplErrorsText}`,
-      };
-    }
-    return parsed.pass ? await applyCompileGate(userInput, answer, parsed, signal) : parsed;
-  }
-
-  if (eplErrorsText) {
-    return {
-      pass: false,
-      confidence: 0,
-      issues: ["候选答案存在确定的 EPL 结构错误。"],
-      followup: `请修正以下 EPL 结构问题后重写最终答案：\n${eplErrorsText}`,
-    };
-  }
-
-  return {
-    pass: false,
-    confidence: checkerError ? 0 : 0.5,
-    issues: checkerError ? [`自检模型调用失败：${checkerError.message}`] : ["自检模型未返回可解析 JSON。"],
-    followup: "请重新执行答案自检；如果仍失败，不要把候选答案作为已验证结果展示给用户。",
-  };
+  // Deterministic checks are immediate. Actual build tools already establish
+  // whether the latest edit compiles; a second model must not veto that result.
+  return { pass: true, confidence: 1, issues: [], followup: "" };
 }
 
 function makeAnswerSelfCheckReminder(
@@ -2023,12 +1623,12 @@ function makeAnswerSelfCheckReminder(
     id: `self_check_retry_${nanoid(8)}`,
     role: "user",
     content:
-      `【自检未通过 ${iteration}/${ANSWER_SELF_CHECK_MAX_REVISIONS}】候选最终答案暂不展示给用户。\n` +
+      `【需要修正：第 ${iteration} 次检查】\n` +
       `置信度：${decision.confidence}\n` +
       `问题：\n${issues}\n\n` +
       `下一步：${followup}\n\n` +
-      `要求：如果缺少精易模块证据，先调用 search_jingyi_module；如果缺少文件事实，先调用对应读取/解析工具；如果只是答案表达或代码错误，则重写 final_answer。不要把自检过程暴露给用户。\n\n` +
-      `候选答案就是你上一条消息中的 final_answer，请直接在其基础上修正，不要重复粘贴原文。`,
+      `要求：如果缺少精易模块证据，先调用 search_jingyi_module；如果缺少文件事实，先调用对应读取/解析工具；如果只是答案表达或代码错误，则修正代码与回答。修正后直接交付结果。\n\n` +
+      `需要修正的内容在你上一条消息中，请直接在其基础上修正，不要重复粘贴原文。`,
     timestamp: Date.now(),
   };
 }
@@ -2203,8 +1803,24 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
       : Number.isFinite(options.maxSteps) ? Math.max(1, Math.floor(options.maxSteps)) : 1;
     let consecutiveUnfinishedAnswers = 0;
     let answerSelfCheckRevisionCount = 0;
+    const validationFailures = new Map<string, { evidence: number; count: number }>();
+    const validationStalled = (decision: AnswerSelfCheckDecision) => {
+      const key = JSON.stringify([decision.issues, decision.followup]);
+      const previous = validationFailures.get(key);
+      const count = previous?.evidence === trace.toolCallCount ? previous.count + 1 : 1;
+      validationFailures.set(key, { evidence: trace.toolCallCount, count });
+      return count >= 3;
+    };
     let mutationEpoch = 0;
-    const repeatedTools = new Map<string, { epoch: number; count: number }>();
+    const repeatedTools = new Map<string, { epoch: number; count: number; result: string }>();
+    const discoveredModulePaths = new Set<string>();
+    const rememberModules = (call: ToolCall, result: ToolResult) => {
+      if (!toolResultSucceeded(result)) return;
+      if (call.name === "parse_efile" && typeof call.arguments.target_path === "string" && /\.ec$/i.test(call.arguments.target_path)) discoveredModulePaths.add(call.arguments.target_path);
+      if (call.name !== "search_user_modules" || !result.content || typeof result.content !== "object") return;
+      const paths = (result.content as Record<string, unknown>).module_paths;
+      if (Array.isArray(paths)) for (const path of paths) if (typeof path === "string" && /\.ec$/i.test(path)) discoveredModulePaths.add(path);
+    };
     let stalledTool: string | null = null;
 
     const restricted = options.mode === "plan" || options.mode === "read-only";
@@ -2222,6 +1838,9 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
       id: `sys_${nanoid(8)}`, role: "system" as const, timestamp: Date.now(),
       content: "你是 EAiCoding 的易语言编程助手。请用简洁、自然的中文回应用户当前的问候、致谢或自我介绍问题。需要介绍时，可以简短说明你能编写和修改易语言代码、生成窗口界面。不要自行开始开发、检索、编译或汇报执行步骤。",
     } : makeSystemMessage(options.config.systemPrompt, maxSteps);
+    if (!socialTurn && options.workspaceRoot) systemMsg.content += `\n【当前会话工作区】\n${JSON.stringify(options.workspaceRoot)}\n此路径由用户在界面选择或由应用创建，是真实可用的项目工作目录。需要查看项目时先用 list_workspace_files 浏览；新建项目默认保存在此目录下，不必让用户重复选路径。文件名由需求决定，已有文件必须先读取。`;
+    const availableModules = socialTurn ? [] : useSettingsStore.getState().userModules.filter(m => m.status === "ready" || (m.status === "indexing" && m.apiCount > 0));
+    if (availableModules.length) systemMsg.content += `\n【已上传模块】\n${JSON.stringify(availableModules.slice(0, 20).map(m => ({ name: m.name, api_count: m.apiCount })))}\n先用 search_user_modules 查询任务相关接口，命中结果包含 module_path，可直接传给生成和编译工具。`;
     if (restricted) systemMsg.content += options.mode === "plan"
       ? "\n【当前模式：计划】此项限制优先于项目闭环要求：只读取和分析，输出目标、步骤、依赖与验收方案。不要执行修改、生成、构建或编译，不要声称已经实现。"
       : "\n【当前模式：只读】此项限制优先于项目闭环要求：只读取和分析，给出建议。禁止修改、生成、构建或编译，不要声称已修改。";
@@ -2269,7 +1888,8 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
         signal,
         });
         toolResults.push(result);
-        conversation.push(toolResultToMessage(result));
+        rememberModules(call, result);
+      conversation.push(toolResultToMessage(result));
         trace.toolCallCount += 1;
       }
 
@@ -2317,6 +1937,7 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
         onStatus: options.onStatus,
         signal,
       });
+      rememberModules(call, result);
       conversation.push(toolResultToMessage(result));
       if (selectedImplementation) {
         conversation.push(makeSelectedImplementationReminder(selectedImplementation));
@@ -2344,8 +1965,10 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
     ) {
       const stepIndex = firstModelStepIndex;
       const stepStart = Date.now();
-      const call = makeJingyiSearchToolCall(options.userInput);
-      const assistantText = "先查询本地精易模块知识库，获取真实 API 证据和可选实现路线。";
+      const call = availableModules.length ? {
+        ...makeJingyiSearchToolCall(options.userInput), name: "search_user_modules",
+      } : makeJingyiSearchToolCall(options.userInput);
+      const assistantText = availableModules.length ? "先查询已上传模块，获取任务相关的真实接口和依赖路径。" : "先查询本地精易模块知识库，获取真实 API 证据和可选实现路线。";
       conversation.push({
         id: `a_${nanoid(8)}`,
         role: "assistant",
@@ -2354,7 +1977,7 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
         toolCalls: [call],
       });
 
-      options.onStatus?.(`查询精易模块`);
+      options.onStatus?.(availableModules.length ? "查询已上传模块" : "查询精易模块");
       publishPendingTool(stepIndex, stepStart, assistantText, [call], [], call.id);
       const result = await executeTool(call.name, call.id, call.arguments, {
         sessionId: options.sessionId,
@@ -2363,6 +1986,7 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
         onStatus: options.onStatus,
         signal,
       });
+      rememberModules(call, result);
       conversation.push(toolResultToMessage(result));
       trace.toolCallCount += 1;
 
@@ -2695,16 +2319,11 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
           continue;
         }
 
-        options.onStatus?.(
-          shouldUseHeavyAnswerSelfCheck(trace)
-            ? `答案自检`
-            : `本地检查`,
-        );
+        options.onStatus?.("检查结果");
         const selfCheck = socialTurn ? { pass: true, confidence: 1, issues: [], followup: "" } : restricted ? {
           pass: !findEplAnswerDiagnostics(parsed?.finalAnswer ?? assistantText).some(item => item.severity === "error"),
           confidence: 0.9, issues: ["请修正示例的语法结构。"], followup: "只读/计划模式下请给出分析和实施计划，不要调用写入或编译工具。",
         } : await runAnswerSelfCheck(
-          options.config,
           options.userInput,
           options.history,
           trace,
@@ -2714,7 +2333,7 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
         throwIfAborted(signal);
         if (
           !selfCheck.pass &&
-          answerSelfCheckRevisionCount < ANSWER_SELF_CHECK_MAX_REVISIONS &&
+          !validationStalled(selfCheck) &&
           stepIndex < maxSteps
         ) {
           answerSelfCheckRevisionCount += 1;
@@ -2743,9 +2362,12 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
           trace.steps.push(step);
           options.onStep?.(step, trace);
 
-          trace.outcome = "max_steps";
-          trace.finalAnswer =
-            "这次没有拿到足够可靠的最终答案。请再试一次，我会继续从工具证据开始重新检查。";
+          trace.outcome = stepIndex >= maxSteps ? "max_steps" : "error";
+          trace.finalAnswer = `任务尚未完成：${selfCheck.issues.join("；")}
+
+${selfCheck.followup}
+
+连续修正未取得新工具证据，现有文件与执行记录已保留。`;
           break;
         }
 
@@ -2837,6 +2459,8 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
           publishToolProgress(call.id);
           const ctx: ToolExecContext = {
             sessionId: options.sessionId,
+            workspaceRoot: options.workspaceRoot,
+            modulePaths: [...discoveredModulePaths],
             userInput: options.userInput,
             allowDialog: options.allowDialog ?? true,
             onStatus: options.onStatus,
@@ -2846,19 +2470,21 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
           const signature = call.name + JSON.stringify(call.arguments, (_key, value) =>
             value && typeof value === "object" && !Array.isArray(value)
               ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value);
-          const previous = repeatedTools.get(signature);
-          const attempts = previous?.epoch === mutationEpoch ? previous.count + 1 : 1;
-          repeatedTools.set(signature, { epoch: mutationEpoch, count: attempts });
-          const result: ToolResult = attempts > 2 ? {
-            toolCallId: call.id, toolName: call.name, ok: false, durationMs: 0,
-            content: { error: "相同操作已重复两次且没有新的源码修改，已停止重复执行。" },
-            error: "相同操作无进展",
-          } : await executeTool(call.name, call.id, call.arguments, ctx);
-          if (attempts > 2) stalledTool = call.name;
+          const result = await executeTool(call.name, call.id, call.arguments, ctx);
+          // Successful reads may legitimately recur. Stop only identical failures
+          // or an unchanged plan when neither tool output nor source has advanced.
+          if (!toolResultSucceeded(result) || call.name === "update_plan") {
+            const fingerprint = JSON.stringify([result.ok, result.content, result.error]);
+            const previous = repeatedTools.get(signature);
+            const attempts = previous?.epoch === mutationEpoch && previous.result === fingerprint ? previous.count + 1 : 1;
+            repeatedTools.set(signature, { epoch: mutationEpoch, count: attempts, result: fingerprint });
+            if (attempts >= 3) stalledTool = call.name;
+          } else repeatedTools.delete(signature);
           if (toolResultSucceeded(result) && ["save_text_file", "apply_search_replace", "restore_project_snapshot", "generate_gui_project", "generate_efile_from_code", "generate_efile_from_ecode"].includes(call.name)) mutationEpoch++;
 
           toolResults.push(result);
-          conversation.push(toolResultToMessage(result));
+          rememberModules(call, result);
+      conversation.push(toolResultToMessage(result));
           trace.toolCallCount += 1;
           applyPlanUpdateFromToolResult(trace, call, result);
           publishToolProgress();
@@ -2966,16 +2592,11 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
         continue;
       }
 
-      options.onStatus?.(
-        shouldUseHeavyAnswerSelfCheck(trace)
-          ? `答案自检`
-          : `本地检查`,
-      );
+      options.onStatus?.("检查结果");
       const selfCheck = socialTurn ? { pass: true, confidence: 1, issues: [], followup: "" } : restricted ? {
           pass: !findEplAnswerDiagnostics(parsed?.finalAnswer ?? assistantText).some(item => item.severity === "error"),
           confidence: 0.9, issues: ["请修正示例的语法结构。"], followup: "只读/计划模式下请给出分析和实施计划，不要调用写入或编译工具。",
         } : await runAnswerSelfCheck(
-        options.config,
         options.userInput,
         options.history,
         trace,
@@ -2985,7 +2606,7 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
       throwIfAborted(signal);
       if (
         !selfCheck.pass &&
-        answerSelfCheckRevisionCount < ANSWER_SELF_CHECK_MAX_REVISIONS &&
+        !validationStalled(selfCheck) &&
         stepIndex < maxSteps
       ) {
         answerSelfCheckRevisionCount += 1;
@@ -3014,9 +2635,12 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
         trace.steps.push(step);
         options.onStep?.(step, trace);
 
-        trace.outcome = "max_steps";
-        trace.finalAnswer =
-          "这次没有拿到足够可靠的最终答案。请再试一次，我会继续从工具证据开始重新检查。";
+        trace.outcome = stepIndex >= maxSteps ? "max_steps" : "error";
+          trace.finalAnswer = `任务尚未完成：${selfCheck.issues.join("；")}
+
+${selfCheck.followup}
+
+连续修正未取得新工具证据，现有文件与执行记录已保留。`;
         break;
       }
 

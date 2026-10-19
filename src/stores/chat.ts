@@ -12,6 +12,7 @@ interface ChatState {
   createSession: (title?: string) => string;
   deleteSession: (id: string) => void;
   renameSession: (id: string, title: string) => void;
+  setWorkspace: (id: string, path: string) => void;
   setActiveSession: (id: string) => void;
   clearAll: () => void;
 
@@ -64,6 +65,8 @@ export const useChatStore = create<ChatState>()(
         })),
 
       setActiveSession: (id) => set({ activeSessionId: id }),
+      setWorkspace: (id, path) => set(s => ({ sessions: s.sessions.map(session => session.id === id
+        ? { ...session, workspacePath: path, updatedAt: Date.now() } : session) })),
 
       clearAll: () => set({ sessions: [], activeSessionId: null }),
 

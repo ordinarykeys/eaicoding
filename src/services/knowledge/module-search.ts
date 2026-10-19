@@ -23,6 +23,7 @@ export interface UserModuleMatch {
   id: string;
   module_id: string;
   module_name: string;
+  module_path: string;
   name: string;
   class_name: string;
   return_type: string;
@@ -53,6 +54,8 @@ export interface UserModuleSearchResult {
   implementation_options: UserModuleRoute[];
   /** Diagnostic — modules actually consulted for this query. */
   searched_modules: Array<{ id: string; name: string }>;
+  module_paths: string[];
+  unavailable_modules: Array<{ id: string; name: string; status: string }>;
 }
 
 export interface SearchUserModulesOptions {
@@ -277,7 +280,7 @@ function diversifyRoutes(scoredRoutes: UserModuleRoute[], limit: number): UserMo
 
 function toMatch(
   api: UserModuleApi,
-  module: { id: string; name: string },
+  module: { id: string; name: string; storedPath: string },
   score: number,
   semanticSim?: number,
 ): UserModuleMatch {
@@ -285,6 +288,7 @@ function toMatch(
     id: api.id,
     module_id: module.id,
     module_name: module.name,
+    module_path: module.storedPath,
     name: api.name,
     class_name: api.className,
     return_type: api.returnType,
@@ -376,7 +380,11 @@ export async function searchUserModules(
   const limit = Math.max(1, Math.min(options.limit ?? 10, 25));
   const useVector = options.useVector !== false;
 
-  const candidates = resolveModuleEntries(options).filter((m) => m.status === "ready");
+  const entries = resolveModuleEntries(options);
+  const candidates = entries.filter((m) => m.status === "ready" || (m.status === "indexing" && m.apiCount > 0));
+  const searchedModules: UserModuleSearchResult["searched_modules"] = [];
+  const unavailableModules: UserModuleSearchResult["unavailable_modules"] = entries.filter(m => !candidates.includes(m))
+    .map(m => ({ id: m.id, name: m.name, status: m.status }));
   if (!trimmed || candidates.length === 0) {
     return {
       success: true,
@@ -384,7 +392,9 @@ export async function searchUserModules(
       count: 0,
       matches: [],
       implementation_options: [],
-      searched_modules: candidates.map((m) => ({ id: m.id, name: m.name })),
+      searched_modules: searchedModules,
+      module_paths: [],
+      unavailable_modules: unavailableModules,
     };
   }
 
@@ -398,13 +408,20 @@ export async function searchUserModules(
 
   for (const moduleEntry of candidates) {
     const stored = await fetchIndex(moduleEntry.id);
-    if (!stored) continue;
+    if (!stored) {
+      unavailableModules.push({ id: moduleEntry.id, name: moduleEntry.name, status: "index_unavailable" });
+      continue;
+    }
+    searchedModules.push({ id: moduleEntry.id, name: moduleEntry.name });
 
-    const moduleHandle = { id: moduleEntry.id, name: moduleEntry.name };
+    const moduleHandle = { id: moduleEntry.id, name: moduleEntry.name, storedPath: moduleEntry.storedPath };
 
     // Lexical
-    const apiById = new Map(stored.apis.map((api) => [api.id, api] as const));
-    const scored = stored.apis
+    // Internal procedures and DLL declarations remain visible in module details,
+    // but cannot be called as exported .ec commands by generated projects.
+    const callableApis = stored.apis.filter(api => api.isPublic);
+    const apiById = new Map(callableApis.map((api) => [api.id, api] as const));
+    const scored = callableApis
       .map((api) => ({ api, score: scoreApiLexical(api, trimmed, tokens) }))
       .filter((entry) => entry.score > 0)
       .sort((a, b) => b.score - a.score)
@@ -451,7 +468,9 @@ export async function searchUserModules(
       count: 0,
       matches: [],
       implementation_options: [],
-      searched_modules: candidates.map((m) => ({ id: m.id, name: m.name })),
+      searched_modules: searchedModules,
+      module_paths: [],
+      unavailable_modules: unavailableModules,
     };
   }
 
@@ -466,7 +485,9 @@ export async function searchUserModules(
     count: fused.length,
     matches,
     implementation_options: routes,
-    searched_modules: candidates.map((m) => ({ id: m.id, name: m.name })),
+    searched_modules: searchedModules,
+    module_paths: uniqueOrdered(matches.map(m => m.module_path).filter(Boolean)),
+    unavailable_modules: unavailableModules,
   };
 }
 

@@ -12,6 +12,7 @@ const MAX_SIDEBAR_WIDTH = 480;
 const DEFAULT_SIDEBAR_WIDTH = 280;
 
 export default function App() {
+  const [settingsSection, setSettingsSection] = useState("appearance");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
@@ -44,6 +45,7 @@ export default function App() {
           <div className="relative min-h-0 flex-1 overflow-hidden">
             {sidebarOpen && (
               <Sidebar
+                onOpenSettings={section => { setSettingsSection(section); setSettingsOpen(true); }}
                 settingsOpen={settingsOpen}
                 onClose={toggleSidebar}
                 width={sidebarWidth}
@@ -56,12 +58,12 @@ export default function App() {
               className="flex h-full min-w-0 flex-col transition-[padding] duration-200"
               style={{ paddingLeft: sidebarOpen ? sidebarWidth + 16 : 0 }}
             >
-              <ChatView sidebarOpen={sidebarOpen} onToggleSidebar={toggleSidebar} />
+              <ChatView sidebarOpen={sidebarOpen} onToggleSidebar={toggleSidebar} settingsOpen={settingsOpen} />
             </main>
           </div>
         </div>
         <Toaster richColors position="top-right" theme={theme} />
-        <SettingsView />
+        <SettingsView section={settingsSection} onSectionChange={setSettingsSection} />
       </div>
     </Dialog>
   );

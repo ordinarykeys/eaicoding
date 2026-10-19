@@ -10,7 +10,7 @@ EAiCoding 桌面端是一款面向易语言开发者的本地 AI Coding Agent。
 
 文档入口：[架构与执行流程](docs/architecture.md) · [开发与验证](docs/development.md) · [更新记录](CHANGELOG.md) · [问题诊断与修复](项目诊断报告.md)
 
-当前版本：**0.1.2**。[发布说明](docs/releases/v0.1.2.md)包含本次改动、附件用途和升级注意事项。
+当前版本：**0.1.3**。[发布说明](docs/releases/v0.1.3.md)包含本次改动、附件用途和升级注意事项。
 
 ## 功能特性
 
@@ -20,7 +20,9 @@ EAiCoding 桌面端是一款面向易语言开发者的本地 AI Coding Agent。
 - 原生窗口生成：可生成含窗口、控件布局、初始化和事件的易语言 GUI 工程，输出可编辑 ecode、`.e` 和编译后的 `.exe`；目前支持按钮、编辑框、标签、选择框、单选框。
 - 编译验证：内置易语言命令行编译相关工具，可对生成或修改后的 `.e` 做编译检查。
 - 精易模块知识库：内置精易模块 API 数据，支持精确检索、BM25、向量检索和融合排序。
-- 用户模块库：在设置中上传 `.ec` 模块，解析公开接口并建立本地索引；支持搜索、分页和导入进度显示。
+- 用户模块库：后台线程整理接口与本地向量索引，按复制、解析、模型加载与索引显示真实阶段。点击模块浏览公开/内部命令、参数、程序集、类型声明及完整解析文本，AI 仅检索公开接口。
+- 会话工作区：左侧按目录分组并搜索任务；顶部选择目录、复制/导出会话。右侧提供工作区文件、代码页签、原生 PowerShell 终端及内嵌浏览器，支持收起、分栏与展开。
+- 复制：用户消息、助手回复、代码块、会话和接口签名均可复制，桌面剪贴板失败时保留浏览器回退。
 - 代码展示：参照 DeepSeek Harness 的代码卡片，提供行号、复制、自动换行、保存、深浅色主题，并保留易语言 IDE 视图切换。
 - 自动编程：AI 自主选择技术方案并读写文件，完成修改后继续回编和编译验证；桌面入口没有固定总步数上限，可随时停止。
 - 回复与预览：流式 Markdown、独立推理区域、可展开工具记录、右侧文件页签和分页预览；上翻暂停跟随，点击“回到最新”恢复。
@@ -132,8 +134,8 @@ mkdir src-tauri\resources\eagent-tools\eroot
 1. 先把源码推送到 GitHub。
 2. 打开仓库页面，进入 `Releases`。
 3. 点击 `Draft a new release`。
-4. 新建标签，例如 `v0.1.2`，目标选择对应的发布提交。
-5. 标题填写 `EAiCoding v0.1.2`。
+4. 新建标签，例如 `v0.1.3`，目标选择对应的发布提交。
+5. 标题填写 `EAiCoding v0.1.3`。
 6. 在附件区域上传：
 
 ```text
@@ -146,16 +148,16 @@ src-tauri/resources/eagent-tools/eroot/e.zip
 也可以使用 GitHub CLI 上传：
 
 ```powershell
-gh release create v0.1.2 `
+gh release create v0.1.3 `
   src-tauri/resources/eagent-tools/eroot/e.zip `
-  --title "EAiCoding v0.1.2" `
+  --title "EAiCoding v0.1.3" `
   --notes "e.zip 为易语言运行环境包。下载后请放到 src-tauri/resources/eagent-tools/eroot/e.zip。"
 ```
 
 如果 Release 已经存在，可以追加上传：
 
 ```powershell
-gh release upload v0.1.2 src-tauri/resources/eagent-tools/eroot/e.zip
+gh release upload v0.1.3 src-tauri/resources/eagent-tools/eroot/e.zip
 ```
 
 建议同时提供 `e.zip` 的 SHA256，方便用户校验文件完整性：
@@ -238,7 +240,13 @@ cargo test --offline --lib --manifest-path src-tauri/Cargo.toml
 - RRF 融合排序
 - 功能候选重排
 
-用户模块库接收 `.ec` 文件，应用保存本地副本并解析公开子程序、类和参数，按需建立量化向量索引。元数据与完整索引分开存储，列表每页仅挂载 20 条。Agent 优先遵从用户指定的模块，基于检索证据自主选择接口；Markdown 文档上传不是当前模块库功能。
+用户模块库接收 `.ec` 文件，保存本地副本后调用原生解析器，在 Web Worker 中整理接口、声明及量化向量索引。复制、原生解析及模型加载使用不确定进度，语义向量阶段按真实完成数量显示进度；失败时保留关键词检索并说明原因，不显示虚假的 100%。
+
+模块列表每页 20 行，详情每页 40 项，完整文本按 16000 字符翻页。旧模块可直接读取已有索引和解析输出，不必重新嵌入。AI 优先查用户模块，索引过程中即可进行关键词检索；匹配模块路径自动传入生成与编译工具。内部子程序和 DLL 声明保留供查看，不作为模块公开入口推荐。
+
+内置精易 **6779 是文档条目数**，包含 1576 个子程序条目、1340 个类方法条目、1261 个 DLL 条目、2288 个常量及其他类型/资源。导入模块的“命令数”只统计子程序和 DLL 声明，程序集另按名称去重，两者版本和口径可能不同。界面展示原生解析器实际导出的内容，不承诺导出 `.ec` 中所有二进制资源。
+
+“通用 → 执行诊断”保存本机任务执行摘要，便于排查失败；它不是源码备份，也不自动续跑或回滚工程。
 
 ## 手机模式
 
@@ -280,11 +288,11 @@ src-tauri\target\release\bundle\nsis\
 npm run package:portable
 ```
 
-便携版输出（以 0.1.2 为例）：
+便携版输出（以 0.1.3 为例）：
 
 ```text
-release\v0.1.2\EAiCoding_0.1.2_x64-portable\EAiCoding.exe
-release\v0.1.2\EAiCoding_0.1.2_x64-portable.zip
+release\v0.1.3\EAiCoding_0.1.3_x64-portable\EAiCoding.exe
+release\v0.1.3\EAiCoding_0.1.3_x64-portable.zip
 ```
 
 一次性构建安装包、便携版并整理发布附件：
@@ -293,7 +301,7 @@ release\v0.1.2\EAiCoding_0.1.2_x64-portable.zip
 npm run package:release
 ```
 
-该命令将安装包、便携归档、独立 `e.zip`、`RELEASE_NOTES.md` 和 `SHA256SUMS.txt` 集中到 `release/v0.1.2/`。若刚完成同版本的安装包构建，可运行 `npm run package:release -- --skip-build` 复用它；便携版仍会核对生产主程序版本。命令只准备本地附件，不自动创建标签或发布 GitHub Release。
+该命令将安装包、便携归档、独立 `e.zip`、`RELEASE_NOTES.md` 和 `SHA256SUMS.txt` 集中到 `release/v0.1.3/`。若刚完成同版本的安装包构建，可运行 `npm run package:release -- --skip-build` 复用它；便携版仍会核对生产主程序版本。命令只准备本地附件，不自动创建标签或发布 GitHub Release。
 
 安装版升级前先退出旧程序，再运行新安装包；应用标识保持不变。便携版需完整解压并保留 `eagent-tools`，应用设置仍存于本机用户目录，不随便携目录移动。
 
@@ -338,7 +346,7 @@ npm run package:release
 
 ### 为什么任务还在继续执行
 
-桌面入口按工具结果推进任务，最新修改完成验证后才交付，没有统一的 12/32 步上限。网络重试、截断恢复、重复无进展和自检各有独立处理；可使用停止按钮中断。普通问候正常情况下只发一次无工具请求。
+桌面入口按工具结果推进任务，最新修改完成验证后才交付，没有统一的 12/32 步上限。网络重试、截断恢复和无进展检查各有独立处理；答案只做本地证据及结构检查，不再请求独立审查模型，也没有全局两次重写限制；可使用停止按钮中断。普通问候正常情况下只发一次无工具请求。
 
 ### 手机扫码后一直连接中
 
@@ -382,3 +390,9 @@ npm run package:release
 ## 参考项目
 
 界面布局、设置编辑、执行流程、滚动跟随和代码卡片参考 DeepSeek Harness 的本地只读源码；分页源码读取、哈希校验修改参考 [AutoLinker](https://github.com/aiqinxuancai/AutoLinker)。具体对照点与实现差异见[架构与执行流程](docs/architecture.md)。项目使用 React + Tauri + Rust，原生窗口生成由本项目实现。
+
+## DeepSeek 账号登录与参考项目边界
+
+目前使用 DeepSeek API Key，不提供假登录入口。Harness 源码采用 Platform 的专用 `/auth-api/v0/dsh/auth_init`、`auth_exchange`、本地回调及 PKCE，推理携带 `x-dsh-auth-token`；普通官网登录不能替代 API 鉴权。能否将该账号授权开放给 EAiCoding，需要 DeepSeek 的第三方接入支持或相应授权说明；本版本没有复制 Harness 的官方客户端身份或读取其登录凭据。
+
+已参考 Harness 的工具循环、会话操作和右侧工作区结构。插件系统、定时自动化与官方账号/余额服务尚未接入，不以无功能按钮代替。

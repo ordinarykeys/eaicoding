@@ -1,10 +1,15 @@
 import {
   GearSix,
+  Books,
+  FolderOpen,
+  FolderPlus,
+  MagnifyingGlass,
+  CaretDown,
   Plus,
   SidebarSimple,
   Trash,
 } from "@phosphor-icons/react";
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { DialogTrigger } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -18,7 +23,11 @@ import { useChatStore } from "@/stores/chat";
 import { getSessionDisplayTitle } from "@/lib/session-title";
 import { cn } from "@/lib/utils";
 
+import { open } from "@tauri-apps/plugin-dialog";
+import { toast } from "sonner";
+
 interface SidebarProps {
+  onOpenSettings: (section: string) => void;
   settingsOpen: boolean;
   onClose: () => void;
   width: number;
@@ -27,13 +36,33 @@ interface SidebarProps {
   maxWidth: number;
 }
 
-export function Sidebar({ settingsOpen, onClose, width, onResize, minWidth, maxWidth }: SidebarProps) {
+export function Sidebar({ onOpenSettings, settingsOpen, onClose, width, onResize, minWidth, maxWidth }: SidebarProps) {
   const sessions = useChatStore((s) => s.sessions);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const createSession = useChatStore((s) => s.createSession);
   const setActiveSession = useChatStore((s) => s.setActiveSession);
   const deleteSession = useChatStore((s) => s.deleteSession);
   const dragging = useRef(false);
+  const [query, setQuery] = useState("");
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const groups = useMemo(() => {
+    const grouped = new Map<string, typeof sessions>();
+    const needle = query.trim().toLowerCase();
+    for (const session of sessions) {
+      if (needle && !`${getSessionDisplayTitle(session)} ${session.workspacePath ?? ""}`.toLowerCase().includes(needle)) continue;
+      const key = session.workspacePath || "默认工作区";
+      grouped.set(key, [...(grouped.get(key) ?? []), session]);
+    }
+    return [...grouped];
+  }, [sessions, query]);
+  const chooseWorkspace = async () => {
+    try {
+      const selected = await open({ directory: true, multiple: false, title: "选择新任务的工作区" });
+      if (typeof selected !== "string") return;
+      const id = createSession();
+      useChatStore.getState().setWorkspace(id, selected);
+    } catch (error) { toast.error(String(error)); }
+  };
 
   const handleNew = () => {
     const id = createSession();
@@ -92,9 +121,9 @@ export function Sidebar({ settingsOpen, onClose, width, onResize, minWidth, maxW
           </Tooltip>
         </div>
 
-        <div className="px-4 pb-1 pt-2 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground/75">
-          最近任务
-        </div>
+        <div className="sidebar-quick-actions"><button type="button" onClick={() => onOpenSettings("knowledge")}><Books size={16} />模块库</button></div>
+        <div className="sidebar-workspace-heading"><span>工作区</span><button type="button" aria-label="选择工作区新建任务" title="选择工作区新建任务" onClick={() => void chooseWorkspace()}><FolderPlus size={15} /></button></div>
+        <label className="sidebar-task-search"><MagnifyingGlass size={14} /><input aria-label="搜索任务" placeholder="搜索任务或工作区…" value={query} onChange={event => setQuery(event.target.value)} /></label>
 
         <ScrollArea className="flex-1 px-2 py-1">
           {sessions.length === 0 && (
@@ -103,7 +132,9 @@ export function Sidebar({ settingsOpen, onClose, width, onResize, minWidth, maxW
             </p>
           )}
           <div className="space-y-0.5">
-            {sessions.map((session) => {
+            {groups.map(([workspace, grouped]) => <section key={workspace} className="sidebar-workspace-group">
+              <button type="button" className="sidebar-group-toggle" aria-expanded={!collapsed.has(workspace)} title={workspace} onClick={() => setCollapsed(previous => { const next = new Set(previous); if (next.has(workspace)) next.delete(workspace); else next.add(workspace); return next; })}><CaretDown size={11} style={{ transform: collapsed.has(workspace) ? "rotate(-90deg)" : undefined }} /><FolderOpen size={14} /><span>{workspace.split(/[\\/]/).pop() || workspace}</span><small>{grouped.length}</small></button>
+              {!collapsed.has(workspace) && grouped.map((session) => {
               const displayTitle = getSessionDisplayTitle(session);
               return (
               <div
@@ -135,7 +166,8 @@ export function Sidebar({ settingsOpen, onClose, width, onResize, minWidth, maxW
                 </Button>
               </div>
               );
-            })}
+            })}</section>)}
+            {sessions.length > 0 && !groups.length && <p className="sidebar-empty">没有匹配的任务</p>}
           </div>
         </ScrollArea>
 

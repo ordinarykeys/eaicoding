@@ -368,12 +368,18 @@ const USER_MODULE_DIR: &str = "user-modules";
 /// Copy a user-selected .ec into `app_local_data/user-modules/<module_id>.ec`.
 /// The module library uses this stable path for re-parsing later, even if the
 /// user moves or deletes the original.
+#[derive(serde::Serialize)]
+pub struct CopiedUserModule {
+    stored_path: String,
+    bytes: u64,
+}
+
 #[tauri::command]
 pub async fn copy_user_module_to_local(
     app: AppHandle,
     source_path: String,
     module_id: String,
-) -> Result<String, String> {
+) -> Result<CopiedUserModule, String> {
     let trimmed_id = module_id.trim();
     if trimmed_id.is_empty() {
         return Err("模块 ID 不能为空".to_string());
@@ -415,9 +421,12 @@ pub async fn copy_user_module_to_local(
         .map_err(|err| format!("创建用户模块目录失败：{}", err))?;
 
     let target = module_dir.join(format!("{}.ec", trimmed_id));
-    tokio::fs::copy(&source, &target)
+    let bytes = tokio::fs::copy(&source, &target)
         .await
         .map_err(|err| format!("复制 .ec 文件失败：{}", err))?;
 
-    Ok(target.to_string_lossy().to_string())
+    Ok(CopiedUserModule {
+        stored_path: target.to_string_lossy().to_string(),
+        bytes,
+    })
 }

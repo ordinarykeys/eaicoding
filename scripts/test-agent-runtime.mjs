@@ -9,6 +9,8 @@ import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
 const root = process.cwd();
 const temp = await mkdtemp(path.join(tmpdir(), 'eaicoding-runtime-'));
 globalThis.window = globalThis;
+globalThis.fixtureIdb = new Map();
+globalThis.localStorage = { getItem: () => null, removeItem: () => {} };
 Object.defineProperty(globalThis.navigator, 'onLine', { value: true, configurable: true });
 const config = { provider: 'deepseek', protocol: 'openai-chat-completions', baseUrl: 'https://api.deepseek.com', apiKey: 'fixture-only', model: 'deepseek-flash' };
 const response = content => {
@@ -25,10 +27,12 @@ const traceOf = steps => ({ goal: '优化工程', steps, finalAnswer: '', outcom
 const code = '.版本 2\n.程序集 程序集1\n.子程序 _启动子程序, 整数型\n返回 (0)';
 try {
   await build({
-    stdin: { contents: `export * from './agent/runner'; export * from './agent/epl-syntax'; export * from './agent/answer-compile-check'; export * from './llm/openai'; export * from './llm/index'; export * from './agent/tools'; export { useSettingsStore, DEFAULT_PROVIDER_PROFILE } from '../stores/settings';`, resolveDir: path.join(root, 'src/services'), loader: 'ts' },
+    stdin: { contents: `export * from './agent/runner'; export * from './agent/epl-syntax'; export * from './agent/answer-compile-check'; export * from './llm/openai'; export * from './llm/index'; export * from './agent/tools'; export { searchUserModules } from './knowledge/module-search'; export { useSettingsStore, DEFAULT_PROVIDER_PROFILE } from '../stores/settings';`, resolveDir: path.join(root, 'src/services'), loader: 'ts' },
     outfile: path.join(temp, 'runtime.mjs'), bundle: true, platform: 'node', format: 'esm', target: 'node22',
     external: ['@huggingface/transformers', 'onnxruntime-node'],
     plugins: [{ name: 'inspect-runner-policies', setup(b) {
+      b.onResolve({ filter: /^idb-keyval$/ }, () => ({ path: 'idb-fixture', namespace: 'fixture' }));
+      b.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: 'export const get = async key => globalThis.fixtureIdb.get(key); export const set = async (key,value) => { globalThis.fixtureIdb.set(key,value); }; export const del = async key => { globalThis.fixtureIdb.delete(key); };', loader: 'js' }));
       b.onLoad({ filter: /[\\/]agent[\\/]runner\.ts$/ }, async ({ path: file }) => ({
         contents: (await readFile(file, 'utf8')) + '\nexport { toolResultToMessage, shapeHistoryForLLM, makeAgentWorkflowState, evaluateContinueAfterFinalAnswer, shouldPrimeJingyiKnowledge, collectSuccessfulReadFilePaths, isSocialTurn, shouldRequireJingyiEvidence };',
         loader: 'ts', resolveDir: path.dirname(file),
@@ -245,27 +249,78 @@ try {
   clearMocks();
   console.log('PASS output recovery respects cancellation and does not retry unrelated HTTP 400 errors');
 
+  // A successful compile is evidence; do not ask a separate reviewer to
+  // rewrite a deliverable or hide it after a global revision budget.
   for (const maxSteps of [3, 12]) {
-    let main = 0, reviewer = 0;
+    let main = 0;
     mockIPC((cmd, args) => {
-      if (cmd === 'compile_efile') return { success: true, output_path: 'D:\\fixture\\main.exe' };
+      if (cmd === 'compile_efile') return { success: true, output_path: 'D:/fixture/main.exe' };
       if (cmd === 'llm_proxy_stream') {
-        const isMain = args.request.body.messages?.[0]?.content?.startsWith('你是 易语言 AI Coding Agent');
-        if (!isMain) { reviewer++; return response(JSON.stringify({ pass: false, confidence: 0, issues: ['fixture rejected'], followup: '修正' })); }
+        assert(args.request.body.messages[0].content.startsWith('你是 易语言 AI Coding Agent'), 'no independent reviewer request');
         main++;
-        return response(JSON.stringify(main === 1 ? { tool_calls: [{ name: 'compile_efile', arguments: { target_path: 'D:\\fixture\\main.e' } }] } : { final_answer: 'REJECTED_CANDIDATE 编译已通过。' }));
+        return response(JSON.stringify(main === 1 ? { tool_calls: [{ name: 'compile_efile', arguments: { target_path: 'D:/fixture/main.e' } }] } : { final_answer: '编译通过：D:/fixture/main.exe' }));
       }
       throw new Error(cmd);
     }, { shouldMockEvents: true });
-    const trace = await api.startAgentRun({ config, userInput: '检查 D:\\fixture\\main.e 编译结果', history: [], sessionId: null, allowDialog: false, maxSteps }).promise;
-    assert(main <= maxSteps);
-    assert(main <= 4, 'two revisions must be a terminal limit');
-    assert(reviewer <= 3);
-    assert.equal(trace.outcome, 'max_steps');
-    assert(!trace.finalAnswer.includes('REJECTED_CANDIDATE'));
+    const trace = await api.startAgentRun({ config, userInput: '检查 D:/fixture/main.e 编译结果', history: [], sessionId: null, allowDialog: false, maxSteps }).promise;
+    assert.equal(main, 2);
+    assert.equal(trace.outcome, 'answer');
+    assert.match(trace.finalAnswer, /main.exe/);
     clearMocks();
   }
-  console.log('PASS explicit turn budget, bounded self-check revisions and rejected-answer suppression');
+  console.log('PASS compiled deliverable completes without reviewer requests or a global revision cap');
+
+  let reads = 0;
+  mockIPC((cmd, args) => {
+    if (cmd === 'read_text_file_for_agent') return { path: args.filePath, content: 'same source', encoding: 'utf-8', bytes: 11, truncated: false };
+    if (cmd === 'llm_proxy_stream') return response(++reads <= 4 ? JSON.stringify({ tool_calls: [{ name: 'read_file', arguments: { file_path: 'D:/fixture/config.json' } }] }) : '配置已读取。');
+    throw new Error(cmd);
+  }, { shouldMockEvents: true });
+  const readTrace = await api.startAgentRun({ config, userInput: '检查配置内容', history: [], sessionId: null }).promise;
+  assert.equal(readTrace.outcome, 'answer'); assert.equal(reads, 5);
+  clearMocks();
+  console.log('PASS repeated successful reads do not trigger a false no-progress stop');
+
+  const uploadedPath = 'D:/fixture/user-modules/fish.ec';
+  const uploaded = { id: 'fish', name: '鱼刺类.多线程6', storedPath: uploadedPath, status: 'indexing', apiCount: 1, hasVectorIndex: false };
+  const apiEntry = { id: 'start', kind: 'subprogram', name: '启动线程', className: '鱼刺线程池', returnType: '整数型', description: '启动多线程任务', line: 3, params: [], signature: '启动线程 ()', isPublic: true };
+  globalThis.fixtureIdb.set('eaicoding-user-module:fish', { moduleId: 'fish', apis: [apiEntry], assemblies: [], vectorIndex: null });
+  api.useSettingsStore.setState({ userModules: [uploaded, { ...uploaded, id: 'waiting', name: '正在解析模块', status: 'parsing', apiCount: 0 }] });
+  const matches = await api.searchUserModules('启动线程', { useVector: false });
+  assert.equal(matches.matches[0].module_path, uploadedPath);
+  assert.deepEqual(matches.module_paths, [uploadedPath]);
+  assert.deepEqual(matches.searched_modules.map(m => m.id), ['fish']);
+  assert.deepEqual(matches.unavailable_modules.map(m => m.id), ['waiting']);
+  let moduleRound = 0;
+  mockIPC((cmd, args) => {
+    if (cmd === 'generate_gui_project') {
+      assert.deepEqual(args.modulePaths, [uploadedPath], 'retrieval dependencies reach generation without manually repeating a path');
+      return { success: true, output_path: 'D:/fixture/login.e' };
+    }
+    if (cmd === 'compile_efile') {
+      assert.deepEqual(args.modulePaths, [uploadedPath]);
+      return { success: true, output_path: 'D:/fixture/login.exe' };
+    }
+    if (cmd === 'llm_proxy_stream') {
+      moduleRound++;
+      const messages = args.request.body.messages;
+      assert(!JSON.stringify(messages).includes('auto_jingyi_') || messages.some(m => m.tool_calls?.some(c => c.function?.name === 'search_user_modules')));
+      if (moduleRound === 1) {
+        assert(messages[0].content.includes('鱼刺类.多线程6'));
+        assert(messages.some(m => m.role === 'tool' && m.content.includes('module_paths')));
+        return response(JSON.stringify({ tool_calls: [{ name: 'generate_gui_project', arguments: { project: { windows: [] } } }, { name: 'compile_efile', arguments: { target_path: 'D:/fixture/login.e' } }] }));
+      }
+      return response('窗口已生成并编译通过：D:/fixture/login.exe');
+    }
+    throw new Error(cmd);
+  }, { shouldMockEvents: true });
+  const moduleTrace = await api.startAgentRun({ config, userInput: '帮我写多线程窗口', history: [], sessionId: null }).promise;
+  assert.equal(moduleTrace.outcome, 'answer', moduleTrace.finalAnswer);
+  assert.equal(moduleTrace.steps[0].toolCalls[0].name, 'search_user_modules');
+  assert(!moduleTrace.steps.some(s => s.toolCalls.some(c => c.name === 'search_jingyi_module')));
+  api.useSettingsStore.setState({ userModules: [] });
+  clearMocks();
+  console.log('PASS indexing lexical search, truthful consulted modules, user-library priority and automatic dependency propagation');
 
   // Reproduce the live failure: edits in turn 12 must reach a build in 13,
   // followed by a final answer. Neither 12, 20, 32 nor 64 is a default ceiling.

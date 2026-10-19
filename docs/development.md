@@ -1,6 +1,6 @@
 # 开发与验证
 
-更新于 2026-10-17。命令默认从仓库根目录执行，目标平台为 Windows。
+更新于 2026-10-19。命令默认从仓库根目录执行，目标平台为 Windows。
 
 ## 安装与运行
 
@@ -26,6 +26,7 @@ node scripts/prepare-ort.mjs
 ```powershell
 npm run build
 npm run test:agent-runtime
+npm run test:module-parser
 npm run test:code-highlight
 npm run test:agent-choice
 npm run test:agent-epl
@@ -71,6 +72,12 @@ npm run test:ui
 
 覆盖设置弹窗、加密/存储失败回滚、模型选择及持久化、输入法与草稿、10,000 条模拟模块分页、Markdown/推理分离、工具过程、文件页签/分页/哈希、停止和中断恢复、窄窗口、主题及代码卡片。持续流还会断言 DOM 与行高稳定、底部对齐及上翻阅读保持。
 
+## 原生工作区验证
+
+`npm run test:native-workbench` 会构建独立标识的调试程序，使用隔离的 WebView2 用户目录和本地测试网页，验证打开路径 ACL、剪贴板、真实 PowerShell 终端的目录/中文/缩放/关闭，以及内嵌网页的导航和桌面权限隔离。需要 Playwright（同界面回归的环境变量）。只结束测试自己的进程，不读取用户密钥、不请求模型。`-SkipBuild` 仅用于已完成同配置调试构建时。
+
+界面测试同时运行生产 Worker 的 5000 接口解析，确认结果完整且主线程定时器继续响应。内置/导入模块详情测试使用构造数据，不把本机解析文本和会话复制进仓库。
+
 ## 原生 GUI 验证
 
 ```powershell
@@ -91,9 +98,9 @@ npm run test:native-gui -- -EasyLanguageRoot D:\e
 
 完整发布附件使用 `npm run package:release`，依次构建 NSIS 安装包、复用生产程序生成便携版、复制环境包及发布说明、计算 SHA256。输出位于 `release/v<版本>/`；`-- --skip-build` 仅用于已完成同版本安装包构建的情况。版本必须同时更新 `package.json`、`package-lock.json`、Cargo 清单/锁文件及 Tauri 配置，发布说明放在 `docs/releases/v<版本>.md`。
 
-0.1.2 在本机构建 Windows x64 安装包和便携版，并检查版本、工具链、归档及校验值。脚本不创建标签、不上传附件、不发布 GitHub Release；发布页面状态以 GitHub 为准。
+0.1.2 曾在本机构建 Windows x64 安装包和便携版，并检查版本、工具链、归档及校验值。脚本不创建标签、不上传附件、不发布 GitHub Release；发布页面状态以 GitHub 为准。
 
-本次产物校验覆盖 x64 PE、0.1.2 产品版本、22 个工具链文件、安装器与 ZIP 归档完整性、SHA256 清单；另通过正常启动及 Windows UI Automation 确认便携版窗口响应并显示消息输入框，未发送模型请求。Tauri 会给安装版主程序写入包类型标记，因此安装包内与便携版的主程序整体哈希不同；本次二进制比对确认仅该三字节元数据存在差异。
+0.1.2 产物校验覆盖 x64 PE、0.1.2 产品版本、22 个工具链文件、安装器与 ZIP 归档完整性、SHA256 清单；另通过正常启动及 Windows UI Automation 确认便携版窗口响应并显示消息输入框，未发送模型请求。Tauri 会给安装版主程序写入包类型标记，因此安装包内与便携版的主程序整体哈希不同；本次二进制比对确认仅该三字节元数据存在差异。
 
 提交源码、锁文件、回归脚本和文档。`node_modules/`、`dist/`、`.tmp/`、`public/ort/`、Rust `target/`、密钥环境文件、本地归档和 `e.zip` 不提交；运行时由依赖准备，环境包单独分发。
 
@@ -104,3 +111,13 @@ npm run test:native-gui -- -EasyLanguageRoot D:\e
 浏览器持续流测试记录反向位移 0、高度收缩 0、底部最大间隙 0 像素，这是本机模拟数据的结果。Vite 仍提示部分产物超过 500 kB、部分模块混合静态/动态导入；不影响此次构建通过，仍需后续优化。
 
 自动化通过不代表真实 DeepSeek 的延迟和生成质量、任意用户工程依赖或完整编译子进程树取消已经验收。
+
+### 0.1.3 验证说明
+
+生产构建、Agent runtime、模块结构解析、界面与生产 Worker 回归已覆盖本次改动。Rust 工作区单元测试在新增能力后为 22 项通过、1 项原生 fixture 默认忽略。
+
+2026-10-19 原生工作区脚本已完整通过：真实路径打开 ACL、剪贴板、目录读取、PowerShell PTY 的工作目录/中文输出/缩放/关闭，以及实际子网页加载、隐藏/显示/刷新/关闭和桌面命令权限隔离。使用独立应用标识和临时 WebView2 用户目录，没有关闭安装版或读取用户密钥。
+
+0.1.3 已完成 Windows x64 NSIS 安装包与便携版构建，附件位于 `release/v0.1.3/`。已验证产品版本、x64 PE、22 个工具链文件、安装器/ZIP 完整性和 SHA256 清单；安装版与便携版主程序仅有 Tauri 包类型标记的三字节差异。没有自动安装、上传附件或发布 GitHub Release，也没有执行真实模型请求。
+
+Tauri JS API 固定在 2.10.x、剪贴板插件在 2.3.x，与 Rust 的同一 minor 版本一致。新增 Worker 使用 ES Module 格式以支持本地嵌入模型的动态加载。Vite 仍有大包与混合导入提示。

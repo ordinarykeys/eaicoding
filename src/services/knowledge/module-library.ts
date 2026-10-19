@@ -1,4 +1,6 @@
 import { nanoid } from "nanoid";
+import { moduleWorkerRequest } from "./module-worker-client";
+export { parseRawModuleApis } from "./module-parser";
 import { invoke } from "@tauri-apps/api/core";
 import { get as idbGet, set as idbSet, del as idbDel } from "idb-keyval";
 import { useSettingsStore } from "@/stores/settings";
@@ -49,6 +51,11 @@ export interface UserModuleEntry {
   fileBytes: number;
   status: "pending" | "parsing" | "indexing" | "ready" | "error";
   lastError: string | null;
+  phase?: "copying" | "native_parse" | "structure" | "model_loading" | "embedding";
+  phaseDone?: number;
+  phaseTotal?: number;
+  vectorError?: string | null;
+  publicApiCount?: number;
   apiCount: number;
   classCount: number;
   /** APIs already embedded into the vector index (live counter while status="indexing"). */
@@ -60,11 +67,19 @@ export interface UserModuleEntry {
 
 /** Persisted to IndexedDB under `eaicoding-user-module:<id>`.
  *  Kept out of the main settings JSON because vectors are large. */
+export interface ModuleDeclaration {
+  kind: string;
+  name: string;
+  signature: string;
+  line: number;
+}
+
 export interface StoredModuleIndex {
   moduleId: string;
   parsedTextHash: string;
   apis: UserModuleApi[];
   assemblies: UserModuleAssembly[];
+  declarations?: ModuleDeclaration[];
   /** Built lazily by Phase-2 module-vector-index.ts; null in Phase 1. */
   vectorIndex: {
     model: string;
@@ -115,132 +130,6 @@ export async function removeStoredIndex(moduleId: string): Promise<void> {
 // Reads `.程序集 / .子程序 / .DLL命令 / .参数` lines, no scoring.
 // (Scoring/ranking lives in Phase 2 module-search.ts.)
 // ---------------------------------------------------------------------------
-
-function trimCell(value: string | undefined): string {
-  return (value ?? "").trim();
-}
-
-function splitFields(line: string, prefix: string): string[] {
-  const body = line.slice(prefix.length).trim();
-  return body.split(",").map(trimCell);
-}
-
-function buildSignature(api: UserModuleApi): string {
-  const params = api.params
-    .map((param) => {
-      const annotations: string[] = [];
-      if (param.array) annotations.push("数组");
-      if (param.byRef) annotations.push("传址");
-      if (param.optional) annotations.push("可空");
-      const tail = annotations.length > 0 ? ` (${annotations.join("/")})` : "";
-      return `${param.name}: ${param.type || "?"}${tail}`;
-    })
-    .join("，");
-  const ret = api.returnType || (api.kind === "subprogram" ? "无返回值" : "");
-  return `${ret} ${api.name}（${params}）`.trim();
-}
-
-export function parseRawModuleApis(parsedText: string): {
-  apis: UserModuleApi[];
-  assemblies: UserModuleAssembly[];
-} {
-  const lines = parsedText.replace(/\r\n/g, "\n").split("\n");
-  const apis: UserModuleApi[] = [];
-  const assemblies = new Map<string, UserModuleAssembly>();
-  let currentAssembly = "";
-  let currentAssemblyDescription = "";
-  let current: UserModuleApi | null = null;
-
-  const finishCurrent = () => {
-    if (!current) return;
-    current.signature = buildSignature(current);
-    apis.push(current);
-    current = null;
-  };
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = (lines[index] ?? "").trim();
-    if (!line) continue;
-
-    if (/^\.程序集(?:\s|$)/.test(line)) {
-      finishCurrent();
-      const fields = splitFields(line, ".程序集");
-      currentAssembly = fields[0] || currentAssembly;
-      currentAssemblyDescription = fields.slice(3).filter(Boolean).join("，");
-      if (currentAssembly && !assemblies.has(currentAssembly)) {
-        assemblies.set(currentAssembly, {
-          name: currentAssembly,
-          line: index + 1,
-          description: currentAssemblyDescription,
-          publicMethodCount: 0,
-        });
-      }
-      continue;
-    }
-
-    if (line.startsWith(".子程序")) {
-      finishCurrent();
-      const fields = splitFields(line, ".子程序");
-      const attr = fields[2] || "";
-      current = {
-        id: nanoid(8),
-        kind: "subprogram",
-        name: fields[0] || "",
-        className: currentAssembly,
-        returnType: fields[1] || "",
-        description: fields.slice(3).filter(Boolean).join("，"),
-        line: index + 1,
-        params: [],
-        signature: "",
-        isPublic: attr.includes("公开"),
-      };
-      continue;
-    }
-
-    if (line.startsWith(".DLL命令")) {
-      finishCurrent();
-      const fields = splitFields(line, ".DLL命令");
-      current = {
-        id: nanoid(8),
-        kind: "dll",
-        name: fields[0] || "",
-        className: currentAssembly,
-        returnType: fields[1] || "",
-        description: fields.slice(5).filter(Boolean).join("，"),
-        line: index + 1,
-        params: [],
-        signature: "",
-        isPublic: false,
-      };
-      continue;
-    }
-
-    if (line.startsWith(".参数") && current) {
-      const fields = splitFields(line, ".参数");
-      const attr = fields[2] || "";
-      current.params.push({
-        name: fields[0] || `参数${current.params.length + 1}`,
-        type: fields[1] || "",
-        array: attr.includes("数组"),
-        byRef: attr.includes("参考") || attr.includes("传址"),
-        optional: attr.includes("可空"),
-        description: fields.slice(3).filter(Boolean).join("，"),
-      });
-    }
-  }
-  finishCurrent();
-
-  for (const api of apis) {
-    if (!api.isPublic || !api.className) continue;
-    const info = assemblies.get(api.className);
-    if (info) info.publicMethodCount += 1;
-  }
-
-  return {
-    apis,
-    assemblies: Array.from(assemblies.values()).sort((a, b) => a.line - b.line),
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Cache fingerprint — non-cryptographic hash, used to detect stale parses.
@@ -295,19 +184,15 @@ export async function addUserModule(input: AddUserModuleInput): Promise<string> 
     "未命名模块"
   );
 
-  const storedPath = await invoke<string>("copy_user_module_to_local", {
-    sourcePath: input.sourcePath,
-    moduleId: id,
-  });
-
   const now = Date.now();
   const entry: UserModuleEntry = {
     id,
     name: friendlyName,
     sourcePath: input.sourcePath,
-    storedPath,
+    storedPath: "",
     fileBytes: input.fileBytes,
-    status: "parsing",
+    status: "pending",
+    phase: "copying",
     lastError: null,
     apiCount: 0,
     classCount: 0,
@@ -318,7 +203,14 @@ export async function addUserModule(input: AddUserModuleInput): Promise<string> 
   };
   useSettingsStore.getState().addUserModule(entry);
 
-  void runUploadPipeline(id, storedPath);
+  try {
+    const copied = await invoke<{ stored_path: string; bytes: number }>("copy_user_module_to_local", { sourcePath: input.sourcePath, moduleId: id });
+    useSettingsStore.getState().updateUserModule(id, { storedPath: copied.stored_path, fileBytes: copied.bytes, status: "parsing", phase: "native_parse" });
+    void runUploadPipeline(id, copied.stored_path);
+  } catch (error) {
+    useSettingsStore.getState().updateUserModule(id, { status: "error", lastError: String(error) });
+    throw error;
+  }
   return id;
 }
 
@@ -327,6 +219,7 @@ export async function rebuildUserModule(moduleId: string): Promise<void> {
   if (!entry) return;
   useSettingsStore.getState().updateUserModule(moduleId, {
     status: "parsing",
+    phase: "native_parse",
     lastError: null,
     updatedAt: Date.now(),
   });
@@ -334,6 +227,7 @@ export async function rebuildUserModule(moduleId: string): Promise<void> {
 }
 
 export async function removeUserModule(moduleId: string): Promise<void> {
+  activePipelines.delete(moduleId);
   await removeStoredIndex(moduleId);
   try {
     const { evictModuleCache } = await import("@/services/knowledge/module-search");
@@ -353,8 +247,13 @@ export function renameUserModule(moduleId: string, name: string): void {
   });
 }
 
+const activePipelines = new Map<string, symbol>();
 async function runUploadPipeline(moduleId: string, storedPath: string): Promise<void> {
+  const run = Symbol(moduleId);
+  activePipelines.set(moduleId, run);
+  const current = () => activePipelines.get(moduleId) === run && useSettingsStore.getState().userModules.some(m => m.id === moduleId);
   const updateEntry = (patch: Partial<UserModuleEntry>) => {
+    if (!current()) return;
     useSettingsStore.getState().updateUserModule(moduleId, {
       ...patch,
       updatedAt: Date.now(),
@@ -363,26 +262,34 @@ async function runUploadPipeline(moduleId: string, storedPath: string): Promise<
 
   try {
     const parseResult = await invoke<ParseResult>("parse_efile", { filePath: storedPath });
+    if (!current()) return;
     if (!parseResult.success) {
       throw new Error(parseResult.error ?? "parse_efile 返回失败");
     }
     const parsedText = parseResult.output ?? "";
-    const { apis, assemblies } = parseRawModuleApis(parsedText);
+    updateEntry({ phase: "structure", phaseDone: 0, phaseTotal: 0 });
+    const { apis, assemblies, declarations } = await moduleWorkerRequest("parse", parsedText, (done, total) => updateEntry({ phaseDone: done, phaseTotal: total }));
+    if (!current()) return;
 
     const stored: StoredModuleIndex = {
       moduleId,
       parsedTextHash: fingerprint(parsedText),
       apis,
       assemblies,
+      declarations,
       vectorIndex: null,
     };
     await saveStoredIndex(stored);
+    if (!current()) return;
 
     // Lexical-only ready state — agent can already search via search_user_modules
     // before the vector index finishes building.
     updateEntry({
       status: "indexing",
       apiCount: apis.length,
+      publicApiCount: apis.filter(api => api.isPublic).length,
+      phase: "model_loading",
+      vectorError: null,
       classCount: assemblies.length,
       indexedCount: 0,
       hasVectorIndex: false,
@@ -402,21 +309,20 @@ async function runUploadPipeline(moduleId: string, storedPath: string): Promise<
     // failures here downgrade to ready-without-vectors instead of error.
     let vectorIndex: StoredModuleIndex["vectorIndex"] = null;
     try {
-      const { buildModuleVectorIndex } = await import("@/services/knowledge/module-vector-index");
-      // Throttle progress writes to the store: ~one update per ~64 APIs is enough
-      // for a smooth bar without spamming zustand persistence on a 1k-API module.
-      let lastReportedDone = 0;
-      vectorIndex = await buildModuleVectorIndex(apis, (done, total) => {
-        if (done === total || done - lastReportedDone >= 64) {
-          lastReportedDone = done;
-          updateEntry({ indexedCount: done });
+      let lastReportedAt = 0;
+      vectorIndex = await moduleWorkerRequest("vector", apis, (done, total) => {
+        const now = Date.now();
+        if (done === total || now - lastReportedAt >= 120) {
+          lastReportedAt = now;
+          updateEntry({ phase: done > 0 ? "embedding" : "model_loading", indexedCount: done });
         }
       });
     } catch (vectorError) {
-      console.warn(`vector index build failed for module ${moduleId}:`, vectorError);
+      updateEntry({ vectorError: vectorError instanceof Error ? vectorError.message : String(vectorError) });
     }
 
     if (vectorIndex) {
+      if (!current()) return;
       const updated: StoredModuleIndex = { ...stored, vectorIndex };
       await saveStoredIndex(updated);
       try {
@@ -430,10 +336,13 @@ async function runUploadPipeline(moduleId: string, storedPath: string): Promise<
     updateEntry({
       status: "ready",
       hasVectorIndex: Boolean(vectorIndex),
-      indexedCount: apis.length,
+      indexedCount: vectorIndex ? apis.length : 0,
+      phase: undefined,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     updateEntry({ status: "error", lastError: message });
+  } finally {
+    if (activePipelines.get(moduleId) === run) activePipelines.delete(moduleId);
   }
 }

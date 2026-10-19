@@ -241,6 +241,9 @@ interface EasyLanguageEnvScanResult extends EasyLanguageEnvScan {}
 // ---------------------------------------------------------------------------
 
 export interface ToolExecContext {
+  workspaceRoot?: string;
+  /** Dependencies discovered from module evidence during this run. */
+  modulePaths?: string[];
   readOnly?: boolean;
   /** Active session id, used by tools that read latest assistant code. */
   sessionId: string | null;
@@ -2978,6 +2981,21 @@ export interface WriteTextResult {
 }
 
 /** Read any local file and return its content as text (UTF-8 or GBK auto-detected). */
+const listWorkspaceFiles: RegisteredTool = {
+  definition: {
+    name: "list_workspace_files",
+    description: "浏览当前会话工作区目录，每页最多200项。先浏览再读取源码；对子目录继续传返回的绝对路径 directory，续页传 next_offset。不要将二进制 .e/.ec 当作文本读取。",
+    parameters: { type: "object", properties: {
+      directory: { type: "string", description: "工作区内的目录绝对路径；省略则浏览工作区根目录。", nullable: true },
+      offset: { type: "integer", description: "分页偏移，首轮为0，续页使用 next_offset。", nullable: true },
+    }, required: [] },
+  },
+  executor: async (args, ctx) => {
+    if (!ctx.workspaceRoot) throw new Error("请先在会话顶部选择工作区文件夹");
+    return invokeTask("list_workspace_directory", { root: ctx.workspaceRoot, directory: readString(args, "directory"), offset: Math.max(0, Math.floor(typeof args.offset === "number" ? args.offset : 0)) }, ctx.signal);
+  },
+};
+
 const readFile: RegisteredTool = {
   definition: {
     name: "read_file",
@@ -3095,7 +3113,7 @@ const searchUserModulesTool: RegisteredTool = {
     description:
       "查询用户在「设置 → 模块库」上传的 .ec 模块（如鱼刺类、OkHttp 封装等团队自用模块），" +
       "按命令名/类名/参数/描述返回匹配的公开 API 签名 + implementation_options 实现路线。" +
-      "【优先级】当用户消息提到使用、基于、按上传模块或点名某个 .ec 实现功能时，先调用本工具按需查询；" +
+      "【优先级】实现功能前优先查询已上传模块；用户点名某个 .ec 时按该模块限定查询；" +
       "命中后直接基于返回的签名写代码，不要再 parse_efile 把整模块全量拉回来。" +
       "只在本工具召回不足（count=0）、用户要求列出全部公开接口、或要看模块具体实现（私有子程序）时再 parse_efile。" +
       "返回的 implementation_options 含 route_type（function_family 同族函数 / object_workflow 对象调用链）；多候选时按 jingyi 同款规则处理：用 primary_options 主入口写代码，supporting_options 仅做辅助；多个同级实现时根据任务和依赖自动选择最合适的一种并继续，不要要求用户选择技术入口。" +
@@ -3146,9 +3164,9 @@ const searchUserModulesTool: RegisteredTool = {
       hint:
         result.count === 0
           ? (result.searched_modules.length === 0
-              ? "用户尚未上传任何已就绪的 .ec 模块；如果需求与已知精易模块能力重合，可改用 search_jingyi_module。"
+              ? "当前没有可检索的模块索引；检查 unavailable_modules 区分正在解析、索引不可用或尚未上传。可按需查询精易库。"
               : "已查询用户模块库但本次未命中。可换用更具体的命令名/类名再试一次，或调 parse_efile 浏览整个模块的 .程序集 列表。")
-          : "已基于用户模块库返回 implementation_options/matches；生成代码时严格使用其中的 name + signature，不要凭记忆改参数。",
+          : "已基于用户模块库返回 implementation_options/matches；生成代码时严格使用其中的 name + signature，并用 module_path 引用依赖，不要凭记忆改参数。",
     };
   },
 };
@@ -3572,6 +3590,7 @@ const generateEFileFromCode: RegisteredTool = {
       makeConfiguredEFilePath("generated.e", "generated");
     const modulePaths = [
       ...readStringArray(args, "module_paths"),
+      ...(ctx.modulePaths ?? []),
       ...extractJingyiModulePathsFromInput(ctx.userInput),
       ...(!readString(args, "module_paths") && codeLooksLikeJingyiUsage(code)
         ? extractJingyiModulePathsFromInput(ctx.userInput)
@@ -3625,7 +3644,8 @@ const generateGuiProject: RegisteredTool = {
   },
   executor: async (args, ctx) => {
     if (!args.project || typeof args.project !== "object") throw new Error("缺少窗口工程 project");
-    const modules = Array.from(new Set([...readStringArray(args, "module_paths"), ...extractJingyiModulePathsFromInput(ctx.userInput)]));
+    const modules = Array.from(new Set([...readStringArray(args, "module_paths"),
+      ...(ctx.modulePaths ?? []), ...extractJingyiModulePathsFromInput(ctx.userInput)]));
     return invokeTask("generate_gui_project", {
       project: args.project,
       outputPath: readString(args, "output_path") ?? makeConfiguredEFilePath("窗口程序.e", "gui") ?? null,
@@ -3682,6 +3702,7 @@ const compileEFile: RegisteredTool = {
     const staticLink = readBoolean(args, "static_link", true);
     const modulePaths = [
       ...readStringArray(args, "module_paths"),
+      ...(ctx.modulePaths ?? []),
       ...extractLocalPathsByExtension(ctx.userInput, "ec"),
     ].filter((item, index, list) => list.indexOf(item) === index);
     const easyLanguageRoot = useSettingsStore.getState().easyLanguageRoot || null;
@@ -3751,6 +3772,7 @@ const buildECodeProject: RegisteredTool = {
     const staticLink = readBoolean(args, "static_link", true);
     const modulePaths = [
       ...readStringArray(args, "module_paths"),
+      ...(ctx.modulePaths ?? []),
       ...extractLocalPathsByExtension(ctx.userInput, "ec"),
     ].filter((item, index, list) => list.indexOf(item) === index);
 
@@ -3846,6 +3868,7 @@ const buildOriginalEFileBaseline: RegisteredTool = {
     const staticLink = readBoolean(args, "static_link", true);
     const modulePaths = [
       ...readStringArray(args, "module_paths"),
+      ...(ctx.modulePaths ?? []),
       ...extractLocalPathsByExtension(ctx.userInput, "ec"),
     ].filter((item, index, list) => list.indexOf(item) === index);
 
@@ -4014,6 +4037,7 @@ const startProjectClosedLoop: RegisteredTool = {
     const maxFiles = typeof args.max_files === "number" ? args.max_files : 500;
     const modulePaths = [
       ...readStringArray(args, "module_paths"),
+      ...(ctx.modulePaths ?? []),
       ...extractLocalPathsByExtension(ctx.userInput, "ec"),
     ].filter((item, index, list) => list.indexOf(item) === index);
 
@@ -4094,6 +4118,7 @@ const finishProjectClosedLoop: RegisteredTool = {
   executor: async (args, ctx) => {
     const modulePaths = [
       ...readStringArray(args, "module_paths"),
+      ...(ctx.modulePaths ?? []),
       ...extractLocalPathsByExtension(ctx.userInput, "ec"),
     ].filter((item, index, list) => list.indexOf(item) === index);
 
@@ -4392,6 +4417,7 @@ const pickSavePath: RegisteredTool = {
 // ---------------------------------------------------------------------------
 
 export const TOOL_REGISTRY: Record<string, RegisteredTool> = {
+  [listWorkspaceFiles.definition.name]: listWorkspaceFiles,
   [scanEasyLanguageEnv.definition.name]: scanEasyLanguageEnv,
   [searchJingyiModule.definition.name]: searchJingyiModule,
   [searchUserModulesTool.definition.name]: searchUserModulesTool,
@@ -4426,7 +4452,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = Object.values(TOOL_REGISTRY).m
 /** Public entrypoint used by the agent runner. Always returns a ToolResult,
  *  even for invalid tool names — this lets the model see the failure on the
  *  next turn and recover (instead of crashing the whole run). */
-const READ_ONLY_TOOLS = new Set(["scan_easy_language_env", "search_jingyi_module", "search_user_modules", "ask_user_choice", "read_file", "parse_efile", "export_efile_to_ecode", "summarize_ecode_project", "analyze_ecode_project", "inspect_ecode_context", "update_plan", "pick_file"]);
+const READ_ONLY_TOOLS = new Set(["list_workspace_files", "scan_easy_language_env", "search_jingyi_module", "search_user_modules", "ask_user_choice", "read_file", "parse_efile", "export_efile_to_ecode", "summarize_ecode_project", "analyze_ecode_project", "inspect_ecode_context", "update_plan", "pick_file"]);
 export const isReadOnlyTool = (name: string) => READ_ONLY_TOOLS.has(name);
 
 const TOOL_EXEC_TIMEOUT_MS = 420_000;

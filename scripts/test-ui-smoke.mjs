@@ -22,6 +22,8 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { emit } from '@tauri-apps/api/event';
+import { set as idbSet } from 'idb-keyval';
+window.fixturePutModuleIndex = (id, value) => idbSet('eaicoding-user-module:' + id, value);
 import { idbStorage } from '${sourceRoot}/lib/idb-storage';
 import '${sourceRoot}/i18n';
 import '${sourceRoot}/index.css';
@@ -30,6 +32,8 @@ import '${sourceRoot}/styles/epl.css';
 import '${sourceRoot}/styles/harness.css';
 import '${sourceRoot}/styles/settings.css';
 import '${sourceRoot}/styles/composer.css';
+window.isTauri = true;
+window.fixtureEmit = emit;
 window.fixtureIpc = [];
 window.fixtureRequests = [];
 const writeSettings = idbStorage.setItem.bind(idbStorage);
@@ -39,6 +43,23 @@ idbStorage.setItem = async (name, value) => {
 };
 mockIPC((cmd, args) => {
   window.fixtureIpc.push(cmd);
+  if (cmd === 'default_workspace') return 'D:/fixture/workspace';
+  if (cmd === 'plugin:clipboard-manager|write_text') {
+    if (window.fixtureFailNativeClipboard) throw new Error('fixture native clipboard unavailable');
+    return navigator.clipboard.writeText(args.text);
+  }
+  if (cmd === 'list_workspace_directory') {
+    window.fixtureLists = [...(window.fixtureLists ?? []), args];
+    if (window.fixtureDirectoryFailure) throw new Error('fixture 目录暂时不可读');
+    const root = args.root;
+    return { root, directory: args.directory ?? root, next_offset: null, entries: (args.directory && args.directory.endsWith('/代码')) ? [{ name: '示例.epl', path: root + '/代码/示例.epl', directory: false }] : [{ name: '代码', path: root + '/代码', directory: true }, { name: '说明.md', path: root + '/说明.md', directory: false }] };
+  }
+  if (cmd.startsWith('browser_') || cmd === 'plugin:opener|open_path') { window.fixtureNativeCalls = [...(window.fixtureNativeCalls ?? []), { cmd, args }]; return null; }
+  if (cmd === 'terminal_open') { window.fixtureTerminals = [...(window.fixtureTerminals ?? []), args]; return null; }
+  if (cmd === 'terminal_close') { window.fixtureClosedTerminals = [...(window.fixtureClosedTerminals ?? []), args.id]; return null; }
+  if (cmd === 'terminal_write') { window.fixtureTerminalWrites = [...(window.fixtureTerminalWrites ?? []), args]; return null; }
+  if (cmd === 'plugin:dialog|save') return 'D:/fixture/export.md';
+  if (cmd === 'write_text_file') { window.fixtureWrites = [...(window.fixtureWrites ?? []), args]; return { path: args.filePath, bytes: args.content.length }; }
   if (cmd === 'read_text_file_for_agent') {
     window.fixtureReads = [...(window.fixtureReads ?? []), args];
     if (window.fixtureReadFailure) throw new Error('fixture 文件暂时不可读');
@@ -52,7 +73,7 @@ mockIPC((cmd, args) => {
     }
     return { status: 200, statusText: 'OK', text: JSON.stringify({ choices: [{ message: { content: '开发步骤已整理。' }, finish_reason: 'stop' }] }) };
   }
-  if (cmd === 'plugin:dialog|open') return ['D:\\\\fixture\\\\示例.ec'];
+  if (cmd === 'plugin:dialog|open') return args.options?.directory ? 'D:/fixture/selected-workspace' : ['D:\\\\fixture\\\\示例.ec'];
   if (cmd === 'encrypt_secret') { if (window.fixtureFailSave) throw new Error('fixture save failed'); return 'encrypted-fixture'; }
   if (cmd === 'decrypt_secret') return 'fixture-key';
   if (cmd === 'fetch_llm_models') {
@@ -87,15 +108,24 @@ window.fixtureFlushChat = (await import('${sourceRoot}/stores/chat-storage')).fl
 const { default: App } = await import('${sourceRoot}/App');
 createRoot(document.getElementById('root')).render(<App />);
 `);
+const productionWorker = (await readdir(path.join(root, 'dist/assets'))).find(name => /^module-index\.worker-.*\.js$/.test(name));
+if (!productionWorker) throw new Error('Build the production module worker before UI smoke');
 await build({ entryPoints: [path.join(fixture, 'entry.tsx')], outdir: path.join(fixture, 'assets'), bundle: true,
   splitting: true, format: 'esm', platform: 'browser', tsconfig: path.join(root, 'tsconfig.json'),
-  external: ['@huggingface/transformers'], loader: { '.css': 'empty' }, logLevel: 'error' });
+  plugins: [{ name: 'serve-production-worker', setup(b) {
+    b.onLoad({ filter: /module-worker-client\.ts$/ }, async ({ path: file }) => ({ contents: (await readFile(file, 'utf8')).replace('new URL("./module-index.worker.ts", import.meta.url)', 'new URL("/production-assets/' + productionWorker + '", window.location.href)'), loader: 'ts', resolveDir: path.dirname(file) }));
+  } }], external: ['@huggingface/transformers'], loader: { '.css': 'empty' }, logLevel: 'error' });
 const builtCss = (await readdir(path.join(root, 'dist/assets'))).find(name => /^index-.*\.css$/.test(name));
 if (!builtCss) throw new Error('Run npm run build before the browser smoke');
-await writeFile(path.join(fixture, 'style.css'), await readFile(path.join(root, 'dist/assets', builtCss)));
+await writeFile(path.join(fixture, 'style.css'), (await readFile(path.join(root, 'dist/assets', builtCss), 'utf8')) + '\n' + (await readFile(path.join(root, 'node_modules/@xterm/xterm/css/xterm.css'), 'utf8')));
 const server = createServer(async (req, res) => {
   try {
     const name = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+    if (name.startsWith('/production-assets/')) {
+      const target = path.join(root, 'dist/assets', path.basename(name));
+      res.setHeader('Content-Type', name.endsWith('.js') ? 'text/javascript' : 'application/octet-stream');
+      res.end(await readFile(target)); return;
+    }
     const file = path.resolve(fixture, '.' + (name === '/' ? '/index.html' : name));
     if (!file.startsWith(fixture + path.sep)) { res.writeHead(403); res.end(); return; }
     res.setHeader('Content-Type', file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html');
@@ -325,7 +355,7 @@ try {
   console.log('PASS modal settings: stable size, theme/preferences, environment fields, focus trap/restore, Escape/mask close, narrow layout and retained chat draft');
   await page.evaluate(() => {
     window.fixtureSettings.setState({ userModules: Array.from({ length: 10000 }, (_, index) => ({
-      id: 'module-' + index, name: '测试模块 ' + index, sourcePath: 'D:/modules/' + index + '.ec', storedPath: '',
+      id: 'module-' + index, name: '测试模块 ' + index, sourcePath: 'D:/modules/' + index + '.ec', storedPath: 'D:/modules/' + index + '.ec',
       fileBytes: 4096, status: 'ready', lastError: null, apiCount: 100, classCount: 3, indexedCount: 0, hasVectorIndex: false, createdAt: 0, updatedAt: 0,
     })) });
   });
@@ -336,6 +366,47 @@ try {
   console.log('PASS module tab with 10,000 modules: only 20 mounted rows; cold open ' + (Date.now() - moduleStart) + 'ms');
   await page.getByRole('button', { name: '下一页', exact: true }).click();
   await page.locator('.module-library-row').first().filter({ hasText: '测试模块 20' }).waitFor();
+  await page.evaluate(async () => {
+    await window.fixturePutModuleIndex('module-20', { moduleId: 'module-20', parsedTextHash: 'fixture', vectorIndex: null,
+      apis: Array.from({ length: 100 }, (_, i) => ({ id: 'api-' + i, name: '启动线程' + i, kind: 'subprogram', className: '线程池', signature: '整数型 启动线程' + i + '（任务: 整数型）', returnType: '整数型', description: '启动任务说明', line: i + 1, params: [{ name: '任务', type: '整数型', byRef: true, description: '任务指针' }], isPublic: i < 80 })),
+      assemblies: [{ name: '线程池', line: 1, publicMethodCount: 80, description: '线程池类' }],
+      declarations: [{ kind: '数据类型', name: '任务信息', signature: '.数据类型 任务信息, 公开', line: 2 }],
+    });
+  });
+  await page.getByRole('button', { name: '查看模块 测试模块 20', exact: true }).click();
+  const details = page.getByRole('region', { name: '模块详情', exact: true });
+  await details.locator('.module-detail-item').first().waitFor();
+  assert.equal(await details.locator('.module-detail-item').count(), 40, 'large module details paginate their DOM');
+  await details.getByRole('textbox', { name: '搜索模块内容', exact: true }).fill('启动线程99');
+  await details.locator('.module-detail-item').filter({ hasText: '启动线程99' }).click();
+  assert.match(await details.getByRole('article', { name: '接口详情' }).textContent(), /任务指针/);
+  await details.getByRole('tab', { name: '类型与其他声明', exact: true }).click();
+  await details.locator('.module-detail-item').filter({ hasText: '任务信息' }).waitFor();
+  await details.getByRole('tab', { name: '完整解析文本', exact: true }).click();
+  await page.waitForFunction(() => window.fixtureReads?.some(r => r.filePath === 'D:/modules/20.parse_output.txt' && r.maxChars === 16000));
+  await details.getByRole('button', { name: '模块库', exact: true }).click();
+  await page.getByRole('button', { name: '内置精易知识条目 6779 条', exact: true }).click();
+  await details.getByRole('tab', { name: '类型与其他声明', exact: true }).click();
+  await details.locator('.module-detail-item').first().waitFor();
+  assert.match(await details.locator('.module-detail-pagination').textContent(), /2602 项/);
+  await page.screenshot({ path: path.join(screenshots, 'module-details.png') });
+  await details.getByRole('button', { name: '模块库', exact: true }).click();
+  const workerResult = await page.evaluate(async url => {
+    const worker = new Worker(url, { type: 'module' });
+    let ticks = 0;
+    const clock = setInterval(() => ticks++, 1);
+    try {
+      const parsed = await new Promise((resolve, reject) => {
+        worker.onmessage = ({ data }) => { if ('result' in data) resolve(data.result); else if (data.error) reject(new Error(data.error)); };
+        worker.onerror = event => reject(new Error(event.message));
+        worker.postMessage({ id: 1, kind: 'parse', input: Array.from({ length: 5000 }, (_, i) => '.子程序 接口' + i + ', 整数型, 公开\n.参数 数值, 整数型').join('\n') });
+      });
+      return { count: parsed.apis.length, last: parsed.apis.at(-1).name, ticks };
+    } finally { clearInterval(clock); worker.terminate(); }
+  }, '/production-assets/' + productionWorker);
+  assert.equal(workerResult.count, 5000); assert.equal(workerResult.last, '接口4999'); assert(workerResult.ticks > 0, 'main UI remains responsive while the real worker parses');
+  console.log('PASS production module worker parses every API while main-thread UI timers continue');
+  console.log('PASS module detail paging, private/public metadata, parameter tables, other declarations, raw text and builtin category counts');
   await page.getByRole('tab', { name: '模型', exact: true }).click();
   await page.getByRole('tab', { name: '模块库', exact: true }).click();
   assert.match(await page.locator('.module-library-row').first().textContent(), /测试模块 20/);
@@ -789,6 +860,71 @@ try {
   assert.equal(await executionPanel.locator('[data-state="stopped"]').count(), 1);
   await page.getByText('上次执行已中断，可发送消息继续。', { exact: true }).waitFor();
   console.log('PASS interrupted-session restoration retains results and clears stale running indicators');
+  // Test visible workbench controls and their native IPC contracts.
+  await page.getByRole('button', { name: '会话菜单', exact: true }).click();
+  await page.getByRole('menuitem', { name: '重命名会话', exact: true }).click();
+  await page.getByRole('textbox', { name: '会话名称', exact: true }).fill('工作区回归');
+  await page.getByRole('textbox', { name: '会话名称', exact: true }).press('Enter');
+  await page.getByRole('heading', { name: '工作区回归', exact: true }).waitFor();
+  await page.evaluate(() => { window.fixtureFailNativeClipboard = true; });
+  await page.getByRole('button', { name: '会话菜单', exact: true }).click();
+  await page.getByRole('menuitem', { name: '复制整个会话', exact: true }).click();
+  await page.waitForFunction(async () => (await navigator.clipboard.readText()).startsWith('# 工作区回归'));
+  await page.getByRole('button', { name: '会话菜单', exact: true }).click();
+  await page.getByRole('menuitem', { name: '导出为 Markdown', exact: true }).click();
+  await page.waitForFunction(() => window.fixtureWrites?.some(w => w.filePath === 'D:/fixture/export.md' && w.content.startsWith('# 工作区回归')));
+  await page.getByRole('button', { name: '会话工作区', exact: true }).click();
+  await page.getByRole('menuitem', { name: '在资源管理器打开', exact: true }).click();
+  await page.waitForFunction(() => window.fixtureNativeCalls?.some(c => c.cmd === 'plugin:opener|open_path'));
+  await page.getByRole('button', { name: '会话工作区', exact: true }).click();
+  await page.getByRole('menuitem', { name: '选择工作区文件夹', exact: true }).click();
+  await page.waitForFunction(() => {
+    const s = window.fixtureChat.getState();
+    return s.sessions.find(x => x.id === s.activeSessionId)?.workspacePath === 'D:/fixture/selected-workspace';
+  });
+  await page.keyboard.press('Control+p');
+  const workbench = page.getByRole('complementary', { name: '工作区面板', exact: true });
+  await workbench.getByRole('tab', { name: '工作区文件', selected: true }).waitFor();
+  await workbench.getByRole('button', { name: '代码', exact: true }).click();
+  await workbench.getByRole('button', { name: '示例.epl', exact: true }).waitFor();
+  await workbench.getByRole('button', { name: '上一级目录', exact: true }).click();
+  await workbench.getByRole('button', { name: '说明.md', exact: true }).waitFor();
+  await page.evaluate(() => { window.fixtureDirectoryFailure = true; });
+  await workbench.getByRole('button', { name: '刷新工作区文件', exact: true }).click();
+  await workbench.getByRole('alert').filter({ hasText: '目录暂时不可读' }).waitFor();
+  await page.evaluate(() => { window.fixtureDirectoryFailure = false; });
+  await workbench.getByRole('button', { name: '重试', exact: true }).click();
+  await workbench.getByRole('button', { name: '说明.md', exact: true }).waitFor();
+  await page.keyboard.press('Control+Backquote');
+  await workbench.getByRole('tab', { name: '终端 1', selected: true }).waitFor();
+  await page.waitForFunction(() => window.fixtureTerminals?.length > 0);
+  const terminalId = await page.evaluate(() => window.fixtureTerminals.at(-1).id);
+  assert.equal(await page.evaluate(() => window.fixtureTerminals.at(-1).root), 'D:/fixture/selected-workspace');
+  await page.evaluate(async id => { await window.fixtureEmit('workspace-terminal-output', { id, data: [...new TextEncoder().encode('中文终端输出')], exited: false }); }, terminalId);
+  await workbench.locator('.xterm-helper-textarea').fill('echo test');
+  await page.waitForFunction(() => window.fixtureTerminalWrites?.length > 0);
+  await workbench.getByRole('button', { name: '收起工作区', exact: true }).click();
+  assert.equal(await page.evaluate(id => window.fixtureClosedTerminals?.includes(id) ?? false, terminalId), false, 'collapsing retains the live shell');
+  await page.keyboard.press('Control+t');
+  await workbench.getByRole('tab', { name: '浏览器', selected: true }).waitFor();
+  await workbench.getByRole('textbox', { name: '网页地址', exact: true }).fill('https://user:pass@example.com');
+  await workbench.getByRole('button', { name: '打开', exact: true }).click();
+  await workbench.getByRole('alert').filter({ hasText: '有效的 http/https' }).waitFor();
+  await workbench.getByRole('textbox', { name: '网页地址', exact: true }).fill('https://example.com');
+  await workbench.getByRole('button', { name: '打开', exact: true }).click();
+  await page.waitForFunction(() => window.fixtureNativeCalls.some(c => c.cmd === 'browser_open'));
+  const browserId = await page.evaluate(() => window.fixtureNativeCalls.find(c => c.cmd === 'browser_open').args.id);
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.waitForFunction(id => window.fixtureNativeCalls.some(c => c.cmd === 'browser_layout' && c.args.id === id && c.args.visible === false), browserId);
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(id => window.fixtureNativeCalls.filter(c => c.cmd === 'browser_layout' && c.args.id === id).at(-1)?.args.visible === true, browserId);
+  await workbench.getByRole('button', { name: '关闭浏览器', exact: true }).click();
+  await page.waitForFunction(id => window.fixtureNativeCalls.some(c => c.cmd === 'browser_close' && c.args.id === id), browserId);
+  await workbench.getByRole('button', { name: '关闭终端 1', exact: true }).click();
+  await page.waitForFunction(id => window.fixtureClosedTerminals.includes(id), terminalId);
+  await workbench.getByRole('tab', { name: '开始', exact: true }).click();
+  await page.screenshot({ path: path.join(screenshots, 'workbench-start.png') });
+  console.log('PASS conversation rename/export/copy fallback, workspace persistence/files/errors, terminal lifecycle and native browser visibility contracts');
   assert.deepEqual(errors, []);
   console.log('PASS Chinese fence, source copy, wrap toggle, IDE toggle, light/dark rendering and no page errors');
   console.log(`Screenshots: ${screenshots}`);

@@ -1,5 +1,5 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { Books, CheckCircle, Database, FileText, MagnifyingGlass, Sparkle, Trash, UploadSimple, X } from "@phosphor-icons/react";
+import { useDeferredValue, useMemo, useRef, useState } from "react";
+import { Books, Database, FileText, MagnifyingGlass, Sparkle, Trash, UploadSimple, X } from "@phosphor-icons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { toast } from "sonner";
@@ -9,11 +9,11 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import { useSettingsStore } from "@/stores/settings";
 import { totalItems as builtinItemCount } from "@/services/agent/knowledge/jingyi-raw.json";
 import { addUserModule, rebuildUserModule, removeUserModule, type UserModuleEntry } from "@/services/knowledge/module-library";
-import { clearAgentCheckpoints, getAgentCheckpoints, type AgentCheckpoint } from "@/services/agent/checkpoint";
+import { ModuleDetails } from "./module-details";
 
 export default function ModuleLibraryPanel() {
   const modules = useSettingsStore(state => state.userModules);
-  return <><UserModuleLibraryCard modules={modules} /><AgentCheckpointCard /></>;
+  return <UserModuleLibraryCard modules={modules} />;
 }
 
 function formatBytes(bytes: number): string {
@@ -27,6 +27,7 @@ function formatBytes(bytes: number): string {
 // ---------------------------------------------------------------------------
 
 function UserModuleLibraryCard({ modules }: { modules: UserModuleEntry[] }) {
+  const [selected, setSelected] = useState<UserModuleEntry | "builtin" | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -70,16 +71,7 @@ function UserModuleLibraryCard({ modules }: { modules: UserModuleEntry[] }) {
       let added = 0;
       for (const path of paths) {
         const fileName = path.split(/[\\/]/).pop() ?? path;
-        let fileBytes = 0;
-        try {
-          const stat = await invoke<{ bytes?: number }>("read_text_file_for_agent", {
-            filePath: path,
-            maxChars: 1,
-          });
-          fileBytes = typeof stat?.bytes === "number" ? stat.bytes : 0;
-        } catch {
-          // best-effort: missing size shouldn't block upload
-        }
+        const fileBytes = 0;
         await addUserModule({ sourcePath: path, fileBytes, fileName });
         added += 1;
       }
@@ -115,8 +107,9 @@ function UserModuleLibraryCard({ modules }: { modules: UserModuleEntry[] }) {
     }
   };
 
+  if (selected) return <ModuleDetails entry={selected === "builtin" ? null : modules.find(m => m.id === selected.id) ?? selected} onBack={() => setSelected(null)} />;
   return (
-    <Card className="settings-section-card border-0 shadow-none">
+    <Card className="settings-section-card module-library-card border-0 shadow-none">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between gap-3">
           <CardTitle className="settings-section-title flex items-center gap-2">
@@ -134,8 +127,9 @@ function UserModuleLibraryCard({ modules }: { modules: UserModuleEntry[] }) {
         <div className="settings-module-summary">
           <KnowledgeSummaryItem
             icon={<Database className="h-4 w-4" />}
-            label="精易模块（内置）"
+            label="内置精易知识条目"
             value={`${builtinItemCount} 条`}
+            onClick={() => setSelected("builtin")}
           />
           <KnowledgeSummaryItem
             icon={<FileText className="h-4 w-4" />}
@@ -144,11 +138,12 @@ function UserModuleLibraryCard({ modules }: { modules: UserModuleEntry[] }) {
           />
           <KnowledgeSummaryItem
             icon={<Sparkle className="h-4 w-4" />}
-            label="公开 API / 类"
+            label="命令 / 程序集"
             value={`${totals.api} / ${totals.classes}`}
           />
         </div>
 
+        <p className="module-count-note">内置条目包含命令、常量、类型及资源；导入命令数包含内部子程序与 DLL 声明，两者统计口径和模块版本可能不同。点击模块查看详情。</p>
         <div className="settings-module-search">
           <MagnifyingGlass size={16} aria-hidden="true" />
           <Input ref={searchInput} aria-label="搜索模块" placeholder="搜索模块名称或路径" value={query} onChange={event => { setQuery(event.target.value); setPage(0); }} />
@@ -165,6 +160,7 @@ function UserModuleLibraryCard({ modules }: { modules: UserModuleEntry[] }) {
                 key={entry.id}
                 entry={entry}
                 busy={busyId === entry.id}
+                onOpen={() => setSelected(entry)}
                 onRebuild={() => handleRebuild(entry.id)}
                 onRemove={() => handleRemove(entry.id)}
               />
@@ -187,10 +183,12 @@ function UserModuleRow({
   busy,
   onRebuild,
   onRemove,
+  onOpen,
 }: {
   entry: UserModuleEntry;
   busy: boolean;
   onRebuild: () => void;
+  onOpen: () => void;
   onRemove: () => void;
 }) {
   const indexingPct =
@@ -200,17 +198,17 @@ function UserModuleRow({
   const statusLabel = (() => {
     switch (entry.status) {
       case "ready":
-        return "✓ 就绪";
+        return entry.hasVectorIndex ? "已就绪" : "关键词检索已就绪";
       case "parsing":
-        return "解析中...";
+        return entry.phase === "structure" ? `整理接口 ${entry.phaseDone ?? 0}/${entry.phaseTotal || "…"} 行` : "正在解析文件…";
       case "indexing":
         return entry.apiCount > 0
-          ? `建立索引中 ${entry.indexedCount}/${entry.apiCount} (${indexingPct}%)`
+          ? entry.phase === "model_loading" ? "接口可检索 · 正在加载语义模型…" : `接口可检索 · 语义索引 ${entry.indexedCount}/${entry.apiCount} (${indexingPct}%)`
           : "建立索引中...";
       case "error":
         return "失败";
       default:
-        return "等待处理";
+        return entry.phase === "copying" ? "正在复制文件…" : "等待处理";
     }
   })();
   const statusTone =
@@ -224,23 +222,24 @@ function UserModuleRow({
     <div className="module-library-row flex items-center gap-3 rounded-md bg-card px-3 py-2">
       <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
       <div className="min-w-0 flex-1">
-        <span
-          className="block w-full truncate text-left text-sm font-medium"
+        <button type="button" onClick={onOpen} aria-label={`查看模块 ${entry.name}`}
+          className="module-library-name block w-full truncate text-left text-sm font-medium"
           title={entry.sourcePath ?? entry.storedPath}
         >
           {entry.name}
-        </span>
+        </button>
         <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
           <span className={statusTone}>{statusLabel}</span>
-          <span>{entry.apiCount} 条 API</span>
-          <span>{entry.classCount} 个类</span>
+          <span>{entry.apiCount} 条命令</span>
+          <span>{entry.classCount} 个程序集</span>
           {entry.fileBytes > 0 && <span>{formatBytes(entry.fileBytes)}</span>}
         </div>
-        {entry.status === "indexing" && entry.apiCount > 0 && (
+        {["pending", "parsing", "indexing"].includes(entry.status) && (
           <div className="mt-1 h-1 w-full overflow-hidden rounded bg-muted">
             <div
               className="h-full bg-primary transition-[width] duration-300"
-              style={{ width: `${indexingPct}%` }}
+              data-indeterminate={entry.phase !== "embedding"}
+              style={entry.phase === "embedding" ? { width: `${indexingPct}%` } : undefined}
             />
           </div>
         )}
@@ -285,96 +284,18 @@ function KnowledgeSummaryItem({
   icon,
   label,
   value,
+  onClick,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
+  onClick?: () => void;
 }) {
   return (
-    <div className="settings-module-stat flex items-center gap-2 rounded-md bg-secondary px-3 py-2">
+    <button type="button" onClick={onClick} disabled={!onClick} className="settings-module-stat flex items-center gap-2 rounded-md bg-secondary px-3 py-2">
       <span className="text-muted-foreground">{icon}</span>
       <span className="text-xs text-muted-foreground">{label}</span>
       <span className="ml-auto text-sm font-medium">{value}</span>
-    </div>
-  );
-}
-
-function AgentCheckpointCard() {
-  const [checkpoints, setCheckpoints] = useState<AgentCheckpoint[]>([]);
-
-  const refresh = () => setCheckpoints(getAgentCheckpoints());
-
-  useEffect(() => {
-    refresh();
-  }, []);
-
-  const clearAll = () => {
-    clearAgentCheckpoints();
-    setCheckpoints([]);
-    toast.success("已清空 Agent 检查点");
-  };
-
-  return (
-    <Card className="settings-section-card border-0 shadow-none">
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between gap-3">
-          <CardTitle className="settings-section-title flex items-center gap-2">
-            <CheckCircle className="h-4 w-4" />
-            Agent 检查点
-          </CardTitle>
-          <div className="flex shrink-0 gap-2">
-            <Button variant="outline" size="sm" onClick={refresh}>
-              刷新
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              onClick={clearAll}
-              disabled={checkpoints.length === 0}
-            >
-              <Trash className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        {checkpoints.length === 0 ? (
-          <div className="rounded-md bg-card px-3 py-6 text-center text-sm text-muted-foreground">
-            暂无检查点
-          </div>
-        ) : (
-          checkpoints.slice(0, 6).map((checkpoint) => (
-            <AgentCheckpointRow key={checkpoint.id} checkpoint={checkpoint} />
-          ))
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function AgentCheckpointRow({ checkpoint }: { checkpoint: AgentCheckpoint }) {
-  return (
-    <div className="rounded-md bg-card px-3 py-2">
-      <div className="flex items-center gap-2">
-        <span className="truncate text-sm font-medium" title={checkpoint.goal}>
-          {checkpoint.goal}
-        </span>
-        <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
-          {new Date(checkpoint.updatedAt).toLocaleString()}
-        </span>
-      </div>
-      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-        <span>{checkpoint.outcome}</span>
-        <span>{checkpoint.stepCount} 步</span>
-        <span>{checkpoint.toolCallCount} 次工具</span>
-        {checkpoint.pendingChoiceQuestion && <span>等待选择</span>}
-      </div>
-      {checkpoint.finalAnswerPreview && (
-        <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-          {checkpoint.finalAnswerPreview}
-        </div>
-      )}
-    </div>
+    </button>
   );
 }

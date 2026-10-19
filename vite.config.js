@@ -72,6 +72,7 @@ export default defineConfig(function () { return __awaiter(void 0, void 0, void 
     return __generator(this, function (_a) {
         return [2 /*return*/, ({
                 plugins: [ortMjsDevRedirect, react(), tailwindcss()],
+                worker: { format: "es" },
                 resolve: {
                     alias: {
                         "@": rootDir + "src",

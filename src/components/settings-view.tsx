@@ -37,6 +37,7 @@ import {
   scanEasyLanguageEnv,
   type EasyLanguageEnvScan,
 } from "@/services/easy-language-env";
+const AgentCheckpointPanel = lazy(() => import("./agent-checkpoint-panel"));
 const ModuleLibraryPanel = lazy(() => import("@/components/module-library-panel"));
 
 function formatBytes(bytes: number): string {
@@ -45,8 +46,7 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function SettingsView() {
-  const [section, setSection] = useState("appearance");
+export function SettingsView({ section, onSectionChange }: { section: string; onSectionChange: (value: string) => void }) {
   const returnFocus = useRef<HTMLElement | null>(null);
   return (
     <DialogPrimitive.Portal>
@@ -59,7 +59,7 @@ export function SettingsView() {
         <DialogPrimitive.Description className="sr-only">
           配置 DeepSeek 模型与密钥、易语言环境、模块库和界面外观。
         </DialogPrimitive.Description>
-        <SettingsPanel section={section} onSectionChange={setSection} />
+        <SettingsPanel section={section} onSectionChange={onSectionChange} />
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
   );
@@ -153,6 +153,7 @@ function SettingsPanel({ section, onSectionChange }: { section: string; onSectio
             {visited.has("appearance") && <TabsContent forceMount value="appearance" className="settings-pane">
               <AppearanceSettings />
               <PetSettingsCard />
+              <details className="settings-diagnostics"><summary>执行诊断</summary><Suspense fallback={null}><AgentCheckpointPanel /></Suspense></details>
             </TabsContent>}
           </div>
         </div>

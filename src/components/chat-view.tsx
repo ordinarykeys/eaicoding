@@ -1,5 +1,9 @@
 import { useChatScroll } from "@/hooks/use-chat-scroll";
 import { ChatComposer } from "@/components/chat-composer";
+import { WorkspacePane, type WorkspaceTab } from "@/components/workspace-pane";
+import { ConversationMenu } from "@/components/conversation-menu";
+import { copyText } from "@/lib/clipboard";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Fragment,
   memo,
@@ -72,9 +76,10 @@ import { cn } from "@/lib/utils";
 interface ChatViewProps {
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
+  settingsOpen?: boolean;
 }
 
-export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
+export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }: ChatViewProps) {
   const { t } = useTranslation();
   const session = useActiveSession();
   // Per-field selectors: subscribing to the whole store would re-render this
@@ -90,7 +95,11 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [statusLine, setStatusLine] = useState<string | null>(null);
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | null>(null);
-  const [previewVisible, setPreviewVisible] = useState(false);
+  const [previewVisible, setPreviewVisible] = useState(true);
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("start");
+  const [workspaceFocused, setWorkspaceFocused] = useState(false);
+  const [defaultWorkspace, setDefaultWorkspace] = useState("");
+  const workspace = session?.workspacePath ?? defaultWorkspace;
   const [openedDocuments, setOpenedDocuments] = useState<PreviewDocument[]>([]);
   const [previewWidth, setPreviewWidth] = useState(520);
   // P4 approval gate + pause/resume UI state.
@@ -128,12 +137,13 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
       ? previous.map(item => item.id === document.id ? document : item) : [...previous, document]);
     setSelectedPreviewId(document.id);
     setPreviewVisible(true);
+    setWorkspaceTab("code");
   }, []);
   const closePreviewTab = (id: string) => {
     const remaining = previewItems.filter(item => item.id !== id);
     setOpenedDocuments(remaining);
     if (selectedPreviewId === id) setSelectedPreviewId(remaining.at(-1)?.id ?? null);
-    if (!remaining.length) setPreviewVisible(false);
+    if (!remaining.length) setWorkspaceTab("start");
   };
   const activePreview = useMemo(() => {
     if (previewItems.length === 0) return null;
@@ -148,8 +158,20 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
   }, [isStreaming]);
 
   useEffect(() => {
-    setOpenedDocuments([]); setSelectedPreviewId(null); setPreviewVisible(false);
+    setOpenedDocuments([]); setSelectedPreviewId(null); setWorkspaceTab("start"); setWorkspaceFocused(false);
   }, [activeSessionId]);
+
+  useEffect(() => { void invoke<string>("default_workspace").then(setDefaultWorkspace).catch(error => toast.error(`读取默认工作区失败：${String(error)}`)); }, []);
+  const chooseWorkspace = async () => {
+    if (isStreamingRef.current) return;
+    try {
+      const selected = await openDialog({ directory: true, multiple: false, title: "选择会话工作区", ...(workspace ? { defaultPath: workspace } : {}) });
+      if (typeof selected !== "string") return;
+      const store = useChatStore.getState();
+      const sid = store.activeSessionId ?? store.createSession();
+      store.setWorkspace(sid, selected);
+    } catch (error) { toast.error(`选择工作区失败：${String(error)}`); }
+  };
 
   const handleAttachFile = useCallback(async () => {
     if (isStreaming) return;
@@ -271,6 +293,8 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
     const sessionSnapshot = useChatStore
       .getState()
       .sessions.find((sx) => sx.id === sid);
+    const runWorkspace = sessionSnapshot?.workspacePath ?? workspace;
+    if (runWorkspace && !sessionSnapshot?.workspacePath) useChatStore.getState().setWorkspace(sid, runWorkspace);
     const history = (sessionSnapshot?.messages ?? []).filter(
       (m) => m.id !== assistantMsgId,
     );
@@ -299,6 +323,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
       userInput: userContent,
       history: historyWithoutTrigger,
       sessionId: sid,
+      workspaceRoot: runWorkspace,
       allowDialog: true,
       onStatus: (status) => setStatusLine(status.replace(/^第 \d+\/\d+ 步：/, "").replace("模型推理中", "正在思考").replace(/^执行 ([a-z_]+)/, (_match, name: string) => toolLabel(name))),
       onAssistantStart: () => {
@@ -412,6 +437,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
     createSession,
     appendMessage,
     updateMessage,
+    workspace,
     t,
   ]);
 
@@ -464,7 +490,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
   return (
     <DocumentPreviewContext.Provider value={openPreview}>
     <TooltipProvider>
-      <div className="chat-workspace relative h-full overflow-hidden bg-background" data-preview-open={Boolean(activePreview && previewVisible)}>
+      <div className="chat-workspace relative h-full overflow-hidden bg-background" data-preview-open={previewVisible} data-workspace-focused={workspaceFocused && previewVisible}>
         <div
           className="harness-chat-column flex h-full min-w-0 flex-col transition-[padding] duration-200"
           data-empty={!session?.messages.length}
@@ -486,32 +512,29 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
                 <TooltipContent>打开侧栏</TooltipContent>
               </Tooltip>
             )}
-            <h2 className="text-sm font-medium truncate flex-1 text-muted-foreground">
-              {sessionTitle}
-            </h2>
+            <ConversationMenu session={session} title={sessionTitle} workspace={workspace} busy={isStreaming} onChooseWorkspace={() => void chooseWorkspace()} />
             {statusLine && (
               <span className="text-xs text-muted-foreground hidden md:flex items-center gap-1">
                 <GearSix className="h-3.5 w-3.5 animate-spin" />
                 {statusLine}
               </span>
             )}
-            {activePreview && !previewVisible && (
+            {activePreview && (!previewVisible || workspaceTab !== "code") && <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground" aria-label="代码预览" title="代码预览" onClick={() => { setWorkspaceTab("code"); setPreviewVisible(true); }}><Code size={16} /></Button>}
+            {!previewVisible && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     variant="ghost"
                     size="icon"
                     className="h-8 w-8 rounded-lg text-muted-foreground"
-                    aria-label="代码预览"
+                    aria-label="打开工作区"
                     onClick={() => setPreviewVisible(true)}
                   >
-                    <Code className="h-4 w-4" />
+                    <SidebarSimple className="h-4 w-4 rotate-180" />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  {previewItems.length > 1
-                    ? `代码预览 (${previewItems.length})`
-                    : "代码预览"}
+                  打开工作区
                 </TooltipContent>
               </Tooltip>
             )}
@@ -559,18 +582,24 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
               focusKey={activeSessionId} />
           </div>
         </div>
+        <WorkspacePane key={activeSessionId ?? "empty"} root={workspace} visible={previewVisible} tab={workspaceTab} onTab={setWorkspaceTab}
+          onShow={() => setPreviewVisible(true)} onHide={() => { setPreviewVisible(false); setWorkspaceFocused(false); }}
+          onChooseRoot={() => void chooseWorkspace()} onOpenFile={openPreview} sidebarOpen={sidebarOpen} onToggleSidebar={onToggleSidebar}
+          focused={workspaceFocused} onFocus={() => setWorkspaceFocused(value => !value)} width={previewWidth} onResize={setPreviewWidth} nativeOverlay={settingsOpen}
+          hasCode={Boolean(activePreview)}>
         {activePreview && (
           <DocumentPreview
-            visible={previewVisible}
+            visible={previewVisible && workspaceTab === "code"}
             items={previewItems}
             activeId={activePreview.id}
             onSelect={setSelectedPreviewId}
-            onClose={() => setPreviewVisible(false)}
+            onClose={() => setWorkspaceTab("start")}
             onCloseTab={closePreviewTab}
             width={previewWidth}
             onResize={setPreviewWidth}
           />
         )}
+        </WorkspacePane>
       </div>
     </TooltipProvider>
     </DocumentPreviewContext.Provider>
@@ -582,6 +611,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar }: ChatViewProps) {
 // ---------------------------------------------------------------------------
 
 const TOOL_LABELS: Record<string, string> = {
+  list_workspace_files: "浏览工作区",
   scan_easy_language_env: "扫描易语言环境",
   update_plan: "更新计划",
   search_user_modules: "查询模块库",
@@ -661,9 +691,9 @@ const MessageBubble = memo(function MessageBubble({
     >
       <div
         className={cn(
-          "flex max-w-[85%] flex-col gap-2 rounded-2xl px-4 py-3 text-sm leading-6",
+          "flex max-w-[85%] flex-col gap-2 text-sm leading-6",
           isUser
-            ? "user-message-bubble"
+            ? "user-message-content items-end"
             : "assistant-message-content bg-transparent px-0 text-foreground",
         )}
       >
@@ -672,7 +702,7 @@ const MessageBubble = memo(function MessageBubble({
           <AgentTracePanel trace={trace} running={Boolean(message.isStreaming)} activeToolId={message.activeToolCallId} />
         )}
         {isUser ? (
-          <p className="whitespace-pre-wrap break-words">{displayContent}</p>
+          <p className="user-message-bubble whitespace-pre-wrap break-words px-4 py-3">{displayContent}</p>
         ) : (
           <div className="assistant-response">
             {displayContent && <MarkdownView content={displayContent} />}
@@ -680,7 +710,7 @@ const MessageBubble = memo(function MessageBubble({
           </div>
         )}
 
-        {!isUser && !message.isStreaming && displayContent && <ReplyActions text={displayContent} />}
+        {!message.isStreaming && displayContent && <ReplyActions text={displayContent} isUser={isUser} timestamp={message.timestamp} />}
 
         {pendingChoice && (
           <AgentChoicePrompt
@@ -708,19 +738,25 @@ function ReasoningDisclosure({ text, running }: { text: string; running: boolean
   </div>;
 }
 
-function ReplyActions({ text }: { text: string }) {
+function ReplyActions({ text, isUser, timestamp }: { text: string; isUser: boolean; timestamp: number }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       setCopied(true);
       clearTimeout(timer.current);
       timer.current = setTimeout(() => setCopied(false), 1200);
-    } catch { toast.error("复制失败"); }
+    } catch { toast.error("复制失败，请检查系统剪贴板后重试"); }
   };
-  return <div className="assistant-actions"><button type="button" aria-label={copied ? "已复制回复" : "复制回复"} title={copied ? "已复制" : "复制回复"} onClick={() => void copy()}>{copied ? <Check size={15} /> : <CopySimple size={15} />}</button></div>;
+  const label = isUser ? "复制消息" : "复制回复";
+  const time = new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(timestamp);
+  return <div className="assistant-actions" data-user={isUser}>
+    {isUser && <time dateTime={new Date(timestamp).toISOString()}>{time}</time>}
+    <button type="button" className="message-copy" aria-label={copied ? "已复制" : label} title={copied ? "已复制" : label} onClick={() => void copy()}>{copied ? <Check size={15} /> : <CopySimple size={15} />}<span>{copied ? "已复制" : "复制"}</span></button>
+    {!isUser && <time dateTime={new Date(timestamp).toISOString()}>{time}</time>}
+  </div>;
 }
 
 function AgentChoicePrompt({

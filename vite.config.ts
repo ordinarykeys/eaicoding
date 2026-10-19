@@ -35,6 +35,7 @@ const ortMjsDevRedirect = {
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [ortMjsDevRedirect, react(), tailwindcss()],
+  worker: { format: "es" as const },
   resolve: {
     alias: {
       "@": rootDir + "src",

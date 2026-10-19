@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import { EplRenderer } from "@/components/epl-renderer";
 import { useSettingsStore } from "@/stores/settings";
+import { copyText } from "@/lib/clipboard";
 
 let highlighterPromise: Promise<HighlighterCore> | null = null;
 function getHighlighter() {
@@ -76,7 +77,7 @@ export const CodeBlock = memo(function CodeBlock({ language, code, embedded = fa
   }, [epl, visible]);
 
   const copy = async () => {
-    try { await navigator.clipboard.writeText(code); setCopied(true); clearTimeout(copyTimer.current); copyTimer.current = setTimeout(() => setCopied(false), 1500); }
+    try { await copyText(code); setCopied(true); clearTimeout(copyTimer.current); copyTimer.current = setTimeout(() => setCopied(false), 1500); }
     catch { toast.error("复制失败，请重试"); }
   };
   const download = async () => {
