@@ -9,11 +9,10 @@ import { usePlatformPage } from "@/stores/platform-page";
 
 const destinations = { account: "https://platform.deepseek.com/", usage: "https://platform.deepseek.com/usage", topup: "https://platform.deepseek.com/top_up" };
 function PlatformLink({ page, children, primary = false }: { page: keyof typeof destinations; children: React.ReactNode; primary?: boolean }) {
-  return <a className={primary ? "account-link account-primary" : "account-link"} href={destinations[page]} target="_blank" rel="noreferrer" onClick={event => {
-    event.preventDefault();
+  return <button type="button" className={primary ? "account-link account-primary" : "account-link"} onClick={() => {
     if (page !== "account") { usePlatformPage.getState().open(page === "usage" ? "usage" : "top-up"); return; }
     void openUrl(destinations[page]).catch(error => toast.error(`打开官方页面失败：${String(error)}`));
-  }}>{children}</a>;
+  }}>{children}</button>;
 }
 function Balance({ wallets, loading }: { wallets: Wallet[] | null | undefined; loading: boolean }) {
   if (wallets === null || wallets === undefined || wallets.length === 0) return <span className="account-muted">{loading ? "加载中…" : <PlatformLink page="usage">前往开放平台查看</PlatformLink>}</span>;

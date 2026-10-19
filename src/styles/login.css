@@ -1,5 +1,5 @@
 /* Welcome geometry adapted from Harness apps/desktop/renderer/welcome.css (MIT).
-   EAiCoding keeps its own identity and the user's warm Claude palette. */
+   EAiCoding keeps its own identity with Harness light/dark theme tokens. */
 .login-window { width:100vw;height:100vh;display:flex;flex-direction:column;gap:8px;padding:6px 16px;background:var(--background);color:var(--foreground);user-select:none;-webkit-font-smoothing:antialiased; }
 .login-titlebar { flex:0 0 36px;position:relative; }
 .login-window-controls { display:flex;position:absolute;right:-10px;top:-6px;height:42px; }

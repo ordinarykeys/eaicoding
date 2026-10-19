@@ -131,6 +131,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Harness 0.2.1-rc.2 additions
 
+Theme references also include `packages/client/ui-theme/src/styles/{design-platform,base,gradient-shadow-text}.css` at `687f282`. EAiCoding maps the original root/dark selectors to its theme class in `src/styles/harness-theme.css`, adapts the semantic aliases and font stacks in `src/index.css`, and uses the original light/dark button and mask colors. These adaptations use the Harness MIT license above.
+
 Adapted sources also include Windows AppFrame/SidebarRoot layout, Modal/SettingsRoot caption-safe masks, ModelsSection styles and provider forms, ModelSelect positioning and reasoning capabilities, bonus-notices controller, notice-transition, AccountNotice styles, llm-deepseek Messages serialization/translation and llm-pi-ai provider metadata. These adaptations use the Harness MIT license above. Google thinking mappings follow pi-ai google-shared under its MIT license.
 
 ## pi-ai and provider SDK dependencies

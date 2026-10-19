@@ -326,6 +326,18 @@ try {
     viewport: { width: 1366, height: 900 },
     permissions: ["clipboard-read", "clipboard-write"],
   });
+  // Tauri opener's injected _blank/Ctrl-click listener also runs in desktop.
+  // Include its behavior so an embedded action cannot pass only in the browser fixture.
+  await context.addInitScript(() => {
+    window.addEventListener("click", event => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey) return;
+      const link = event.composedPath().find(node => node instanceof HTMLAnchorElement);
+      if (!link?.href || (link.target !== "_blank" && !event.ctrlKey && !event.shiftKey)) return;
+      if (!["http:", "https:", "mailto:", "tel:"].includes(new URL(link.href).protocol)) return;
+      event.preventDefault();
+      void window.__TAURI_INTERNALS__.invoke("plugin:opener|open_url", { url: link.href });
+    });
+  });
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -514,6 +526,12 @@ try {
   });
   await settingsDialog.waitFor();
   assert.equal(await settingsDialog.getAttribute("aria-modal"), "true");
+  assert.deepEqual(await page.evaluate(() => ({
+    background: getComputedStyle(document.querySelector('.app-main-surface')).backgroundColor,
+    sidebar: getComputedStyle(document.querySelector('.claude-sidebar')).backgroundColor,
+    foreground: getComputedStyle(document.body).color,
+    send: getComputedStyle(document.querySelector('.harness-composer-send')).backgroundColor,
+  })), { background: 'rgb(255, 255, 255)', sidebar: 'rgb(249, 250, 251)', foreground: 'rgb(15, 17, 21)', send: 'rgb(65, 118, 230)' }, 'light palette matches Harness ui-theme');
   assert.equal(
     await page.evaluate(() => window.fixtureComposerNode.isConnected),
     true,
@@ -586,7 +604,7 @@ try {
   await center.getByText("测试账号", { exact: true }).waitFor();
   await center.getByText("¥12.34", { exact: true }).waitFor();
   await center.getByText("¥5.60", { exact: true }).waitFor();
-  await center.getByRole("link", { name: "查询用量", exact: true }).click();
+  await center.getByRole("button", { name: "查询用量", exact: true }).click();
   const platformDialog = page.getByRole("dialog", {
     name: "查询用量",
     exact: true,
@@ -621,7 +639,7 @@ try {
   await page.evaluate(() => {
     window.fixturePlatformFailure = true;
   });
-  await center.getByRole("link", { name: "充值", exact: true }).click();
+  await center.getByRole("button", { name: "充值", exact: true }).click();
   const topupDialog = page.getByRole("dialog", { name: "充值", exact: true });
   await topupDialog.getByText("操作未完成，请重试", { exact: true }).waitFor();
   await page.evaluate(() => {
@@ -843,6 +861,7 @@ try {
   await openSettings();
   await page.getByRole("tab", { name: "模型", exact: true }).click();
   for (const name of ["测试中转", "Anthropic"]) {
+    await page.setViewportSize({ width: 1120, height: 720 });
     await modelSettings
       .getByRole("button", { name: "删除 " + name, exact: true })
       .click();
@@ -850,11 +869,22 @@ try {
       name: "删除模型提供商",
       exact: true,
     });
+    const spacing = await confirmation.evaluate(node => {
+      const dialog = node.getBoundingClientRect();
+      const title = node.querySelector("h2").getBoundingClientRect();
+      const description = node.querySelector('[id="' + node.getAttribute("aria-describedby") + '"]').getBoundingClientRect();
+      return { titleLeft: title.left - dialog.left, titleTop: title.top - dialog.top, descriptionLeft: description.left - dialog.left, font: getComputedStyle(node.querySelector("h2")).fontFamily };
+    });
+    assert(spacing.titleLeft >= 24 && spacing.titleTop >= 22, "confirmation title retains Harness header padding");
+    assert(spacing.descriptionLeft >= 0, "confirmation body stays in its card");
+    assert(!/Copernicus|Charter|Georgia/.test(spacing.font), "confirmation title uses Harness sans font");
+    if (name === "测试中转") await page.screenshot({ path: path.join(screenshots, "provider-delete.png"), animations: "disabled" });
     await confirmation
       .getByRole("button", { name: "删除", exact: true })
       .click();
     await confirmation.waitFor({ state: "hidden" });
   }
+  await page.setViewportSize({ width: 1366, height: 900 });
   await page.evaluate(async () => {
     const p = window.fixtureSettings.getState().profiles[0];
     await window.fixtureSettings.getState().selectModel(p.id, "deepseek-flash");
@@ -891,6 +921,7 @@ try {
   await authDialog.waitFor({ state: "hidden" });
   await modelSettings.getByRole("button", { name: "断开 OpenAI Codex (legacy)", exact: true }).click();
   const disconnect = page.getByRole("dialog", { name: "断开模型提供商", exact: true });
+  assert.equal(await disconnect.getByRole('button', { name: '关闭确认', exact: true }).count(), 1);
   await disconnect.getByRole("button", { name: "断开", exact: true }).click();
   await disconnect.waitFor({ state: "hidden" });
   await modelSettings.getByRole("button", { name: "删除 OpenAI Codex (legacy)", exact: true }).click();
@@ -898,6 +929,12 @@ try {
   await page.getByRole("dialog", { name: "删除模型提供商", exact: true }).waitFor({ state: "hidden" });
   console.log("PASS provider authorization UI: method choice, masked/manual prompts, device code/copy, cancel, successful account models and disconnect");
   await page.evaluate(() => window.fixtureSettings.getState().setTheme("dark"));
+  assert.deepEqual(await page.evaluate(() => ({
+    background: getComputedStyle(document.querySelector('.app-main-surface')).backgroundColor,
+    sidebar: getComputedStyle(document.querySelector('.claude-sidebar')).backgroundColor,
+    foreground: getComputedStyle(document.body).color,
+    send: getComputedStyle(document.querySelector('.harness-composer-send')).backgroundColor,
+  })), { background: 'rgb(21, 21, 23)', sidebar: 'rgb(27, 27, 28)', foreground: 'rgb(249, 250, 251)', send: 'rgb(122, 170, 255)' }, 'dark palette matches Harness ui-theme');
   await page.screenshot({
     path: path.join(screenshots, "settings-dark.png"),
     fullPage: true,

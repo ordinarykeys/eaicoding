@@ -1076,6 +1076,9 @@ fn platform_navigation(url: &Url) -> bool {
         && url.username().is_empty()
         && url.password().is_none()
 }
+fn platform_popup_in_app(url: &Url) -> bool {
+    platform_navigation(url) && matches!(url.path().trim_end_matches('/'), "/usage" | "/top_up")
+}
 fn platform_bootstrap(token: &str) -> String {
     // This runs only in the isolated official main frame, never the application renderer.
     let token = serde_json::to_string(token).expect("JSON string");
@@ -1118,6 +1121,7 @@ pub async fn deepseek_platform_open(
     let event_app = app.clone();
     let event_id = id.clone();
     let popup_app = app.clone();
+    let popup_id = id.clone();
     // Separate private storage prevents browser cookies or a previous account from authenticating this page.
     let directory = app
         .path()
@@ -1131,9 +1135,16 @@ pub async fn deepseek_platform_open(
         .initialization_script(script)
         .on_navigation(platform_navigation)
         .on_new_window(move |url, _| {
-            // Match Harness: only payment/documentation popups leave the embedded view.
-            // The browser receives no embedded session or credential bridge.
-            if url.scheme() == "https" && url.username().is_empty() && url.password().is_none() {
+            // Account page links stay in their existing view, even when the page
+            // requests target=_blank. Payment/documentation popups remain external.
+            if platform_popup_in_app(&url) {
+                if let Some(view) = popup_app.get_webview(&popup_id) {
+                    let _ = view.navigate(url);
+                }
+            } else if url.scheme() == "https"
+                && url.username().is_empty()
+                && url.password().is_none()
+            {
                 let _ = popup_app.opener().open_url(url.as_str(), None::<&str>);
             }
             tauri::webview::NewWindowResponse::Deny
@@ -1254,6 +1265,24 @@ mod tests {
             assert!(!platform_navigation(&Url::parse(url).unwrap()));
         }
         assert!(platform_navigation(&platform_url("usage").unwrap()));
+        for path in [
+            "/usage",
+            "/top_up",
+            "/usage/?tab=detail",
+            "/top_up?from=embedded",
+        ] {
+            assert!(platform_popup_in_app(
+                &Url::parse(&format!("{PLATFORM}{path}")).unwrap()
+            ));
+        }
+        for url in [
+            "https://platform.deepseek.com/docs",
+            "https://pay.example/top_up",
+            "https://platform.deepseek.com.evil.example/usage",
+            "https://user@platform.deepseek.com/usage",
+        ] {
+            assert!(!platform_popup_in_app(&Url::parse(url).unwrap()));
+        }
         assert!(PlatformBounds {
             x: f64::NAN,
             y: 0.0,

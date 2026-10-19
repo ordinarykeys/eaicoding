@@ -78,7 +78,7 @@
 
 ## 与参考项目的关系
 
-DeepSeek Harness 为本地只读对照项目，没有修改其源码或以它作为运行时依赖。对照包括 `ui-conversation/InputBar`、模型选择、`ui-chat/TurnProcessNodeView`、`ui-tool/ToolRow`、`ui-sidebar-documentpreview/TextPreview`、`core/agent-loop` 和 `llm-deepseek`。保留本项目的 Claude 暖色主题、React/Tauri 架构与易语言工具。
+DeepSeek Harness 为本地只读对照项目，没有修改其源码或以它作为运行时依赖。对照包括 `ui-conversation/InputBar`、模型选择、`ui-chat/TurnProcessNodeView`、`ui-tool/ToolRow`、`ui-sidebar-documentpreview/TextPreview`、`core/agent-loop` 和 `llm-deepseek`。界面使用其 `ui-theme/design-platform.css` 配色，保留本项目的名称、图标、React/Tauri 架构与易语言工具。
 
 Harness 的 DeepSeek 默认输出额度为 256000，使用 Messages 协议；本项目使用 Chat Completions。默认预算、原生工具循环和滚动机制已参考实现，但并未完整移植其 Markdown 分块缓存、所有工具独立滚动和折叠位置保持逻辑。Harness 也会区分 `max-tokens` 与正常完成；本项目额外增加了上述有限截断恢复。
 

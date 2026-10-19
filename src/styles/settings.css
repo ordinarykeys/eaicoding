@@ -1,10 +1,10 @@
 :root { --window-chrome-top: 40px; --window-overlay-space: 60px; }
-/* Harness settings shell proportions, using the app's warm theme tokens. */
+/* Harness settings shell proportions and ui-theme tokens. */
 .settings-overlay {
   position: fixed;
   inset: var(--window-chrome-top) 0 0;
   z-index: 50;
-  background: rgb(0 0 0 / 24%);
+  background: var(--dsw-alias-bg-mask-1);
   backdrop-filter: none;
   -webkit-app-region: no-drag;
 }
@@ -22,7 +22,7 @@
   border-radius: 28px;
   background: var(--card);
   color: var(--foreground);
-  box-shadow: 0 24px 80px rgb(0 0 0 / 18%), 0 4px 16px rgb(0 0 0 / 5%);
+  box-shadow: var(--harness-elevation-prominent);
   outline: none;
   -webkit-app-region: no-drag;
 }

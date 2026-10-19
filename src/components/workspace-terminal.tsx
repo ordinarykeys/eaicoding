@@ -59,9 +59,11 @@ export function WorkspaceTerminal({ id, root, visible }: { id: string; root: str
     };
   }, [id, root, attempt]);
   useEffect(() => {
-    if (terminalRef.current) terminalRef.current.options.theme = theme === "dark"
-      ? { background: "#262624", foreground: "#dedbd4", cursor: "#dedbd4", selectionBackground: "#62605a" }
-      : { background: "#faf9f5", foreground: "#33312e", cursor: "#33312e", selectionBackground: "#d8d4c8" };
+    if (!terminalRef.current) return;
+    const style = getComputedStyle(document.body);
+    const background = style.backgroundColor, foreground = style.color;
+    terminalRef.current.options.theme = { background, foreground, cursor: foreground, cursorAccent: background,
+      selectionBackground: foreground, selectionForeground: background, selectionInactiveBackground: foreground };
   }, [theme, attempt]);
   useEffect(() => { if (visible) { fitRef.current(); terminalRef.current?.focus(); } }, [visible]);
   return <section className="workspace-terminal" hidden={!visible} aria-label="工作区终端">

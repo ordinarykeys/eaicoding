@@ -1,4 +1,4 @@
-/* Harness-inspired component layouts use the original Claude theme in index.css. */
+/* Harness component layouts use ui-theme tokens mapped in index.css. */
 :root {
   --code-fill: var(--secondary);
   --code-banner: var(--accent);

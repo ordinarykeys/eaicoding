@@ -14,8 +14,8 @@
 .harness-model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .harness-model-trigger > svg { flex: none; transition: transform 120ms ease; }
 .harness-model-trigger[aria-expanded="true"] > svg { transform: rotate(180deg); }
-.harness-composer-send { display: grid; flex: none; place-items: center; width: 34px; height: 34px; transform: translateY(-2px); border: 0; border-radius: 999px; corner-shape: round; background: var(--primary); color: #fff; cursor: pointer; }
-.harness-composer-send:hover:not(:disabled) { filter: brightness(1.08); }
+.harness-composer-send { display: grid; flex: none; place-items: center; width: 34px; height: 34px; transform: translateY(-2px); border: 0; border-radius: 999px; corner-shape: round; background: var(--dsw-alias-button-info-fill); color: #fff; cursor: pointer; }
+.harness-composer-send:hover:not(:disabled) { background: var(--dsw-alias-button-info-hover); }
 .harness-composer button.harness-composer-send:disabled { opacity: .4; cursor: default; }
 .harness-composer button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .harness-composer button:disabled { cursor: default; opacity: .45; }

@@ -10,7 +10,7 @@ EAiCoding 桌面端是一款面向易语言开发者的本地 AI Coding Agent。
 
 文档入口：[架构与执行流程](docs/architecture.md) · [开发与验证](docs/development.md) · [更新记录](CHANGELOG.md) · [问题诊断与修复](项目诊断报告.md)
 
-当前版本：**0.1.6**。[发布说明](docs/releases/v0.1.6.md)包含本次改动、附件用途和升级注意事项。
+当前版本：**0.1.7**。[发布说明](docs/releases/v0.1.7.md)包含本次改动、附件用途和升级注意事项。
 
 ## 功能特性
 
@@ -28,7 +28,7 @@ EAiCoding 桌面端是一款面向易语言开发者的本地 AI Coding Agent。
 - 回复与预览：流式 Markdown、独立推理区域、可展开工具记录、右侧文件页签和分页预览；上翻暂停跟随，点击“回到最新”恢复。
 - 繁忙发送：支持排队或插话，Ctrl+Enter 使用另一行为；运行中保留独立停止，排队消息可编辑或取消。
 - 代码工作视图：对话/轨迹切换、工具详情检查与复制；右侧按文件查看本轮真实代码差异，支持统一、并排和自动换行。
-- 设置弹窗：从左下角账号菜单进入，默认个人中心，包含通用、模型、易语言环境、模块库，保留 Claude 暖色主题与紧凑输入区。
+- 设置弹窗：从左下角账号菜单进入，默认个人中心，包含通用、模型、易语言环境、模块库，使用 Harness 浅色/深色主题与紧凑输入区。
 - 个人中心：查询用量、充值在应用内打开官方页面，返回后刷新余额；支付服务主动打开的外部新窗口按 Harness 行为交给浏览器。
 - 手机模式：桌面端可开启局域网桥接，手机 App 扫码后继续对话。
 - 单实例运行：重复打开应用时会聚焦已有窗口，避免多开造成状态混乱。
@@ -140,8 +140,8 @@ mkdir src-tauri\resources\eagent-tools\eroot
 1. 先把源码推送到 GitHub。
 2. 打开仓库页面，进入 `Releases`。
 3. 点击 `Draft a new release`。
-4. 新建标签，例如 `v0.1.6`，目标选择对应的发布提交。
-5. 标题填写 `EAiCoding v0.1.6`。
+4. 新建标签，例如 `v0.1.7`，目标选择对应的发布提交。
+5. 标题填写 `EAiCoding v0.1.7`。
 6. 在附件区域上传：
 
 ```text
@@ -154,16 +154,16 @@ src-tauri/resources/eagent-tools/eroot/e.zip
 也可以使用 GitHub CLI 上传：
 
 ```powershell
-gh release create v0.1.6 `
+gh release create v0.1.7 `
   src-tauri/resources/eagent-tools/eroot/e.zip `
-  --title "EAiCoding v0.1.6" `
+  --title "EAiCoding v0.1.7" `
   --notes "e.zip 为易语言运行环境包。下载后请放到 src-tauri/resources/eagent-tools/eroot/e.zip。"
 ```
 
 如果 Release 已经存在，可以追加上传：
 
 ```powershell
-gh release upload v0.1.6 src-tauri/resources/eagent-tools/eroot/e.zip
+gh release upload v0.1.7 src-tauri/resources/eagent-tools/eroot/e.zip
 ```
 
 建议同时提供 `e.zip` 的 SHA256，方便用户校验文件完整性：
@@ -303,11 +303,11 @@ src-tauri\target\release\bundle\nsis\
 npm run package:portable
 ```
 
-便携版输出（以 0.1.6 为例）：
+便携版输出（以 0.1.7 为例）：
 
 ```text
-release\v0.1.6\EAiCoding_0.1.6_x64-portable\EAiCoding.exe
-release\v0.1.6\EAiCoding_0.1.6_x64-portable.zip
+release\v0.1.7\EAiCoding_0.1.7_x64-portable\EAiCoding.exe
+release\v0.1.7\EAiCoding_0.1.7_x64-portable.zip
 ```
 
 一次性构建安装包、便携版并整理发布附件：
@@ -316,9 +316,9 @@ release\v0.1.6\EAiCoding_0.1.6_x64-portable.zip
 npm run package:release
 ```
 
-该命令将安装包、便携归档、独立 `e.zip`、`RELEASE_NOTES.md` 和 `SHA256SUMS.txt` 集中到 `release/v0.1.6/`。若刚完成同版本的安装包构建，可运行 `npm run package:release -- --skip-build` 复用它；便携版仍会核对生产主程序版本。命令只准备本地附件，不自动创建标签或发布 GitHub Release。
+该命令将安装包、便携归档、独立 `e.zip`、`RELEASE_NOTES.md` 和 `SHA256SUMS.txt` 集中到 `release/v0.1.7/`。若刚完成同版本的安装包构建，可运行 `npm run package:release -- --skip-build` 复用它；便携版仍会核对生产主程序版本。命令只准备本地附件，不自动创建标签或发布 GitHub Release。
 
-安装版升级前先退出旧程序，再运行新安装包；应用标识保持不变。便携版需完整解压并保留 `eagent-tools`，应用设置仍存于本机用户目录，不随便携目录移动。
+安装版升级前先退出旧程序，再运行新安装包；应用标识保持不变。便携版需完整解压并保留 `eagent-tools`、`model-runtime` 及许可文件，应用设置仍存于本机用户目录，不随便携目录移动。
 
 ## 安全与误报说明
 

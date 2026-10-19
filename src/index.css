@@ -1,67 +1,44 @@
 @import "tailwindcss";
+@import "./styles/harness-theme.css";
 
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: #faf9f5;
-  --foreground: #29261b;
-  --card: #fffefa;
-  --card-foreground: #29261b;
-  --popover: #ffffff;
-  --popover-foreground: #29261b;
-  --primary: #d97757;
-  --primary-foreground: #ffffff;
-  --secondary: #f5f4ed;
-  --secondary-foreground: #3d3929;
-  --muted: #f5f4ed;
-  --muted-foreground: #737163;
-  --accent: #f0eee6;
-  --accent-foreground: #29261b;
-  --destructive: #bc3b2a;
-  --destructive-foreground: #ffffff;
-  --border: #706b5740;
-  --input: #706b5740;
-  --ring: color-mix(in srgb, #d97757 58%, transparent);
+  color-scheme: light;
+  --background: var(--dsw-alias-bg-base);
+  --foreground: var(--dsw-alias-label-primary);
+  --card: var(--dsw-alias-bg-layer-2);
+  --card-foreground: var(--foreground);
+  --popover: var(--dsw-alias-bg-layer-3);
+  --popover-foreground: var(--foreground);
+  --primary: var(--dsw-alias-button-primary-fill);
+  --primary-foreground: var(--dsw-alias-label-primary-foreground);
+  --secondary: var(--dsw-alias-bg-module-platform);
+  --secondary-foreground: var(--foreground);
+  --muted: var(--dsw-alias-interactive-bg-hover-solid);
+  --muted-foreground: var(--dsw-alias-label-secondary);
+  --accent: var(--dsw-alias-interactive-bg-hover);
+  --accent-foreground: var(--foreground);
+  --destructive: var(--dsw-alias-state-error-primary);
+  --destructive-foreground: white;
+  --border: var(--dsw-alias-border-l2);
+  --input: var(--border);
+  --ring: var(--dsw-alias-state-business-primary);
   --radius: 0.5rem;
-  --sidebar: #fcfcfb;
-  --sidebar-foreground: #29261b;
-  --sidebar-primary: #d97757;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: rgba(0, 0, 0, 0.04);
-  --sidebar-accent-foreground: #29261b;
-  --sidebar-border: #706b5740;
-  --sidebar-ring: color-mix(in srgb, #d97757 58%, transparent);
+  --sidebar: var(--dsw-specific-sidebar-fill);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--dsw-specific-sidebar-nav-item-hover);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+  /* ui-theme/gradient-shadow-text.css prominent elevation. */
+  --harness-elevation-prominent: 0 0 0 .5px var(--dsw-alias-border-l4), 0 3px 8px rgb(0 0 0 / 4%), 0 0 20px rgb(0 0 0 / 5%);
 }
 
 .dark {
-  /* the assistant terminal-dark variant: deep brown bg + warm tan text */
-  --background: oklch(0.18 0.012 65);
-  --foreground: oklch(0.92 0.020 80);
-  --card: oklch(0.22 0.015 65);
-  --card-foreground: oklch(0.92 0.020 80);
-  --popover: oklch(0.22 0.015 65);
-  --popover-foreground: oklch(0.92 0.020 80);
-  --primary: oklch(0.70 0.155 45);
-  --primary-foreground: oklch(0.18 0.012 65);
-  --secondary: oklch(0.28 0.015 65);
-  --secondary-foreground: oklch(0.92 0.020 80);
-  --muted: oklch(0.28 0.015 65);
-  --muted-foreground: oklch(0.68 0.020 75);
-  --accent: oklch(0.32 0.030 60);
-  --accent-foreground: oklch(0.92 0.020 80);
-  --destructive: oklch(0.55 0.22 27);
-  --destructive-foreground: oklch(0.985 0.010 80);
-  --border: oklch(0.32 0.020 65);
-  --input: oklch(0.28 0.015 65);
-  --ring: oklch(0.70 0.155 45 / 0.55);
-  --sidebar: oklch(0.23 0.016 65);
-  --sidebar-foreground: oklch(0.92 0.020 80);
-  --sidebar-primary: oklch(0.70 0.155 45);
-  --sidebar-primary-foreground: oklch(0.18 0.012 65);
-  --sidebar-accent: oklch(0.30 0.020 65);
-  --sidebar-accent-foreground: oklch(0.92 0.020 80);
-  --sidebar-border: oklch(0.32 0.020 65);
-  --sidebar-ring: oklch(0.70 0.155 45 / 0.55);
+  color-scheme: dark;
 }
 
 @theme inline {
@@ -97,10 +74,10 @@
   --radius-lg: calc(var(--radius) + 2px);
   --radius-xl: calc(var(--radius) + 4px);
 
-  /* Custom claude-y fonts */
-  --font-display: "Copernicus", "Charter", "Iowan Old Style", "Source Serif Pro", "Georgia", serif;
-  --font-sans: "Styrene B LC", "Söhne", "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", ui-monospace, monospace;
+  /* Harness ui-theme/base.css text and code stacks. */
+  --font-display: var(--font-sans);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, "Liberation Mono", Menlo, Courier, "PingFang SC", "Microsoft YaHei";
 }
 
 @layer base {
@@ -112,13 +89,13 @@
   body {
     background-color: var(--background);
     color: var(--foreground);
-    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    font-family: var(--font-sans);
     font-feature-settings: "ss01", "cv01";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
 
-  /* Headings get the warm serif treatment */
+  /* Headings use the same system text family as Harness. */
   h1,
   h2,
   h3,
@@ -337,7 +314,7 @@
   }
 
   .window-control-close:hover {
-    background: #c6613f;
+    background: var(--destructive);
     color: white;
   }
 

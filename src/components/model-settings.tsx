@@ -254,8 +254,12 @@ export function ModelSettings() {
       >
         <Dialog.Portal>
           <Dialog.Overlay className="account-signout-overlay" />
-          <Dialog.Content className="account-signout-dialog">
-            <Dialog.Title>{disconnecting ? "断开模型提供商" : "删除模型提供商"}</Dialog.Title>
+          <Dialog.Content className="account-signout-dialog"
+            onEscapeKeyDown={event => { if (busy) event.preventDefault(); }}
+            onInteractOutside={event => { if (busy) event.preventDefault(); }}>
+            <header><Dialog.Title>{disconnecting ? "断开模型提供商" : "删除模型提供商"}</Dialog.Title>
+              <Dialog.Close aria-label="关闭确认" disabled={busy}><X size={14} /></Dialog.Close>
+            </header>
             <Dialog.Description>
               {disconnecting ? `清除 ${deleting?.name} 已保存的登录授权和密钥？模型配置会保留，环境凭据仍可使用。` : `删除 ${deleting?.name} 及其已保存的授权和密钥？聊天记录会保留。`}
             </Dialog.Description>
@@ -269,6 +273,8 @@ export function ModelSettings() {
                 取消
               </button>
               <button
+                type="button"
+                className="account-primary"
                 disabled={busy}
                 onClick={() => {
                   if (!deleting) return;
