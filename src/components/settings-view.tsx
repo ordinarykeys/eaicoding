@@ -204,20 +204,16 @@ function EasyLanguageEnvironmentCard({
 }) {
   const [scan, setScan] = useState<EasyLanguageEnvScan | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  const scanBusy = useRef(false);
+  const scanRequest = useRef(0);
 
   useEffect(() => {
-    let cancelled = false;
-    scanEasyLanguageEnv(root)
-      .then((result) => {
-        if (!cancelled) setScan(result);
-      })
-      .catch(() => {
-        if (!cancelled) setScan(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    // Opening settings must not start a recursive disk scan. Invalidate results
+    // when the configured root changes or the modal closes.
+    setScan(null);
+    scanRequest.current += 1;
+    return () => { scanRequest.current += 1; };
+  }, [root]);
 
   const handleBrowse = async () => {
     const picked = await openDialog({
@@ -245,9 +241,14 @@ function EasyLanguageEnvironmentCard({
   };
 
   const handleScan = async () => {
+    if (scanBusy.current) return;
+    scanBusy.current = true;
+    const request = ++scanRequest.current;
     try {
       setIsScanning(true);
+      setScan(null);
       const result = await scanEasyLanguageEnv(root);
+      if (request !== scanRequest.current) return;
       setScan(result);
       if (result.exists) {
         toast.success(
@@ -259,8 +260,11 @@ function EasyLanguageEnvironmentCard({
         toast.error("未找到易语言安装目录");
       }
     } catch (err) {
-      toast.error(`扫描失败：${err instanceof Error ? err.message : String(err)}`);
+      if (request === scanRequest.current) {
+        toast.error(`扫描失败：${err instanceof Error ? err.message : String(err)}`);
+      }
     } finally {
+      scanBusy.current = false;
       setIsScanning(false);
     }
   };
@@ -308,9 +312,15 @@ function EasyLanguageEnvironmentCard({
             ) : (
               <MagnifyingGlass className="h-4 w-4" />
             )}
-            扫描
+            {isScanning ? "扫描中…" : "扫描环境"}
           </Button>
         </div>
+
+        <p role="status" className="settings-hint" aria-live="polite">
+          {isScanning
+            ? "正在后台检查工具链、支持库和例程，可以继续切换设置或关闭弹窗。"
+            : !scan ? "点击“扫描环境”检查工具链与文件统计，打开本页不会自动扫描磁盘。" : scan.counts_complete === false ? "部分目录未完成统计，当前数量仅包含已扫描文件，请查看下方提示。" : "环境扫描完成。"}
+        </p>
 
         <div className="settings-directory-grid">
           <DirectorySettingField

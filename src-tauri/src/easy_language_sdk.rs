@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+static ENV_SCAN: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EasyLanguageLibraryInfo {
@@ -51,6 +54,7 @@ pub struct EasyLanguageEnvScan {
     pub support_libraries: Vec<EasyLanguageLibraryInfo>,
     pub modules: Vec<EasyLanguageModuleInfo>,
     pub counts: EasyLanguageEnvCounts,
+    pub counts_complete: bool,
     pub warnings: Vec<String>,
 }
 
@@ -81,18 +85,73 @@ fn pick_root(root_path: Option<String>) -> PathBuf {
     PathBuf::from(r"D:\e")
 }
 
-fn count_matching_files(root: &Path, wanted_ext: &[&str]) -> usize {
-    let mut count = 0usize;
-    let mut stack = vec![root.to_path_buf()];
+// Do not follow links/junctions: an installation may link back to its parent.
+fn is_directory_link(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return true; // FILE_ATTRIBUTE_REPARSE_POINT (includes junctions)
+        }
+    }
+    metadata.file_type().is_symlink()
+}
 
-    while let Some(path) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&path) else {
+fn count_matching_files(
+    root: &Path,
+    wanted_ext: &[&str],
+    max_entries: usize,
+    max_duration: Duration,
+) -> (usize, bool) {
+    let mut count = 0usize;
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    let mut visited = 0usize;
+    let mut complete = true;
+    let started = Instant::now();
+
+    while let Some((path, depth)) = stack.pop() {
+        if started.elapsed() >= max_duration {
+            return (count, false);
+        }
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            complete = false;
             continue;
         };
-        for entry in entries.flatten() {
+        if is_directory_link(&metadata) {
+            complete = false;
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&path) else {
+            complete = false;
+            continue;
+        };
+        for entry in entries {
+            if visited >= max_entries || started.elapsed() >= max_duration {
+                return (count, false);
+            }
+            visited += 1;
+            let Ok(entry) = entry else {
+                complete = false;
+                continue;
+            };
             let p = entry.path();
-            if p.is_dir() {
-                stack.push(p);
+            let Ok(metadata) = fs::symlink_metadata(&p) else {
+                complete = false;
+                continue;
+            };
+            if is_directory_link(&metadata) {
+                complete = false;
+                continue;
+            }
+            if metadata.is_dir() {
+                if depth < 64 {
+                    stack.push((p, depth + 1));
+                } else {
+                    complete = false;
+                }
+                continue;
+            }
+            if !metadata.is_file() {
                 continue;
             }
             let ext = p
@@ -106,7 +165,7 @@ fn count_matching_files(root: &Path, wanted_ext: &[&str]) -> usize {
         }
     }
 
-    count
+    (count, complete)
 }
 
 fn count_command_docs(root: &Path) -> usize {
@@ -205,7 +264,21 @@ fn tool(root: &Path, name: &str, relative: &str) -> EasyLanguageToolInfo {
 }
 
 #[tauri::command]
-pub fn scan_easy_language_env(root_path: Option<String>) -> Result<EasyLanguageEnvScan, String> {
+pub async fn scan_easy_language_env(
+    root_path: Option<String>,
+) -> Result<EasyLanguageEnvScan, String> {
+    let permit = ENV_SCAN
+        .try_acquire()
+        .map_err(|_| "环境正在扫描，请等待当前扫描完成")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        scan_environment(root_path)
+    })
+    .await
+    .map_err(|error| format!("环境扫描失败：{error}"))?
+}
+
+fn scan_environment(root_path: Option<String>) -> Result<EasyLanguageEnvScan, String> {
     let root = pick_root(root_path);
     let exists = root.exists();
 
@@ -232,6 +305,7 @@ pub fn scan_easy_language_env(root_path: Option<String>) -> Result<EasyLanguageE
                 sample_e_files: 0,
                 help_html_files: 0,
             },
+            counts_complete: true,
             warnings: vec![format!("未找到易语言安装目录：{}", path_string(&root))],
         });
     }
@@ -276,6 +350,23 @@ pub fn scan_easy_language_env(root_path: Option<String>) -> Result<EasyLanguageE
         && lib_dir.exists()
         && static_lib_dir.exists();
 
+    let (sample_e_files, samples_complete) =
+        count_matching_files(&root, &["e"], 100_000, Duration::from_secs(10));
+    let (help_html_files, help_complete) = if help_dir.exists() {
+        count_matching_files(
+            &help_dir,
+            &["htm", "html"],
+            100_000,
+            Duration::from_secs(10),
+        )
+    } else {
+        (0, true)
+    };
+    let counts_complete = samples_complete && help_complete;
+    if !counts_complete {
+        warnings.push("文件统计未完成：已跳过目录链接、不可访问目录或超出扫描预算的文件，显示数量为已扫描部分。".to_string());
+    }
+
     Ok(EasyLanguageEnvScan {
         root: path_string(&root),
         exists,
@@ -300,16 +391,71 @@ pub fn scan_easy_language_env(root_path: Option<String>) -> Result<EasyLanguageE
         counts: EasyLanguageEnvCounts {
             support_library_files: support_libraries.len(),
             module_files: modules.len(),
-            sample_e_files: count_matching_files(&root, &["e"]),
-            help_html_files: if help_dir.exists() {
-                count_matching_files(&help_dir, &["htm", "html"])
-            } else {
-                0
-            },
+            sample_e_files,
+            help_html_files,
         },
+        counts_complete,
         tools,
         support_libraries,
         modules,
         warnings,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn environment_counts_nested_files_and_reports_partial_walks() {
+        let root = std::env::temp_dir().join(format!(
+            "eaicoding-env-test-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir_all(root.join("help/core/nested")).unwrap();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::create_dir_all(root.join("ecom")).unwrap();
+        for name in [
+            "example.E",
+            "help/core/cmd1.htm",
+            "help/core/nested/info.html",
+            "lib/core.fne",
+            "ecom/sample.ec",
+        ] {
+            fs::write(root.join(name), b"fixture").unwrap();
+        }
+        let scan = scan_environment(Some(path_string(&root))).unwrap();
+        assert!(scan.counts_complete);
+        assert_eq!(scan.counts.sample_e_files, 1);
+        assert_eq!(scan.counts.help_html_files, 2);
+        assert_eq!(scan.counts.support_library_files, 1);
+        assert_eq!(scan.counts.module_files, 1);
+        assert_eq!(scan.support_libraries[0].command_doc_count, 1);
+        assert!(!count_matching_files(&root, &["e"], 1, Duration::from_secs(1)).1);
+        assert!(!count_matching_files(&root, &["e"], 100, Duration::ZERO).1);
+
+        #[cfg(windows)]
+        {
+            let junction = root.join("help").join("core").join("loop");
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&junction)
+                .arg(&root)
+                .output()
+                .unwrap();
+            assert!(
+                status.status.success(),
+                "{}",
+                String::from_utf8_lossy(&status.stderr)
+            );
+            let linked = scan_environment(Some(path_string(&root))).unwrap();
+            assert!(!linked.counts_complete);
+            assert_eq!(linked.counts.sample_e_files, 1);
+            assert_eq!(linked.counts.help_html_files, 2);
+            // Remove the junction itself before cleaning up the fixture.
+            fs::remove_dir(junction).unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 }

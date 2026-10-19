@@ -7,6 +7,7 @@ mod jingyi_search;
 mod llm_models;
 mod llm_proxy;
 mod local_files;
+mod system_tray;
 mod task_cancel;
 mod window_effects;
 mod workspace;
@@ -26,17 +27,12 @@ use local_files::{
     write_text_file,
 };
 use task_cancel::cancel_agent_task;
-use tauri::Manager;
 use window_effects::setup_window_effects;
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            system_tray::show_main_window(app);
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -47,7 +43,16 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             setup_window_effects(app);
+            system_tray::setup(app.handle())?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .invoke_handler({
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![

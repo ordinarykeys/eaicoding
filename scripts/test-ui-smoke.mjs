@@ -43,6 +43,11 @@ idbStorage.setItem = async (name, value) => {
 };
 mockIPC((cmd, args) => {
   window.fixtureIpc.push(cmd);
+  if (cmd === 'scan_easy_language_env') {
+    return new Promise(resolve => { window.fixtureResolveEnv = () => resolve({ root: args.rootPath, exists: true, is_compile_ready: true,
+      tools: [], support_libraries: [], modules: [], warnings: [], counts_complete: true,
+      counts: { support_library_files: 17, module_files: 12, sample_e_files: 3, help_html_files: 42 } }); });
+  }
   if (cmd === 'default_workspace') return 'D:/fixture/workspace';
   if (cmd === 'plugin:clipboard-manager|write_text') {
     if (window.fixtureFailNativeClipboard) throw new Error('fixture native clipboard unavailable');
@@ -292,15 +297,38 @@ try {
   await petSwitch.uncheck();
   await page.screenshot({ path: path.join(screenshots, 'settings-appearance.png'), animations: 'disabled' });
   await page.getByRole('tab', { name: '易语言环境', exact: true }).click();
+  assert.equal(await page.evaluate(() => window.fixtureIpc.filter(cmd => cmd === 'scan_easy_language_env').length), 0, 'opening the environment must not scan the disk');
+  const scanButton = page.getByRole('button', { name: '扫描环境', exact: true });
+  await scanButton.click();
+  await page.getByRole('button', { name: '扫描中…', exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '扫描中…', exact: true }).isDisabled(), true);
+  await page.getByRole('tab', { name: '通用', exact: true }).click();
+  await page.getByRole('radio', { name: '浅色', exact: true }).waitFor();
+  await page.getByRole('tab', { name: '易语言环境', exact: true }).click();
+  assert.equal(await page.evaluate(() => window.fixtureIpc.filter(cmd => cmd === 'scan_easy_language_env').length), 1, 'switching tabs during a scan must not launch duplicates');
+  await page.getByRole('textbox', { name: '安装目录', exact: true }).fill('D:/fixture/new-environment');
+  await page.evaluate(() => window.fixtureResolveEnv());
+  await scanButton.waitFor();
+  await page.getByRole('status').filter({ hasText: '打开本页不会自动扫描磁盘' }).waitFor();
+  assert.equal(await page.getByText('编译链状态正常', { exact: true }).count(), 0, 'an old root must not publish a stale scan result');
+  await scanButton.click();
+  await page.evaluate(() => window.fixtureResolveEnv());
+  await page.getByText('编译链状态正常', { exact: true }).waitFor();
   await page.getByRole('textbox', { name: '源码生成目录', exact: true }).fill('D:/fixture/generated');
   assert.equal(await page.evaluate(() => window.fixtureSettings.getState().easyLanguageGenerateDir), 'D:/fixture/generated');
   await page.screenshot({ path: path.join(screenshots, 'settings-environment.png'), animations: 'disabled' });
+  await scanButton.click();
+  await page.getByRole('button', { name: '扫描中…', exact: true }).waitFor();
   await page.keyboard.press('Escape');
   await settingsDialog.waitFor({ state: 'hidden' });
   assert.equal(await page.getByRole('textbox', { name: '消息输入框', exact: true }).inputValue(), '设置弹窗关闭后保留这份需求');
   assert.equal(await page.getByRole('button', { name: '设置', exact: true }).evaluate(node => node === document.activeElement), true, 'closing settings restores focus to its trigger');
   await page.getByRole('button', { name: '设置', exact: true }).click();
   assert.equal(await page.getByRole('tab', { name: '易语言环境', selected: true }).count(), 1, 'reopening retains the selected section');
+  await page.evaluate(() => window.fixtureResolveEnv());
+  await page.getByRole('status').filter({ hasText: '打开本页不会自动扫描磁盘' }).waitFor();
+  assert.equal(await page.getByText('编译链状态正常', { exact: true }).count(), 0, 'a closed modal must not publish results into the new one');
+  console.log('PASS manual background environment scan, pending tab/close responsiveness, duplicate prevention and stale result isolation');
   await page.getByRole('tab', { name: '模型', exact: true }).click();
   await openProviderEditor();
   for (const viewport of [{ width: 960, height: 600 }, { width: 390, height: 700 }]) {

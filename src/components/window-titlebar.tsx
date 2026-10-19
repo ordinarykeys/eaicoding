@@ -170,6 +170,7 @@ export function WindowTitlebar() {
         <button
           type="button"
           aria-label="Close"
+          title="隐藏到系统托盘"
           className="window-control window-control-close"
           onClick={close}
         >

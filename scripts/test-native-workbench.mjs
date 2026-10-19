@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -55,6 +57,20 @@ try {
   await invoke('plugin:clipboard-manager|write_text', { text: 'EAiCoding 原生复制验证' });
   console.log('PASS native opener ACL, workspace listing and clipboard');
 
+  const envRoot = path.join(fixtureRoot, 'environment');
+  for (const folder of ['help/core/nested', 'lib', 'ecom']) await mkdir(path.join(envRoot, folder), { recursive: true });
+  for (const file of ['example.E', 'help/core/cmd1.htm', 'help/core/nested/info.html', 'lib/core.fne', 'ecom/sample.ec']) {
+    await writeFile(path.join(envRoot, file), 'fixture');
+  }
+  const [environment, responsiveListing] = await Promise.all([
+    invoke('scan_easy_language_env', { rootPath: envRoot }),
+    invoke('list_workspace_directory', { root: fixtureRoot }),
+  ]);
+  assert.equal(environment.counts_complete, true);
+  assert.deepEqual(environment.counts, { support_library_files: 1, module_files: 1, sample_e_files: 1, help_html_files: 2 });
+  assert(responsiveListing.entries.length > 0);
+  console.log('PASS async native environment command and actual nested fixture counts alongside workspace IPC');
+
   await page.evaluate(async () => {
     window.smokeTerminalOutput = [];
     const handler = window.__TAURI_INTERNALS__.transformCallback(event => window.smokeTerminalOutput.push(event.payload), false);
@@ -88,6 +104,23 @@ try {
   await invoke('browser_action', { id: browserId, action: 'reload' });
   await invoke('browser_close', { id: browserId });
   console.log('PASS real child webview navigation/layout/close and isolation from desktop commands');
+
+  assert.notEqual(await invoke('plugin:tray|get_by_id', { id: 'main-tray' }), null, 'system tray icon is registered');
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  for (let attempt = 0; attempt < 30; attempt++) {
+    if (!await invoke('plugin:window|is_visible', { label: 'main' })) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(await invoke('plugin:window|is_visible', { label: 'main' }), false, 'close hides the live window');
+  assert(process.env.EAICODING_NATIVE_TEST_EXE, 'isolated test executable is required');
+  await promisify(execFile)(process.env.EAICODING_NATIVE_TEST_EXE, [], { windowsHide: true, timeout: 15000 });
+  for (let attempt = 0; attempt < 30; attempt++) {
+    if (await invoke('plugin:window|is_visible', { label: 'main' })) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(await invoke('plugin:window|is_visible', { label: 'main' }), true, 'launching again restores the existing hidden window');
+  assert((await invoke('list_workspace_directory', { root: fixtureRoot })).entries.length > 0);
+  console.log('PASS tray registration, close-to-tray without process exit and single-instance window restoration');
 } finally {
   if (page) { await invoke('terminal_close', { id: terminalId }).catch(() => {}); await invoke('browser_close', { id: browserId }).catch(() => {}); }
   await browser?.close(); await new Promise(resolve => server.close(resolve));

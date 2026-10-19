@@ -44,6 +44,7 @@ export interface EasyLanguageEnvScan {
   support_libraries: EasyLanguageLibraryInfo[];
   modules: EasyLanguageModuleInfo[];
   counts: EasyLanguageEnvCounts;
+  counts_complete?: boolean;
   warnings: string[];
 }
 

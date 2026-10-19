@@ -20,6 +20,7 @@ try {
   $env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $fixtureDir 'webview-profile'
   $env:EAICODING_CDP_URL = 'http://127.0.0.1:9334'
   $env:EAICODING_WORKBENCH_SMOKE_DIR = $fixtureDir
+  $env:EAICODING_NATIVE_TEST_EXE = Join-Path $repoRoot 'src-tauri\target\debug\tauri-app.exe'
   $probeProcess = Start-Process -FilePath (Join-Path $repoRoot 'src-tauri\target\debug\tauri-app.exe') -WorkingDirectory $repoRoot -WindowStyle Hidden -RedirectStandardError (Join-Path $fixtureDir 'native-stderr.txt') -PassThru
   & node scripts/test-native-workbench.mjs
   if ($LASTEXITCODE -ne 0) { throw 'Native workbench smoke failed' }
@@ -30,5 +31,6 @@ try {
   $env:WEBVIEW2_USER_DATA_FOLDER = $previousDataFolder
   Remove-Item Env:\EAICODING_CDP_URL -ErrorAction SilentlyContinue
   Remove-Item Env:\EAICODING_WORKBENCH_SMOKE_DIR -ErrorAction SilentlyContinue
+  Remove-Item Env:\EAICODING_NATIVE_TEST_EXE -ErrorAction SilentlyContinue
   Pop-Location
 }
