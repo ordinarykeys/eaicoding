@@ -1,10 +1,10 @@
 mod crypto;
+mod deepseek_account;
 mod eagent_tools;
 mod easy_language_sdk;
 mod ecode_parser;
 mod gui_project;
 mod jingyi_search;
-mod llm_models;
 mod llm_proxy;
 mod local_files;
 mod system_tray;
@@ -20,7 +20,6 @@ use ecode_parser::{
     generate_gui_project, parse_efile, summarize_ecode_project_for_agent,
 };
 use jingyi_search::search_jingyi_module_rust;
-use llm_models::fetch_llm_models;
 use llm_proxy::{llm_proxy_request, llm_proxy_stream};
 use local_files::{
     apply_text_patch_for_agent, copy_user_module_to_local, read_text_file_for_agent,
@@ -37,6 +36,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(workspace::Terminals::default())
+        .manage(deepseek_account::AccountState::default())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -68,7 +68,12 @@ pub fn run() {
                 detect_eagent_tools,
                 scan_easy_language_env,
                 search_jingyi_module_rust,
-                fetch_llm_models,
+                deepseek_account::deepseek_account_status,
+                deepseek_account::deepseek_account_start,
+                deepseek_account::deepseek_account_cancel,
+                deepseek_account::deepseek_account_logout,
+                deepseek_account::deepseek_account_browser,
+                deepseek_account::deepseek_account_present,
                 llm_proxy_request,
                 llm_proxy_stream,
                 cancel_agent_task,

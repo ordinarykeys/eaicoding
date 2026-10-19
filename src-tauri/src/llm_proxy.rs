@@ -1,9 +1,7 @@
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::LazyLock;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
@@ -13,12 +11,7 @@ const MAX_TIMEOUT_SECS: u64 = 300;
 // Shared client: reuses the connection pool / TLS sessions across requests.
 // No global total timeout here — non-stream requests set a per-request
 // timeout, streaming uses an idle-read timeout per chunk instead.
-static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
-    Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .build()
-        .expect("failed to build shared LLM proxy client")
-});
+use crate::deepseek_account::{expire, inference_headers, ACCOUNT_HTTP as HTTP_CLIENT};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -147,7 +140,10 @@ fn build_headers(headers: Option<HashMap<String, String>>) -> Result<HeaderMap, 
 }
 
 #[tauri::command]
-pub async fn llm_proxy_request(request: LlmProxyRequest) -> Result<LlmProxyResponse, String> {
+pub async fn llm_proxy_request(
+    app: AppHandle,
+    request: LlmProxyRequest,
+) -> Result<LlmProxyResponse, String> {
     let url = request.url.trim();
     if url.is_empty() {
         return Err("LLM request URL is empty".to_string());
@@ -168,12 +164,13 @@ pub async fn llm_proxy_request(request: LlmProxyRequest) -> Result<LlmProxyRespo
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .clamp(1, MAX_TIMEOUT_SECS);
 
+    let (headers, token) = inference_headers(&app, url, build_headers(request.headers)?).await?;
     let mut builder = match method.as_str() {
         "GET" => HTTP_CLIENT.get(url),
         _ => HTTP_CLIENT.post(url),
     }
     .timeout(Duration::from_secs(timeout_secs))
-    .headers(build_headers(request.headers)?);
+    .headers(headers);
 
     if let Some(body) = request.body {
         builder = builder.json(&body);
@@ -184,6 +181,10 @@ pub async fn llm_proxy_request(request: LlmProxyRequest) -> Result<LlmProxyRespo
         .await
         .map_err(|err| format!("LLM proxy request failed: {err}"))?;
     let status = response.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        expire(&app, &token).await;
+        return Err("DeepSeek 登录已失效，请重新登录。".into());
+    }
     let status_text = status.canonical_reason().unwrap_or("").to_string();
     let text = response
         .text()
@@ -231,11 +232,12 @@ async fn llm_proxy_stream_inner(
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .clamp(1, MAX_TIMEOUT_SECS);
 
+    let (headers, token) = inference_headers(&app, url, build_headers(request.headers)?).await?;
     let mut builder = match method.as_str() {
         "GET" => HTTP_CLIENT.get(url),
         _ => HTTP_CLIENT.post(url),
     }
-    .headers(build_headers(request.headers)?);
+    .headers(headers);
 
     if let Some(body) = request.body {
         builder = builder.json(&body);
@@ -250,6 +252,10 @@ async fn llm_proxy_stream_inner(
         .map_err(|_| format!("LLM proxy request timed out after {timeout_secs}s"))?
         .map_err(|err| format!("LLM proxy request failed: {err}"))?;
     let status = response.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        expire(&app, &token).await;
+        return Err("DeepSeek 登录已失效，请重新登录。".into());
+    }
     let status_text = status.canonical_reason().unwrap_or("").to_string();
 
     if !status.is_success() {

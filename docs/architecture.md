@@ -7,7 +7,7 @@
 | 层 | 主要入口 | 职责 |
 | --- | --- | --- |
 | 桌面 UI | `src/components/chat-view.tsx`、`chat-composer.tsx` | 对话、文件附件、模型选择、运行状态与取消 |
-| 设置 | `src/components/settings-view.tsx`、`deepseek-profile-card.tsx` | 弹窗导航、配置草稿、密钥编辑与校验 |
+| 设置 | `src/components/settings-view.tsx`、`deepseek-profile-card.tsx` | 弹窗导航、账号管理、模型草稿与校验 |
 | 状态与存储 | `src/stores/` | IndexedDB 设置、会话、配置迁移及中断恢复 |
 | Agent | `src/services/agent/runner.ts`、`tools.ts` | 组装上下文、原生工具循环、结果检查及交付判定 |
 | LLM | `src/services/llm/index.ts`、`openai.ts` | 仅创建 DeepSeek Chat Completions 适配器，处理 SSE 与工具参数 |
@@ -19,9 +19,9 @@
 
 仅公开 `deepseek-flash`（DeepSeek-V4.1-Flash）和 `deepseek-v4-pro`（DeepSeek-V4-Pro）。目录及旧模型 ID 迁移统一在 `src/lib/deepseek-models.ts`；输入区选择改变实际请求模型。旧协议适配器文件仍可能存在，但桌面模型工厂不会使用其他厂商。
 
-请求通过 Rust 网络代理访问 `/chat/completions`。API Key 在本机加密保存，编辑框不回填明文；加密或存储失败会恢复原配置。模型连接检测通过 `/models` 筛选支持目录。
+请求通过 Rust 网络代理访问官方 `/chat/completions`。`deepseek_account.rs` 实现 PKCE、随机回调端口、状态校验、账号凭据加密保存及过期处理；`x-dsh-auth-token` 只在 Rust 注入，前端不接触 Token。两类网络代理均固定官方 origin 且禁跟随重定向；旧请求的 401 不会清除已换新的凭据。登录页先于工作区挂载，后台读取状态后再显示原生窗口，避免主界面闪现。
 
-默认最大输出为 256000 Token，温度 0.2。设置持久化版本为 v7：只将旧版官方端点的默认 8192 迁为新默认，其他有效自定义值及代理额度保留。显式输出额度约束当前请求，截断恢复不会私自扩大该值。最终答案只进行本地证据和 EPL 结构检查；不再发起独立 Reviewer 请求或重复编译。
+默认最大输出为 256000 Token，温度 0.2。设置持久化版本为 v8：清除旧密钥、固定官方接口；保留有效模型参数，旧版官方默认 8192 升级为新默认。显式输出额度约束当前请求，截断恢复不会私自扩大该值。最终答案只进行本地证据和 EPL 结构检查；不再发起独立 Reviewer 请求或重复编译。
 
 ## 执行与完成
 
@@ -95,3 +95,9 @@ Harness 的 DeepSeek 默认输出额度为 256000，使用 Messages 协议；本
 `system_tray.rs` 创建 Windows 托盘图标与打开/退出菜单；主窗口的 `CloseRequested` 由 Rust 拦截并隐藏，保留 WebView 和当前任务。托盘左键、打开菜单和单实例回调复用恢复逻辑；明确选择退出时才调用应用退出。
 
 易语言环境页仅在点击“扫描环境”后调用异步命令，文件遍历由 `spawn_blocking` 执行，不占桌面事件线程；全局信号量拒绝重叠扫描。前端用请求序号丢弃目录更改或弹窗关闭后的旧结果。递归文件统计跳过符号链接及 Windows junction，每轮限制 100,000 条目、64 层及 10 秒检查预算；单次系统文件调用自身不承诺超时。遇到跳过项或达到预算时返回 `counts_complete: false` 与警告，数量仅代表已扫描部分。
+
+## 安装与首次启动
+
+`src-tauri/installer/` 直接适配 Harness 的原生展示源码，`scripts/prepare-installer.ps1` 编译 x86 DWM/GDI+ helper 并生成 EAiCoding 品牌位图。固定 600×600，按钮/路径/完成页布局和动画保留原实现；进度源改接 Tauri 的原生文件安装进度，成功完成才显示 100%。安装、WebView2 检查、产品注册及卸载继续由 Tauri CLI 2.10.1 模板处理，安装路径使用 Harness 的本地路径/重解析点/目录归属检查。
+
+授权网络阶段可即时取消；凭据提交在互斥锁中完成，提交事务不被外部 future 的取消中断。取消或退出后，迟到的交换结果不能写入凭据。退出登录卸载工作区时中止正在运行的 Agent，迟到的模型输出不再覆盖已停止的记录。所有授权返回值仅投影非敏感信息到前端。登录和安装适配来源见根目录第三方声明。

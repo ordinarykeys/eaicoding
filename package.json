@@ -19,14 +19,14 @@
     "test:ui": "node scripts/test-ui-smoke.mjs",
     "test:native-gui": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-native-gui.ps1",
     "benchmark:agent": "node scripts/benchmark-agent.mjs",
-    "test:provider": "node scripts/provider-regression.mjs",
     "promptfoo:agent": "npx promptfoo@latest eval -c promptfoo.agent.yaml",
     "preview": "vite preview",
     "tauri": "tauri",
     "package:portable": "node scripts/package-portable.mjs",
     "package:release": "node scripts/package-release.mjs",
     "test:module-parser": "node scripts/test-module-parser.mjs",
-    "test:native-workbench": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-native-workbench.ps1"
+    "test:native-workbench": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-native-workbench.ps1",
+    "prepare:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-installer.ps1"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run prepare:installer && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -14,13 +14,14 @@
       {
         "label": "main",
         "title": "EAiCoding",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 960,
-        "minHeight": 600,
+        "width": 600,
+        "height": 700,
+        "visible": false,
         "decorations": false,
         "shadow": false,
-        "resizable": true
+        "resizable": false,
+        "maximizable": false,
+        "center": true
       }
     ],
     "security": {
@@ -29,14 +30,26 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "resources": {
-      "resources/eagent-tools": "eagent-tools"
+      "resources/eagent-tools": "eagent-tools",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
     },
-    "icon": ["icons/icon.ico"],
+    "icon": [
+      "icons/icon.ico"
+    ],
     "windows": {
       "nsis": {
-        "installerIcon": "icons/icon.ico"
+        "installerIcon": "icons/icon.ico",
+        "template": "installer/installer.nsi",
+        "installerHooks": "installer/ui.nsh",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "installMode": "currentUser"
       }
     }
   }

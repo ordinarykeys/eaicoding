@@ -68,9 +68,9 @@ $env:EAICODING_BROWSER_CHANNEL = 'msedge'
 npm run test:ui
 ```
 
-脚本依赖当前 `dist/`，请先完成 `npm run build`。它启动本地测试服务器和临时浏览器上下文，模拟密钥、文件、模型流和工具结果，不使用个人会话或密钥。截图写入 `.tmp/ui-validation/`，不提交 Git。
+脚本依赖当前 `dist/`，请先完成 `npm run build`。它启动本地测试服务器和临时浏览器上下文，模拟账号授权状态、文件、模型流和工具结果，不使用个人会话或密钥。截图写入 `.tmp/ui-validation/`，不提交 Git。
 
-覆盖设置弹窗、加密/存储失败回滚、模型选择及持久化、输入法与草稿、10,000 条模拟模块分页、Markdown/推理分离、工具过程、文件页签/分页/哈希、停止和中断恢复、窄窗口、主题及代码卡片。环境页验证进页不扫描、扫描期间切页与关闭、防重复调用及过时结果隔离。持续流还会断言 DOM 与行高稳定、底部对齐及上翻阅读保持。
+覆盖首次登录、浏览器等待/取消/失败重试/退出、账号与工作区切换、设置弹窗、存储失败回滚、模型选择及持久化、输入法与草稿、10,000 条模拟模块分页、Markdown/推理分离、工具过程、文件页签/分页/哈希、停止和中断恢复、窄窗口、主题及代码卡片。环境页验证进页不扫描、扫描期间切页与关闭、防重复调用及过时结果隔离。持续流还会断言 DOM 与行高稳定、底部对齐及上翻阅读保持。
 
 ## 原生工作区验证
 
@@ -88,9 +88,7 @@ npm run test:native-gui -- -EasyLanguageRoot D:\e
 
 ## 可选的真实模型检查
 
-`npm run test:provider` 需要显式设置 `PROVIDER_BASE_URL`、`PROVIDER_API_KEY`、`PROVIDER_MODEL`，协议为 `openai-chat-completions`，只支持 DeepSeek。默认小额输出仅用于接口冒烟；长代码任务可通过 `PROVIDER_MAX_TOKENS` 指定额度。
-
-通过当前终端的环境变量传入密钥，执行后清除，不写入源码或提交的配置。真实模型检查会产生 API 请求和费用，不属于离线回归。本轮没有执行该项。
+真实服务验证通过应用的 DeepSeek 官方浏览器授权入口完成，再在工作区发送任务。应用不接受 API Key 或自定义服务地址；不要从账号文件提取令牌用于测试。真实授权与推理不属于离线回归，本轮没有使用真实账号执行。
 
 ## 打包与提交
 
@@ -121,3 +119,13 @@ npm run test:native-gui -- -EasyLanguageRoot D:\e
 0.1.3 已完成 Windows x64 NSIS 安装包与便携版构建，附件位于 `release/v0.1.3/`。已验证产品版本、x64 PE、22 个工具链文件、安装器/ZIP 完整性和 SHA256 清单；安装版与便携版主程序仅有 Tauri 包类型标记的三字节差异。没有自动安装、上传附件或发布 GitHub Release，也没有执行真实模型请求。
 
 Tauri JS API 固定在 2.10.x、剪贴板插件在 2.3.x，与 Rust 的同一 minor 版本一致。新增 Worker 使用 ES Module 格式以支持本地嵌入模型的动态加载。Vite 仍有大包与混合导入提示。
+
+## 授权与安装器离线验证
+
+`cargo test --offline --locked --lib deepseek_account::tests --manifest-path src-tauri/Cargo.toml` 使用随机回环端口和临时目录，验证 PKCE、重复/错 state 回调、真实 HTTP 交换、加密保存和重启恢复、退出清理及迟到结果隔离。模拟 token 不进入前端配置，不读取真实账号凭据。
+
+`npm run prepare:installer` 需要 Visual Studio C++ Build Tools（x86/x64）和 Windows SDK；普通前端构建无需该步骤。`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-installer.ps1` 使用同一套原生安装界面，但只向 `.tmp` 写入无害文本文件；不安装产品、不写产品注册表、不启动实际程序。截图与测试产物均留在 `.tmp`。
+
+首次启动以未登录窗口验证原生 600×700 尺寸和固定大小行为；账号网络只在用户点击登录后发生。真实官方账号授权和推理不属于无密钥回归。
+
+2026-10-19 授权扩展验证已通过：5 项账号后端测试覆盖完整本地 HTTP 授权、PKCE、凭据恢复、取消竞态与后台鉴权头；Agent runtime 覆盖旧配置迁移后清除密钥及固定官方地址。Edge 界面回归验证退出登录会中止正在运行的 Agent，迟到输出不会覆盖已停止的记录。原生工作区测试验证登录窗口 600×700、不可调整大小、非官方地址与未登录推理均在发送网络请求前拒绝；安装器使用无害 fixture 完成欢迎页、展开路径、安装进度至 100% 和完成页验证。

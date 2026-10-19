@@ -36,6 +36,8 @@ window.isTauri = true;
 window.fixtureEmit = emit;
 window.fixtureIpc = [];
 window.fixtureRequests = [];
+window.fixtureAccountView = { signedIn: false, name: null, contact: null, phase: 'signed-out', error: null, attemptId: null };
+window.fixtureAccountNumber = 0;
 const writeSettings = idbStorage.setItem.bind(idbStorage);
 idbStorage.setItem = async (name, value) => {
   if (window.fixtureFailStorage && name === 'eaicoding-settings') throw new Error('fixture IndexedDB write failed');
@@ -43,6 +45,20 @@ idbStorage.setItem = async (name, value) => {
 };
 mockIPC((cmd, args) => {
   window.fixtureIpc.push(cmd);
+  if (cmd === 'deepseek_account_status') {
+    if (window.fixtureAccountUnavailable) return { ...window.fixtureAccountView, signedIn: false };
+    return { ...window.fixtureAccountView };
+  }
+  if (cmd === 'deepseek_account_start') {
+    window.fixtureAccountView = { ...window.fixtureAccountView, signedIn: false, phase: 'initializing', error: null, attemptId: 'attempt-' + (++window.fixtureAccountNumber) };
+    return window.fixtureAccountView;
+  }
+  if (cmd === 'deepseek_account_cancel') {
+    if (window.fixtureAccountView.attemptId === args.attemptId) window.fixtureAccountView = { ...window.fixtureAccountView, phase: 'signed-out', attemptId: null };
+    return window.fixtureAccountView;
+  }
+  if (cmd === 'deepseek_account_browser') { window.fixtureBrowserAction = args; return null; }
+  if (cmd === 'deepseek_account_logout') { window.fixtureAccountView = { signedIn: false, name: null, contact: null, phase: 'signed-out', error: null, attemptId: null }; return null; }
   if (cmd === 'scan_easy_language_env') {
     return new Promise(resolve => { window.fixtureResolveEnv = () => resolve({ root: args.rootPath, exists: true, is_compile_ready: true,
       tools: [], support_libraries: [], modules: [], warnings: [], counts_complete: true,
@@ -72,6 +88,7 @@ mockIPC((cmd, args) => {
   }
   if (cmd === 'llm_proxy_stream') {
     window.fixtureRequests.push(args.request.body);
+    if (args.request.headers.Authorization) throw new Error('Renderer must not send account credentials');
     if (window.fixtureStreamMode) {
       window.fixturePendingRequest = args.request;
       return new Promise(resolve => { window.fixtureResolveStream = resolve; });
@@ -147,6 +164,33 @@ try {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await page.getByTestId('deepseek-login').waitFor();
+  await page.setViewportSize({ width: 600, height: 700 });
+  assert.equal(await page.locator('#deepseek-key').count(), 0);
+  assert.equal(await page.getByRole('textbox', { name: '消息输入框', exact: true }).count(), 0, 'workspace must not mount before login');
+  await page.screenshot({ path: path.join(screenshots, 'login-entry.png'), animations: 'disabled' });
+  const loginGeometry = await page.locator('.login-actions .login-primary').boundingBox();
+  assert.equal(loginGeometry.width, 240); assert.equal(loginGeometry.height, 44);
+  await page.getByRole('button', { name: '登录 DeepSeek', exact: true }).click();
+  await page.evaluate(async () => { window.fixtureAccountView.phase = 'waiting-browser'; await window.fixtureEmit('deepseek-account-changed'); });
+  await page.getByText('请在浏览器中完成登录', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '复制登录链接', exact: true }).click();
+  assert.equal(await page.evaluate(() => window.fixtureBrowserAction.copy), true);
+  await page.screenshot({ path: path.join(screenshots, 'login-waiting.png'), animations: 'disabled' });
+  await page.getByRole('button', { name: '取消登录', exact: true }).click();
+  await page.getByRole('button', { name: '登录 DeepSeek', exact: true }).waitFor();
+  await page.getByRole('button', { name: '登录 DeepSeek', exact: true }).click();
+  await page.evaluate(async () => { window.fixtureAccountView = { ...window.fixtureAccountView, phase: 'failed', error: 'fixture 官方授权暂时不可用', attemptId: null }; await window.fixtureEmit('deepseek-account-changed'); });
+  await page.getByText('fixture 官方授权暂时不可用').waitFor();
+  await page.getByRole('button', { name: '重新登录 DeepSeek', exact: true }).click();
+  await page.evaluate(async () => { window.fixtureAccountView = { signedIn: true, name: '测试账号', contact: 'fixture@example.invalid', phase: 'signed-in', error: null, attemptId: null }; await window.fixtureEmit('deepseek-account-changed'); });
+  await page.getByRole('textbox', { name: '消息输入框', exact: true }).waitFor();
+  await page.setViewportSize({ width: 1366, height: 900 });
+  console.log('PASS login-first gate, Harness 600x700 geometry, browser/copy actions, cancellation, failure/retry and account-to-workspace transition');
+  assert.equal(await page.getByRole('complementary', { name: '工作区面板', exact: true }).isVisible(), false, 'the right workspace starts collapsed, as in Harness');
+  await page.getByRole('button', { name: '打开工作区', exact: true }).click();
+  await page.getByRole('complementary', { name: '工作区面板', exact: true }).waitFor();
+  await page.getByRole('button', { name: '收起工作区', exact: true }).click();
   await page.getByRole('textbox', { name: '消息输入框', exact: true }).fill('设置弹窗关闭后保留这份需求');
   await page.evaluate(() => { window.fixtureComposerNode = document.querySelector('[aria-label="消息输入框"]'); });
   await page.getByRole('button', { name: '设置', exact: true }).click();
@@ -171,114 +215,32 @@ try {
   assert.equal(layout.header, 54);
   await page.getByRole('tab', { name: '模型', exact: true }).click();
   const openProviderEditor = async () => {
-    if (!await page.locator('#deepseek-editor').isVisible()) await page.getByRole('button', { name: '编辑', exact: true }).click();
-    if (!await page.locator('.settings-customized').evaluate(node => node.open)) await page.locator('.settings-customized > summary').click();
+    if (!await page.locator('.settings-advanced').evaluate(node => node.open)) await page.locator('.settings-advanced > summary').click();
   };
-  await page.locator('#deepseek-key').waitFor();
-  assert.equal(await page.locator('.provider-row-head').count(), 0, 'initial setup directly shows the key editor');
-  assert.equal(await page.locator('#deepseek-url').isVisible(), false, 'custom settings start collapsed');
-  await page.screenshot({ path: path.join(screenshots, 'settings-light.png'), fullPage: true, animations: 'disabled' });
-  await openProviderEditor();
-  assert.equal(await page.locator('#deepseek-key').inputValue(), '');
-  assert.equal(await page.locator('#deepseek-url').inputValue(), 'https://api.deepseek.com');
+  await page.getByLabel('已授权登录', { exact: true }).waitFor();
+  assert.equal(await page.locator('#deepseek-key, #deepseek-url').count(), 0, 'no API key or custom endpoint UI');
   const defaultModels = page.locator('#deepseek-model input[type="radio"]');
   assert.deepEqual(await defaultModels.evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label'))), ['DeepSeek-V4.1-Flash', 'DeepSeek-V4-Pro']);
-  assert.equal(await defaultModels.filter({ visible: true }).count(), 2);
-  assert.deepEqual(await page.locator('.settings-model-id').evaluateAll(nodes => nodes.map(node => node.value)), ['deepseek-flash', 'deepseek-v4-pro']);
   assert.equal(await page.locator('#deepseek-model input:checked').inputValue(), 'deepseek-flash');
-  await page.screenshot({ path: path.join(screenshots, 'settings-customized.png'), fullPage: true, animations: 'disabled' });
-  await page.locator('#deepseek-key').fill('fixture-only-key');
-  await page.getByRole('button', { name: '显示密钥', exact: true }).click();
-  assert.equal(await page.locator('#deepseek-key').getAttribute('type'), 'text');
-  await page.locator('#deepseek-key').fill('changed-fixture-key');
-  assert.equal(await page.locator('#deepseek-key').getAttribute('type'), 'password');
-  const detectionCount = await page.evaluate(() => window.fixtureIpc.filter(command => command === 'fetch_llm_models').length);
-  await page.locator('#deepseek-url').fill('not-a-url');
-  await page.getByRole('button', { name: '检测连接并获取模型', exact: true }).click();
-  await page.getByRole('alert').filter({ hasText: '请输入完整的 http/https' }).waitFor();
-  assert.equal(await page.locator('#deepseek-url').getAttribute('aria-invalid'), 'true');
-  assert.equal(await page.locator('#deepseek-url').evaluate(node => node === document.activeElement), true);
-  assert.equal(await page.evaluate(() => window.fixtureIpc.filter(command => command === 'fetch_llm_models').length), detectionCount, 'invalid connection fields must not issue a request');
-  await page.locator('#deepseek-url').fill('https://api.deepseek.com');
-  assert.equal(await page.getByRole('alert').count(), 0);
-  await page.locator('.settings-advanced summary').click();
-  await page.locator('#deepseek-tokens').fill('0');
-  await page.locator('.settings-advanced summary').click();
-  await page.locator('.settings-customized > summary').click();
-  await page.getByRole('button', { name: '应用', exact: true }).click();
-  await page.getByRole('alert').filter({ hasText: '必须是正整数' }).waitFor();
-  assert.equal(await page.locator('#deepseek-tokens').evaluate(node => node === document.activeElement), true);
-  await page.locator('#deepseek-tokens').fill('8192');
-  await page.locator('.settings-advanced summary').click();
-  await page.locator('.settings-model-choice').nth(1).click({ position: { x: 15, y: 12 } });
-  assert.equal(await page.getByRole('radio', { name: 'DeepSeek-V4-Pro', exact: true }).isChecked(), true, 'clicking the model row selects its default radio');
-  await page.getByRole('button', { name: '显示密钥', exact: true }).click();
-  await page.getByRole('tab', { name: '通用', exact: true }).click();
-  await page.getByRole('tab', { name: '模型', exact: true }).click();
-  assert.equal(await page.locator('#deepseek-key').inputValue(), 'changed-fixture-key', 'category switches must retain the key draft');
-  assert.equal(await page.locator('#deepseek-key').getAttribute('type'), 'password', 'returning to the section must conceal a revealed key');
-  assert.equal(await page.locator('#deepseek-model input:checked').inputValue(), 'deepseek-v4-pro');
-  await page.getByRole('radio', { name: 'DeepSeek-V4.1-Flash', exact: true }).check();
-  await page.getByRole('button', { name: '应用', exact: true }).click();
-  await page.getByLabel('密钥已配置', { exact: true }).waitFor();
-  await page.locator('#deepseek-editor').waitFor({ state: 'hidden' });
-  await page.screenshot({ path: path.join(screenshots, 'settings-saved.png'), animations: 'disabled' });
+  await page.screenshot({ path: path.join(screenshots, 'settings-light.png'), fullPage: true, animations: 'disabled' });
   await openProviderEditor();
-  assert.equal(await page.locator('#deepseek-key').inputValue(), '', 'stored keys must not be loaded into the input');
-  assert.equal(await page.evaluate(() => window.fixtureIpc.filter(c => c === 'decrypt_secret').length), 0);
-  await page.locator('#deepseek-url').fill('https://cancelled.example');
-  await page.getByRole('button', { name: '编辑', exact: true }).click();
-  await page.getByText('未保存', { exact: true }).waitFor();
-  await openProviderEditor();
-  assert.equal(await page.locator('#deepseek-url').inputValue(), 'https://cancelled.example', 'collapsing the editor must retain its draft');
-  await page.getByRole('button', { name: '取消', exact: true }).click();
-  await openProviderEditor();
-  assert.equal(await page.locator('#deepseek-url').inputValue(), 'https://api.deepseek.com');
-  await page.evaluate(() => { window.fixtureFailSave = true; });
-  await page.locator('#deepseek-key').fill('failed-fixture-key');
+  assert.equal(await page.locator('#deepseek-tokens').inputValue(), '256000');
+  await page.getByRole('radio', { name: 'DeepSeek-V4-Pro', exact: true }).check();
+  await page.locator('#deepseek-temperature').fill('0.4');
+  await page.evaluate(() => { window.fixtureFailStorage = true; });
   await page.getByRole('button', { name: '应用', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: '保存失败' }).waitFor();
-  assert.equal(await page.locator('#deepseek-key').inputValue(), 'failed-fixture-key');
-  await page.evaluate(() => { window.fixtureFailSave = false; });
-  await page.evaluate(() => { window.fixtureFailStorage = true; });
-  await page.locator('#deepseek-url').fill('https://unsaved.example');
-  await page.getByRole('button', { name: '应用', exact: true }).click();
-  await page.getByRole('alert').filter({ hasText: 'IndexedDB write failed' }).waitFor();
-  assert.equal(await page.evaluate(() => window.fixtureSettings.getState().profiles[0].baseUrl), 'https://api.deepseek.com');
+  assert.equal(await page.evaluate(() => window.fixtureSettings.getState().profiles[0].model), 'deepseek-flash', 'storage failure restores the saved model');
   await page.evaluate(() => { window.fixtureFailStorage = false; });
-  await page.getByRole('button', { name: '取消', exact: true }).click();
-  await openProviderEditor();
-  await page.getByRole('button', { name: '检测连接并获取模型', exact: true }).click();
-  await page.getByRole('status').filter({ hasText: '连接成功' }).waitFor();
-  await page.evaluate(() => { window.fixtureDeferModels = true; });
-  await page.getByRole('button', { name: '检测连接并获取模型', exact: true }).click();
-  await page.getByRole('button', { name: '检测中…', exact: true }).waitFor();
-  await page.getByRole('tab', { name: '通用', exact: true }).click();
-  await page.evaluate(() => window.fixtureResolveModels());
-  await page.getByRole('tab', { name: '模型', exact: true }).click();
-  await page.getByRole('status').filter({ hasText: '连接成功' }).waitFor();
-  assert.deepEqual(await page.locator('.settings-model-name').evaluateAll(nodes => nodes.map(node => node.value)), ['DeepSeek-V4.1-Flash', 'DeepSeek-V4-Pro']);
-  await page.evaluate(() => { window.fixtureLegacyCatalog = true; });
-  await page.getByRole('button', { name: '检测连接并获取模型', exact: true }).click();
-  await page.getByRole('alert').filter({ hasText: '未返回 DeepSeek' }).waitFor();
-  assert.equal(await page.locator('.settings-model-name').count(), 2);
-  await page.evaluate(() => { window.fixtureLegacyCatalog = false; });
-  await page.getByRole('button', { name: '检测连接并获取模型', exact: true }).click();
-  await page.getByRole('status').filter({ hasText: '连接成功' }).waitFor();
-  const savedKey = await page.evaluate(() => window.fixtureSettings.getState().profiles[0].apiKeyEncrypted);
-  await page.getByRole('button', { name: '移除密钥', exact: true }).click();
-  await page.getByRole('group', { name: '确认移除密钥', exact: true }).waitFor();
-  await page.getByRole('button', { name: '保留密钥', exact: true }).click();
-  assert.equal(await page.evaluate(() => window.fixtureSettings.getState().profiles[0].apiKeyEncrypted), savedKey);
-  await page.getByRole('button', { name: '移除密钥', exact: true }).click();
-  await page.getByRole('button', { name: '确认移除', exact: true }).click();
-  await page.getByLabel('未配置密钥', { exact: true }).waitFor();
-  assert.equal(await page.locator('#deepseek-key').inputValue(), '');
-  await page.locator('#deepseek-key').fill('replacement-fixture-key');
   await page.getByRole('button', { name: '应用', exact: true }).click();
-  await page.locator('#deepseek-editor').waitFor({ state: 'hidden' });
-  await openProviderEditor();
-  console.log('PASS V5 model migration, exactly two supported models, write-only key, encryption/storage rollback and discovery filtering');
+  await page.getByRole('status').filter({ hasText: '模型配置已保存' }).waitFor();
+  assert.equal(await page.evaluate(() => window.fixtureSettings.getState().profiles[0].apiKeyEncrypted), '');
+  assert(!await page.evaluate(() => window.fixtureIpc.includes('decrypt_secret') || window.fixtureIpc.includes('fetch_llm_models')));
+  await page.locator('#deepseek-temperature').fill('3');
+  await page.getByRole('button', { name: '应用', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: '0 到 2' }).waitFor();
+  await page.getByRole('button', { name: '重置', exact: true }).click();
+  console.log('PASS account-only model settings, exactly two models, migration and storage rollback without renderer credentials');
   await page.evaluate(() => window.fixtureSettings.getState().setTheme('dark'));
   await page.screenshot({ path: path.join(screenshots, 'settings-dark.png'), fullPage: true, animations: 'disabled' });
   await page.evaluate(() => window.fixtureSettings.getState().setTheme('light'));
@@ -362,12 +324,12 @@ try {
     assert.equal(await page.evaluate(() => document.querySelector('.settings-dialog').contains(document.activeElement)), true, 'keyboard focus must stay inside the modal');
   }
   await page.setViewportSize({ width: 1366, height: 900 });
-  await page.locator('#deepseek-key').fill('discard-on-modal-close-fixture');
+  await page.locator('#deepseek-temperature').fill('0.9');
   await page.mouse.click(20, 450);
   await settingsDialog.waitFor({ state: 'hidden' });
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await openProviderEditor();
-  assert.equal(await page.locator('#deepseek-key').inputValue(), '', 'closing the modal must discard uncommitted secrets');
+  assert.equal(await page.locator('#deepseek-temperature').inputValue(), '0.4', 'closing the modal discards unsaved model parameters');
   await page.keyboard.press('Control+,');
   await settingsDialog.waitFor({ state: 'hidden' });
   await page.getByRole('button', { name: '收起侧栏', exact: true }).click();
@@ -452,6 +414,7 @@ try {
   await page.getByRole('button', { name: '关闭设置', exact: true }).click();
   await settingsDialog.waitFor({ state: 'hidden' });
   await page.getByRole('button', { name: '新建任务', exact: true }).click();
+  await page.evaluate(() => window.fixtureSettings.getState().updateProfile('default', { model: 'deepseek-flash' }));
   const input = page.getByRole('textbox', { name: '消息输入框', exact: true });
   await input.waitFor();
   assert.match(await input.getAttribute('placeholder'), /易语言/);
@@ -514,14 +477,13 @@ try {
   await page.getByRole('menuitem').filter({ hasText: '添加文件' }).click();
   await page.getByRole('button', { name: '移除附件 示例.ec', exact: true }).click();
   await input.fill('保留这份易语言需求');
-  const encryptedKey = await page.evaluate(() => window.fixtureSettings.getState().profiles[0].apiKeyEncrypted);
-  await page.evaluate(() => window.fixtureSettings.setState(state => ({ profiles: state.profiles.map(profile => ({ ...profile, apiKeyEncrypted: '' })) })));
+  await page.evaluate(() => { window.fixtureAccountUnavailable = true; });
   await input.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true });
   assert.equal(await page.evaluate(() => window.fixtureRequests.length), 0, 'IME Enter must not submit');
   await input.press('Enter');
-  await page.getByText('请先在设置页配置 API Key', { exact: true }).waitFor();
+  await page.getByText(/读取模型配置失败.*官方浏览器授权登录/).waitFor();
   assert.equal(await input.inputValue(), '保留这份易语言需求');
-  await page.evaluate(key => window.fixtureSettings.setState(state => ({ profiles: state.profiles.map(profile => ({ ...profile, apiKeyEncrypted: key })) })), encryptedKey);
+  await page.evaluate(() => { window.fixtureAccountUnavailable = false; });
   await input.fill('整理开发步骤');
   await input.press('Enter');
   await page.getByText('开发步骤已整理。', { exact: true }).waitFor();
@@ -953,6 +915,32 @@ try {
   await workbench.getByRole('tab', { name: '开始', exact: true }).click();
   await page.screenshot({ path: path.join(screenshots, 'workbench-start.png') });
   console.log('PASS conversation rename/export/copy fallback, workspace persistence/files/errors, terminal lifecycle and native browser visibility contracts');
+  await page.evaluate(() => { window.fixtureStreamMode = true; window.fixturePendingRequest = null; });
+  await page.getByRole('textbox', { name: '消息输入框', exact: true }).fill('你好');
+  await page.getByRole('textbox', { name: '消息输入框', exact: true }).press('Enter');
+  await page.waitForFunction(() => Boolean(window.fixturePendingRequest));
+  await page.evaluate(() => window.fixtureEmitToken('退出前的草稿'));
+  await page.locator('.assistant-message-content').last().getByText('退出前的草稿', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('tab', { name: '模型', exact: true }).click();
+  await page.getByRole('button', { name: '退出登录', exact: true }).click();
+  await page.getByTestId('deepseek-login').waitFor();
+  assert.equal(await page.getByRole('textbox', { name: '消息输入框', exact: true }).count(), 0);
+  assert.equal(await page.locator('#deepseek-key, #deepseek-url').count(), 0);
+  await page.waitForFunction(() => {
+    const state = window.fixtureChat.getState();
+    return state.sessions.find(session => session.id === state.activeSessionId).messages.at(-1).agentTrace?.outcome === 'aborted';
+  });
+  const afterLogout = await page.evaluate(() => {
+    const state = window.fixtureChat.getState();
+    return JSON.stringify(state.sessions.find(session => session.id === state.activeSessionId).messages.at(-1));
+  });
+  await page.evaluate(async () => { await window.fixtureEmitToken('LATE_AFTER_LOGOUT'); await window.fixtureFinishStream(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+  assert.equal(await page.evaluate(() => {
+    const state = window.fixtureChat.getState();
+    return JSON.stringify(state.sessions.find(session => session.id === state.activeSessionId).messages.at(-1));
+  }), afterLogout, 'logout must abort the agent and ignore late model output');
+  console.log('PASS logout aborts a running agent, ignores late output and returns to the exclusive login window');
   assert.deepEqual(errors, []);
   console.log('PASS Chinese fence, source copy, wrap toggle, IDE toggle, light/dark rendering and no page errors');
   console.log(`Screenshots: ${screenshots}`);

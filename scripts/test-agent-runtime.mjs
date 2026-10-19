@@ -89,13 +89,13 @@ try {
   for (const [oldModel, expected] of [['deepseek-chat', 'deepseek-flash'], ['deepseek-reasoner', 'deepseek-v4-pro'], ['deepseek-v4-flash', 'deepseek-flash'], ['deepseek-v4-pro', 'deepseek-v4-pro']]) {
     const migrated = migrate({ profiles: [{ id: 'old', provider: 'deepseek', baseUrl: 'https://proxy.example/v1', apiKeyEncrypted: 'KEEP_KEY', model: oldModel, maxTokens: 4096, temperature: 0.3, models: [{ id: 'obsolete' }] }], activeProfileId: 'old', theme: 'dark' }, 5);
     assert.equal(migrated.profiles[0].model, expected);
-    assert.equal(migrated.profiles[0].apiKeyEncrypted, 'KEEP_KEY');
-    assert.equal(migrated.profiles[0].baseUrl, 'https://proxy.example/v1');
+    assert.equal(migrated.profiles[0].apiKeyEncrypted, '');
+    assert.equal(migrated.profiles[0].baseUrl, 'https://api.deepseek.com');
     assert.equal(migrated.profiles[0].maxTokens, 4096);
     assert.equal(migrated.theme, 'dark');
     assert.deepEqual(migrated.modelCatalogs.old.map(model => model.id), ['deepseek-flash', 'deepseek-v4-pro']);
   }
-  console.log('PASS supported model migration preserves encrypted credentials and connection preferences');
+  console.log('PASS supported model migration retains model parameters, clears old keys and fixes the official origin');
   assert.equal(api.DEFAULT_PROVIDER_PROFILE.maxTokens, 256000);
   const oldProfile = { id: 'default', ...api.DEFAULT_PROVIDER_PROFILE, apiKeyEncrypted: 'KEEP_KEY', maxTokens: 8192 };
   for (const [baseUrl, version, budget, expected] of [
@@ -107,7 +107,7 @@ try {
   ]) {
     const migrated = migrate({ profiles: [{ ...oldProfile, baseUrl, maxTokens: budget }] }, version);
     assert.equal(migrated.profiles[0].maxTokens, expected);
-    assert.equal(migrated.profiles[0].apiKeyEncrypted, 'KEEP_KEY');
+    assert.equal(migrated.profiles[0].apiKeyEncrypted, '');
   }
   console.log('PASS Harness output default and migration of legacy official default without changing custom limits');
 

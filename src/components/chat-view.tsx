@@ -95,7 +95,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
   const [isStreaming, setIsStreaming] = useState(false);
   const [statusLine, setStatusLine] = useState<string | null>(null);
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | null>(null);
-  const [previewVisible, setPreviewVisible] = useState(true);
+  const [previewVisible, setPreviewVisible] = useState(false);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("start");
   const [workspaceFocused, setWorkspaceFocused] = useState(false);
   const [defaultWorkspace, setDefaultWorkspace] = useState("");
@@ -111,6 +111,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
   const streamBufRef = useRef("");
   const sendingRef = useRef(false);
   const rafRef = useRef<number | null>(null);
+  const mountedRef = useRef(false);
   const isStreamingRef = useRef(isStreaming);
   const sessionTitle = session ? getSessionDisplayTitle(session) : "EAiCoding";
   const visibleMessages = useMemo(
@@ -158,7 +159,19 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
   }, [isStreaming]);
 
   useEffect(() => {
-    setOpenedDocuments([]); setSelectedPreviewId(null); setWorkspaceTab("start"); setWorkspaceFocused(false);
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      abortRef.current?.();
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setOpenedDocuments([]); setSelectedPreviewId(null); setWorkspaceTab("start"); setWorkspaceFocused(false); setPreviewVisible(false);
   }, [activeSessionId]);
 
   useEffect(() => { void invoke<string>("default_workspace").then(setDefaultWorkspace).catch(error => toast.error(`读取默认工作区失败：${String(error)}`)); }, []);
@@ -249,9 +262,10 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
       toast.error(`读取模型配置失败：${message}`);
       return;
     }
-    if (!config || !config.apiKey) {
+    if (!mountedRef.current) { sendingRef.current = false; return; }
+    if (!config) {
       sendingRef.current = false;
-      toast.error(t("chat.apiKeyMissing"));
+      toast.error("请先完成 DeepSeek 官方授权登录");
       return;
     }
 
@@ -311,7 +325,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
       if (rafRef.current !== null) return;
       rafRef.current = requestAnimationFrame(() => {
         rafRef.current = null;
-        if (!acceptingTokens) return;
+        if (!acceptingTokens || !mountedRef.current) return;
         updateMessage(sid!, assistantMsgId, {
           content: streamBufRef.current, reasoningContent: reasoningBuffer, isStreaming: true,
         });
@@ -381,6 +395,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
         activeToolCallId: undefined,
       });
 
+      if (!mountedRef.current) return;
       if (trace.outcome === "answer") {
         if (trace.toolCallCount > 0) {
           toast.success("处理完成");
@@ -411,8 +426,10 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
         isStreaming: false,
         activeToolCallId: undefined,
       });
-      toast.error(`执行已中断：${message}`);
-      emitPet({ state: "error", bubble: "Interrupted" });
+      if (mountedRef.current) {
+        toast.error(`执行已中断：${message}`);
+        emitPet({ state: "error", bubble: "Interrupted" });
+      }
     } finally {
       acceptingTokens = false;
       abortRef.current = null;
@@ -425,11 +442,13 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
       // Disabling throttling flushes the pending (final) state to disk, so a
       // refresh right after completion still restores the finished answer.
       setChatPersistThrottling(false);
-      setIsStreaming(false);
-      setStatusLine(null);
+      if (mountedRef.current) {
+        setIsStreaming(false);
+        setStatusLine(null);
+        setIsPaused(false);
+      }
       // Clear the pause state when a run finishes or stops.
       runHandleRef.current = null;
-      setIsPaused(false);
     }
   }, [
     resolveLLMConfig,

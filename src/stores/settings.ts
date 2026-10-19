@@ -12,7 +12,7 @@ export interface ProviderProfile {
   provider: LLMProvider;
   protocol: LLMProtocol;
   baseUrl: string;
-  /** Encrypted API key blob (base64 of nonce+ciphertext, AES-GCM via Rust). */
+  /** Legacy storage field, cleared during migration; account credentials are native-only. */
   apiKeyEncrypted: string;
   model: string;
   models?: ProviderModel[];
@@ -143,16 +143,14 @@ export const useSettingsStore = create<SettingsState>()(
       userModules: [],
 
       addProfile: async (input) => {
-        const apiKeyEncrypted = input.apiKey
-          ? await invoke<string>("encrypt_secret", { plaintext: input.apiKey })
-          : "";
+        const apiKeyEncrypted = "";
         const id = `p_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         const profile: ProviderProfile = {
           id,
           name: input.name,
           provider: input.provider,
           protocol: input.protocol,
-          baseUrl: input.baseUrl,
+          baseUrl: DEFAULT_PROVIDER_PROFILE.baseUrl,
           apiKeyEncrypted,
           model: normalizeDeepSeekModel(input.model),
           models: deepSeekModelCatalog(),
@@ -168,12 +166,6 @@ export const useSettingsStore = create<SettingsState>()(
       },
 
       updateProfile: async (id, patch) => {
-        let apiKeyEncrypted: string | undefined;
-        if (patch.apiKey !== undefined) {
-          apiKeyEncrypted = patch.apiKey
-            ? await invoke<string>("encrypt_secret", { plaintext: patch.apiKey })
-            : "";
-        }
         const previous = get();
         try {
         await set((s) => ({
@@ -185,7 +177,8 @@ export const useSettingsStore = create<SettingsState>()(
               ...rest,
               model: normalizeDeepSeekModel(patch.model ?? profile.model),
               models: deepSeekModelCatalog(),
-              ...(apiKeyEncrypted !== undefined ? { apiKeyEncrypted } : {}),
+              baseUrl: DEFAULT_PROVIDER_PROFILE.baseUrl,
+              apiKeyEncrypted: "",
             };
           }),
           modelCatalogs: { ...s.modelCatalogs, [id]: deepSeekModelCatalog() },
@@ -253,21 +246,13 @@ export const useSettingsStore = create<SettingsState>()(
         const { profiles, activeProfileId, systemPrompt } = get();
         const profile = profiles.find((item) => item.id === activeProfileId) ?? profiles[0];
         if (!profile) return null;
-        let apiKey = "";
-        if (profile.apiKeyEncrypted) {
-          try {
-            apiKey = await invoke<string>("decrypt_secret", {
-              encrypted: profile.apiKeyEncrypted,
-            });
-          } catch (error) {
-            console.error("Failed to decrypt API key:", error);
-          }
-        }
+        const account = await invoke<{ signedIn: boolean }>("deepseek_account_status");
+        if (!account.signedIn) throw new Error("请先通过 DeepSeek 官方浏览器授权登录。");
         return {
           provider: profile.provider,
           protocol: "openai-chat-completions",
-          apiKey,
-          baseUrl: profile.baseUrl,
+          apiKey: "",
+          baseUrl: DEFAULT_PROVIDER_PROFILE.baseUrl,
           model: normalizeDeepSeekModel(profile.model),
           maxTokens: profile.maxTokens,
           temperature: profile.temperature,
@@ -278,7 +263,7 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: "eaicoding-settings",
       storage: createJSONStorage(() => idbStorage),
-      version: 7,
+      version: 8,
       migrate: (persistedState, fromVersion) => {
         if (!persistedState || typeof persistedState !== "object") {
           return persistedState;
@@ -307,6 +292,7 @@ export const useSettingsStore = create<SettingsState>()(
               ? DEEPSEEK_DEFAULT_MAX_TOKENS : profile.maxTokens
             : DEEPSEEK_DEFAULT_MAX_TOKENS;
           return { ...profile, ...(compatible ? {} : { ...DEFAULT_PROVIDER_PROFILE, apiKeyEncrypted: "" }), maxTokens,
+            baseUrl: DEFAULT_PROVIDER_PROFILE.baseUrl, apiKeyEncrypted: "",
             provider: "deepseek" as const, protocol: "openai-chat-completions" as const,
             model: normalizeDeepSeekModel(compatible ? profile.model : DEFAULT_PROVIDER_PROFILE.model),
             models: deepSeekModelCatalog() };

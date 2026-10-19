@@ -103,6 +103,7 @@ if (!outputRelative || outputRelative.startsWith("..") || outputRelative.include
 await rm(portableRoot, { recursive: true, force: true });
 await mkdir(portableRoot, { recursive: true });
 await copyFile(exePath, join(portableRoot, "EAiCoding.exe"));
+await copyFile(join(appRoot, "THIRD_PARTY_NOTICES.md"), join(portableRoot, "THIRD_PARTY_NOTICES.md"));
 await cp(toolsPath, join(portableRoot, "eagent-tools"), { recursive: true });
 
 const zipPath = await zipPortable();

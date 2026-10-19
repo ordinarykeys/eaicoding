@@ -57,7 +57,7 @@ export function SettingsView({ section, onSectionChange }: { section: string; on
           if (returnFocus.current?.isConnected) { event.preventDefault(); returnFocus.current.focus(); }
         }}>
         <DialogPrimitive.Description className="sr-only">
-          配置 DeepSeek 模型与密钥、易语言环境、模块库和界面外观。
+          管理 DeepSeek 官方授权账号、模型、易语言环境、模块库和界面外观。
         </DialogPrimitive.Description>
         <SettingsPanel section={section} onSectionChange={onSectionChange} />
       </DialogPrimitive.Content>

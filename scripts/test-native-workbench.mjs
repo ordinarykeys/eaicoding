@@ -51,6 +51,17 @@ try {
   assert(page, 'main native webview not found');
   console.log('Native main webview connected');
   await page.waitForFunction(() => typeof window.__TAURI_INTERNALS__?.invoke === 'function');
+  await page.getByTestId('deepseek-login').waitFor();
+  const account = await invoke('deepseek_account_status');
+  assert.equal(account.signedIn, false);
+  assert.equal('token' in account, false);
+  const nativeSize = await invoke('plugin:window|inner_size', { label: 'main' });
+  const scale = await invoke('plugin:window|scale_factor', { label: 'main' });
+  assert(Math.abs(nativeSize.width / scale - 600) < 2 && Math.abs(nativeSize.height / scale - 700) < 2);
+  assert.equal(await invoke('plugin:window|is_resizable', { label: 'main' }), false);
+  await assert.rejects(() => invoke('llm_proxy_request', { request: { url: 'https://untrusted.example/chat/completions' } }), /官方模型接口/);
+  await assert.rejects(() => invoke('llm_proxy_request', { request: { url: 'https://api.deepseek.com/chat/completions' } }), /授权登录/);
+  console.log('PASS native login-first 600x700 fixed window, safe status, custom-origin rejection and signed-out inference guard without network requests');
   const listing = await invoke('list_workspace_directory', { root: fixtureRoot });
   assert(listing.entries.some(entry => entry.name === 'probe.ps1'));
   await invoke('plugin:opener|open_path', { path: fixtureRoot });
@@ -106,7 +117,7 @@ try {
   console.log('PASS real child webview navigation/layout/close and isolation from desktop commands');
 
   assert.notEqual(await invoke('plugin:tray|get_by_id', { id: 'main-tray' }), null, 'system tray icon is registered');
-  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.getByRole('button', { name: /^(Close|隐藏到系统托盘)$/ }).click();
   for (let attempt = 0; attempt < 30; attempt++) {
     if (!await invoke('plugin:window|is_visible', { label: 'main' })) break;
     await new Promise(resolve => setTimeout(resolve, 100));

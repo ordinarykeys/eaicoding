@@ -113,7 +113,6 @@ export class OpenAIChatCompletionsProvider extends BaseLLMProvider {
         buildOpenAIEndpoint(this.config.baseUrl, "chat/completions"),
         {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${this.config.apiKey}`,
         },
         requestBody,
         handleStreamChunk,

@@ -6,6 +6,10 @@ import { SettingsView } from "@/components/settings-view";
 import { WindowResizeHandles, WindowTitlebar } from "@/components/window-titlebar";
 import { useSettingsStore } from "@/stores/settings";
 import { Dialog } from "@/components/ui/dialog";
+import { DeepSeekLogin } from "@/components/deepseek-login";
+import { useDeepSeekAccount } from "@/stores/deepseek-account";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 const MIN_SIDEBAR_WIDTH = 200;
 const MAX_SIDEBAR_WIDTH = 480;
@@ -17,6 +21,28 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const theme = useSettingsStore((s) => s.theme);
+  const { ready, view, refresh } = useDeepSeekAccount();
+
+  useEffect(() => {
+    void refresh();
+    const unlisten = listen("deepseek-account-changed", () => { void refresh(); });
+    const onFocus = () => { void refresh(); };
+    window.addEventListener("focus", onFocus);
+    return () => { void unlisten.then(stop => stop()); window.removeEventListener("focus", onFocus); };
+  }, [refresh]);
+  useEffect(() => {
+    if (!["initializing", "waiting-browser", "exchanging"].includes(view.phase)) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => { await refresh(); if (!stopped) timer = setTimeout(() => void poll(), 750); };
+    timer = setTimeout(() => void poll(), 250);
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [view.phase, refresh]);
+  useEffect(() => {
+    if (!ready) return;
+    setSettingsOpen(false);
+    void invoke("deepseek_account_present").catch(() => {});
+  }, [ready, view.signedIn]);
 
   // Sync theme on mount (one-time)
   useState(() => {
@@ -29,12 +55,15 @@ export default function App() {
     const handleSettingsShortcut = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key === ",") {
         event.preventDefault();
-        if (!event.repeat) setSettingsOpen(open => !open);
+        if (!event.repeat && useDeepSeekAccount.getState().view.signedIn) setSettingsOpen(open => !open);
       }
     };
     window.addEventListener("keydown", handleSettingsShortcut);
     return () => window.removeEventListener("keydown", handleSettingsShortcut);
   }, []);
+
+  if (!ready) return <div className="h-screen bg-background" aria-label="正在检查登录状态" />;
+  if (!view.signedIn) return <DeepSeekLogin />;
 
   return (
     <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>

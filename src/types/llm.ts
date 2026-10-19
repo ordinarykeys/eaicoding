@@ -5,6 +5,7 @@ export type LLMProtocol = "openai-chat-completions";
 export interface LLMConfig {
   provider: LLMProvider;
   protocol: LLMProtocol;
+  /** Kept for legacy provider fixtures; desktop account requests leave this empty. */
   apiKey: string;
   baseUrl: string;
   model: string;
