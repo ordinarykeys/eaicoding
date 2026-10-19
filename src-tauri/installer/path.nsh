@@ -125,7 +125,9 @@ Function InstallerPreflight
         Return
     ${EndIf}
     StrCpy $INSTDIR $InstallerPath
-    ReadRegStr $0 HKCU "${UNINSTKEY}" ""
+    ; Use the same key, value and shell context as Tauri's RestorePreviousInstallLocation.
+    ; UNINSTKEY has a quoted InstallLocation value and no default directory value.
+    ReadRegStr $0 SHCTX "${MANUPRODUCTKEY}" ""
     ${If} $0 != $INSTDIR
     ${OrIfNot} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
         FindFirst $0 $1 "$INSTDIR\*.*"

@@ -20,6 +20,7 @@ InstallDir "__FIXTURE__\payload"
 !define PRODUCTNAME "EAiCoding"
 !define MAINBINARYNAME "fixture-only"
 !define UNINSTKEY "Software\EAiCodingInstallerValidation-NoWrites"
+!define MANUPRODUCTKEY "Software\EAiCodingInstallerValidation-NoWrites\Product"
 !define ESTIMATEDSIZE 1
 Var PassiveMode
 Var UpdateMode

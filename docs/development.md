@@ -126,6 +126,8 @@ Tauri JS API 固定在 2.10.x、剪贴板插件在 2.3.x，与 Rust 的同一 mi
 
 `npm run prepare:installer` 需要 Visual Studio C++ Build Tools（x86/x64）和 Windows SDK；普通前端构建无需该步骤。`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-installer.ps1` 使用同一套原生安装界面，但只向 `.tmp` 写入无害文本文件；不安装产品、不写产品注册表、不启动实际程序。截图与测试产物均留在 `.tmp`。
 
+`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-installer-path.ps1` 直接运行生产 NSIS 路径检查，使用临时文件和每次运行唯一的 HKCU 测试注册项，覆盖 32/64 位注册表视图下的新目录、空目录、Tauri 格式的已有安装与重复升级，以及无关非空目录、缺少主程序和错误卸载项空值的拒绝。测试结束清理自己的注册项，不更改已安装产品。覆盖安装必须与 Tauri 的 `RestorePreviousInstallLocation` 使用同一 `SHCTX`、产品注册路径及默认值；卸载项的 `InstallLocation` 含引号，其默认值不保存安装目录。
+
 首次启动以未登录窗口验证原生 600×700 尺寸和固定大小行为；账号网络只在用户点击登录后发生。真实官方账号授权和推理不属于无密钥回归。
 
 2026-10-19 授权扩展验证已通过：5 项账号后端测试覆盖完整本地 HTTP 授权、PKCE、凭据恢复、取消竞态与后台鉴权头；Agent runtime 覆盖旧配置迁移后清除密钥及固定官方地址。Edge 界面回归验证退出登录会中止正在运行的 Agent，迟到输出不会覆盖已停止的记录。原生工作区测试验证登录窗口 600×700、不可调整大小、非官方地址与未登录推理均在发送网络请求前拒绝；安装器使用无害 fixture 完成欢迎页、展开路径、安装进度至 100% 和完成页验证。
