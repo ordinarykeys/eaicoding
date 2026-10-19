@@ -2978,6 +2978,7 @@ export function extractPreferredCodeBlock(content: string): string {
 export interface WriteTextResult {
   path: string;
   bytes: number;
+  source_change?: ToolResult["sourceChange"];
 }
 
 /** Read any local file and return its content as text (UTF-8 or GBK auto-detected). */
@@ -4281,6 +4282,7 @@ const saveTextFile: RegisteredTool = {
     return {
       path: result.path,
       bytes: result.bytes,
+      source_change: result.source_change,
     };
   },
 };
@@ -4499,11 +4501,16 @@ export async function executeTool(
         );
       }),
     ]);
+    const mutation = content && typeof content === "object" && "source_change" in content
+      ? content as Record<string, unknown> : null;
+    const sourceChange = mutation?.source_change as ToolResult["sourceChange"] | null | undefined;
+    const observation = mutation ? Object.fromEntries(Object.entries(mutation).filter(([key]) => key !== "source_change")) : content;
     return {
       toolCallId,
       toolName,
       ok: true,
-      content,
+      content: observation,
+      ...(sourceChange ? { sourceChange } : {}),
       durationMs: Date.now() - startedAt,
     };
   } catch (err) {

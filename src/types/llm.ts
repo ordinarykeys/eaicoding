@@ -103,6 +103,8 @@ export interface ToolCall {
 
 /** Result of executing a tool call. */
 export interface ToolResult {
+  /** Exact successful native mutation; UI only, excluded from model observations. */
+  sourceChange?: { path: string; before: string | null; after: string };
   toolCallId: string;
   toolName: string;
   /** True when execution succeeded — this does **not** imply the underlying

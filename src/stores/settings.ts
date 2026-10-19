@@ -47,6 +47,8 @@ interface SettingsState {
   systemPrompt: string;
   /** UI theme. */
   theme: "dark" | "light";
+  busyEnterBehavior: "queue" | "steer";
+  codeWorkView: boolean;
   /** Show floating desktop pet (Clawd crab). */
   petEnabled: boolean;
   /** Pet sound effects enabled. */
@@ -78,6 +80,8 @@ interface SettingsState {
   setProfileModels: (id: string, models: ProviderModel[]) => void;
   setSystemPrompt: (prompt: string) => void;
   setTheme: (theme: "dark" | "light") => void;
+  setBusyEnterBehavior: (behavior: "queue" | "steer") => void;
+  setCodeWorkView: (enabled: boolean) => void;
   setPetEnabled: (enabled: boolean) => void;
   setPetSoundEnabled: (enabled: boolean) => void;
   setPetPosition: (pos: { x: number; y: number } | null) => void;
@@ -133,6 +137,10 @@ export const useSettingsStore = create<SettingsState>()(
       activeProfileId: "default",
       systemPrompt: DEFAULT_SYSTEM_PROMPT,
       theme: "light",
+      busyEnterBehavior: "queue",
+      codeWorkView: true,
+      setBusyEnterBehavior: (busyEnterBehavior) => set({ busyEnterBehavior }),
+      setCodeWorkView: (codeWorkView) => set({ codeWorkView }),
       petEnabled: true,
       petSoundEnabled: false,
       petPosition: null,
@@ -327,6 +335,8 @@ export const useSettingsStore = create<SettingsState>()(
         activeProfileId: s.activeProfileId,
         systemPrompt: s.systemPrompt,
         theme: s.theme,
+        busyEnterBehavior: s.busyEnterBehavior,
+        codeWorkView: s.codeWorkView,
         petEnabled: s.petEnabled,
         petSoundEnabled: s.petSoundEnabled,
         petPosition: s.petPosition,

@@ -8,10 +8,11 @@ import { documentLanguage, isTextPath, type PreviewDocument } from "./document-p
 import { WorkspaceBrowser } from "./workspace-browser";
 const WorkspaceTerminal = lazy(() => import("./workspace-terminal").then(module => ({ default: module.WorkspaceTerminal })));
 
-export type WorkspaceTab = "start" | "files" | "code" | "browser" | `terminal:${string}`;
+export type WorkspaceTab = "start" | "files" | "code" | "review" | "browser" | `terminal:${string}`;
 interface WorkspaceListing { root: string; directory: string; entries: { name: string; path: string; directory: boolean }[]; next_offset: number | null }
 
-export function WorkspacePane({ root, visible, tab, onTab, onShow, onHide, onChooseRoot, onOpenFile, sidebarOpen, onToggleSidebar, focused, onFocus, width, onResize, nativeOverlay, children, hasCode }: {
+export function WorkspacePane({ root, visible, tab, onTab, onShow, onHide, onChooseRoot, onOpenFile, sidebarOpen, onToggleSidebar, focused, onFocus, width, onResize, nativeOverlay, children, hasCode, hasReview, review }: {
+  hasReview: boolean; review: React.ReactNode;
   root: string; visible: boolean; tab: WorkspaceTab; onTab: (tab: WorkspaceTab) => void;
   onShow: () => void; onHide: () => void; onChooseRoot: () => void; onOpenFile: (file: PreviewDocument) => void;
   sidebarOpen: boolean; onToggleSidebar: () => void; focused: boolean; onFocus: () => void;
@@ -20,6 +21,8 @@ export function WorkspacePane({ root, visible, tab, onTab, onShow, onHide, onCho
   const [terminals, setTerminals] = useState<{ id: string; title: string; root: string }[]>([]);
   const [browserOpened, setBrowserOpened] = useState(false);
   const [filesOpened, setFilesOpened] = useState(false);
+  const [reviewOpened, setReviewOpened] = useState(false);
+  useEffect(() => { if (tab === "review") setReviewOpened(true); }, [tab]);
   const counter = useRef(0);
   const dragCleanup = useRef<(() => void) | null>(null);
   const startTerminal = () => {
@@ -61,6 +64,7 @@ export function WorkspacePane({ root, visible, tab, onTab, onShow, onHide, onCho
     { id: "start", label: "开始", icon: <Compass size={14} /> },
     ...(filesOpened ? [{ id: "files" as const, label: "工作区文件", icon: <FolderOpen size={14} /> }] : []),
     ...(hasCode ? [{ id: "code" as const, label: "代码", icon: <Code size={14} /> }] : []),
+    ...(hasReview && (reviewOpened || tab === "review") ? [{ id: "review" as const, label: "本轮改动", icon: <Code size={14} />, close: () => { setReviewOpened(false); if (tab === "review") onTab("start"); } }] : []),
     ...terminals.map(item => ({ id: `terminal:${item.id}` as WorkspaceTab, label: item.title, icon: <TerminalWindow size={14} />, close: () => {
       setTerminals(previous => previous.filter(terminal => terminal.id !== item.id));
       if (tab === `terminal:${item.id}`) onTab("start");
@@ -102,6 +106,7 @@ export function WorkspacePane({ root, visible, tab, onTab, onShow, onHide, onCho
       </div>
       <div className="workbench-files" hidden={tab !== "files"}><WorkspaceFiles root={root} onOpen={onOpenFile} onChooseRoot={onChooseRoot} visible={visible && tab === "files"} /></div>
       <div className="workbench-code" hidden={tab !== "code"}>{children}</div>
+      {hasReview && <div className="workbench-review" hidden={tab !== "review"}>{review}</div>}
       <Suspense fallback={<div className="workbench-empty" role="status">正在加载终端…</div>}>
         {terminals.map(item => <WorkspaceTerminal key={item.id} id={item.id} root={item.root} visible={visible && tab === `terminal:${item.id}`} />)}
       </Suspense>

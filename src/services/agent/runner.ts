@@ -91,6 +91,8 @@ export interface AgentRunOptions {
 }
 
 export interface AgentRunHandle {
+  /** Add a user correction at the next safe model/tool boundary. */
+  steer: (content: string) => boolean;
   /** Resolves with the final trace once the loop terminates. */
   promise: Promise<AgentTrace>;
   /** Aborts the underlying provider stream and stops the loop ASAP. */
@@ -1741,6 +1743,13 @@ function makeRejectedToolResult(call: ToolCall, reason: string | undefined): Too
 export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
   const providerRef: { current: BaseLLMProvider | null } = { current: null };
   let aborted = false;
+  let finished = false;
+  const pendingSteering: string[] = [];
+  const steer = (content: string) => {
+    if (aborted || finished || !content.trim()) return false;
+    pendingSteering.push(content);
+    return true;
+  };
   const controller = new AbortController();
   const signal = controller.signal;
 
@@ -1795,10 +1804,10 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
     options.onToolProgress?.(step, { ...trace, steps: [...trace.steps, step], endedAt: step.endedAt, toolCallCount: trace.toolCallCount + toolCalls.length - toolResults.length }, activeToolId);
   };
   const promise = (async (): Promise<AgentTrace> => {
-    const socialTurn = isSocialTurn(options.userInput);
+    let socialTurn = isSocialTurn(options.userInput);
     // Native tool turns have no arbitrary desktop-wide step ceiling. An
     // integration can still request a strict limit without changing that UI.
-    const maxSteps = socialTurn ? 1 : options.maxSteps === undefined
+    let maxSteps = socialTurn ? 1 : options.maxSteps === undefined
       ? Number.POSITIVE_INFINITY
       : Number.isFinite(options.maxSteps) ? Math.max(1, Math.floor(options.maxSteps)) : 1;
     let consecutiveUnfinishedAnswers = 0;
@@ -2028,6 +2037,17 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
         break;
       }
 
+      for (const content of pendingSteering.splice(0)) {
+        if (socialTurn) {
+          socialTurn = false;
+          maxSteps = options.maxSteps ?? Number.POSITIVE_INFINITY;
+          conversation[0] = makeSystemMessage(options.config.systemPrompt, maxSteps);
+          if (options.workspaceRoot) conversation[0].content += `\n当前会话工作区：${JSON.stringify(options.workspaceRoot)}`;
+        }
+        trace.goal += `\n用户补充：${content}`;
+        conversation.push({ id: nanoid(), role: "user", content, timestamp: Date.now() });
+      }
+
       options.onStatus?.(`模型推理中`);
 
       const stepStart = Date.now();
@@ -2140,6 +2160,14 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
       if (aborted) {
         trace.outcome = "aborted";
         break;
+      }
+
+      if (!streamError && pendingSteering.length > 0) {
+        if (socialTurn) maxSteps = Number.POSITIVE_INFINITY;
+        // Do not execute calls proposed before the user's correction arrived.
+        trace.steps.push({ index: stepIndex, assistantText, reasoningContent, toolCalls: [], toolResults: [], finishReason: "stop", startedAt: stepStart, endedAt: Date.now() });
+        options.onStep?.(trace.steps.at(-1)!, trace);
+        continue;
       }
 
       if (streamError) {
@@ -2259,7 +2287,7 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
           continue;
         }
 
-        const pendingUserChoice = findPendingUserChoiceFromTrace(trace, options.userInput);
+        const pendingUserChoice = findPendingUserChoiceFromTrace(trace, trace.goal);
         if (pendingUserChoice) {
           const step: AgentStep = {
             index: stepIndex,
@@ -2324,7 +2352,7 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
           pass: !findEplAnswerDiagnostics(parsed?.finalAnswer ?? assistantText).some(item => item.severity === "error"),
           confidence: 0.9, issues: ["请修正示例的语法结构。"], followup: "只读/计划模式下请给出分析和实施计划，不要调用写入或编译工具。",
         } : await runAnswerSelfCheck(
-          options.userInput,
+          trace.goal,
           options.history,
           trace,
           unstructuredAnswer,
@@ -2381,6 +2409,7 @@ ${selfCheck.followup}
           startedAt: stepStart,
           endedAt: Date.now(),
         };
+        if (pendingSteering.length) { if (socialTurn) maxSteps = Number.POSITIVE_INFINITY; continue; }
         trace.steps.push(step);
         trace.outcome = "answer";
         trace.finalAnswer = unstructuredAnswer;
@@ -2427,6 +2456,12 @@ ${selfCheck.followup}
         };
         for (const call of parsed.toolCalls) {
           if (aborted) break;
+
+          if (pendingSteering.length) {
+            const skipped: ToolResult = { toolCallId: call.id, toolName: call.name, ok: false, content: { error: "用户已插话，取消尚未开始的工具调用；请先处理最新指令。" }, durationMs: 0 };
+            toolResults.push(skipped); conversation.push(toolResultToMessage(skipped));
+            continue;
+          }
           // Honor a pause requested between/within steps before doing anything.
           await waitWhilePaused();
           if (aborted) break;
@@ -2453,6 +2488,12 @@ ${selfCheck.followup}
             }
           }
 
+          // A correction can also arrive while paused or awaiting an approval.
+          if (pendingSteering.length) {
+            const skipped: ToolResult = { toolCallId: call.id, toolName: call.name, ok: false, content: { error: "用户已插话，取消尚未开始的工具调用；请先处理最新指令。" }, durationMs: 0 };
+            toolResults.push(skipped); conversation.push(toolResultToMessage(skipped));
+            continue;
+          }
           options.onStatus?.(
             `执行 ${call.name}`,
           );
@@ -2461,7 +2502,7 @@ ${selfCheck.followup}
             sessionId: options.sessionId,
             workspaceRoot: options.workspaceRoot,
             modulePaths: [...discoveredModulePaths],
-            userInput: options.userInput,
+            userInput: trace.goal,
             allowDialog: options.allowDialog ?? true,
             onStatus: options.onStatus,
             signal,
@@ -2503,6 +2544,7 @@ ${selfCheck.followup}
         trace.steps.push(step);
         options.onStep?.(step, trace);
 
+        if (pendingSteering.length) continue;
         if (stalledTool) {
           trace.outcome = "error";
           trace.finalAnswer = `执行 ${stalledTool} 时连续重复相同操作，未取得新进展，已停止。当前结果尚未完成验证。`;
@@ -2511,7 +2553,7 @@ ${selfCheck.followup}
 
         const pendingUserChoice = findPendingUserChoiceFromToolResults(
           toolResults,
-          options.userInput,
+          trace.goal,
         );
         if (pendingUserChoice) {
           finishWithPendingUserChoice(
@@ -2538,7 +2580,7 @@ ${selfCheck.followup}
 
       // Final answer
       const finalAnswer = parsed.finalAnswer ?? assistantText;
-      const pendingUserChoice = findPendingUserChoiceFromTrace(trace, options.userInput);
+      const pendingUserChoice = findPendingUserChoiceFromTrace(trace, trace.goal);
       if (pendingUserChoice) {
         const step: AgentStep = {
           index: stepIndex,
@@ -2597,7 +2639,7 @@ ${selfCheck.followup}
           pass: !findEplAnswerDiagnostics(parsed?.finalAnswer ?? assistantText).some(item => item.severity === "error"),
           confidence: 0.9, issues: ["请修正示例的语法结构。"], followup: "只读/计划模式下请给出分析和实施计划，不要调用写入或编译工具。",
         } : await runAnswerSelfCheck(
-        options.userInput,
+        trace.goal,
         options.history,
         trace,
         finalAnswer,
@@ -2654,6 +2696,7 @@ ${selfCheck.followup}
         startedAt: stepStart,
         endedAt: Date.now(),
       };
+      if (pendingSteering.length) { if (socialTurn) maxSteps = Number.POSITIVE_INFINITY; continue; }
       trace.steps.push(step);
       trace.outcome = "answer";
       trace.finalAnswer = finalAnswer;
@@ -2680,11 +2723,12 @@ ${selfCheck.followup}
     trace.endedAt = Date.now();
     return trace;
   }).finally(() => {
+    finished = true;
     options.signal?.removeEventListener("abort", abort);
     providerRef.current = null;
   });
 
-  return { promise, abort, providerRef, pause, resume, isPaused };
+  return { promise, abort, providerRef, pause, resume, isPaused, steer };
 }
 
 // Re-export tool definitions for places that just need the catalog (e.g. UI).

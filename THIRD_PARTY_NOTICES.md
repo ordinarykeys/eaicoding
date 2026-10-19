@@ -7,6 +7,8 @@ Reference checkout: `86a402200d95fecef4529d969836f1fe13c6cb0d`.
 
 EAiCoding adapts the Platform PKCE account protocol, welcome-page geometry, account-menu / personal-center / sign-out interactions, decimal balance formatting, and native Windows installer presentation from DeepSeek Harness. Account references: `packages/client/ui-settings-account/src/client/{AccountMenu,AccountSection,AccountAvatar,SignOutDialog,formatBalance}` (TSX/TS and CSS modules), and `packages/credentials/deepseek-account-platform/src/{details,protocol}.ts`. Original installer source paths: `apps/desktop/installer/{pages,drawing,theme,path}.nsh`, `progress.h`, `extract.h`, `extract-progress.h`, and the presentation portion of `window-frame.cpp`. The extraction helper supervises a separate 7-Zip process and projects its progress to the UI. The Tauri adapter uses its own payload installation, progress source, registry, and launch routines. DeepSeek names and brand artwork are replaced with EAiCoding's own identity. These adaptations do not imply official certification or endorsement.
 
+Additional UI references: `InputBar`, `EnterBehaviorRow`, `DeveloperToolsRow`, `PlatformOverlay`, desktop `platform-view.ts` / `preload-platform-account.ts`, `TrajectoryTable`, `ReviewTab`, and `FileDiff`. EAiCoding adapts these interaction and layout patterns to React/Tauri and its own agent trace / text mutation records.
+
 MIT License
 
 Copyright (c) 2026 DeepSeek
@@ -90,3 +92,39 @@ HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
 WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
+
+## jsdiff (diff 8.0.2)
+
+Source: https://github.com/kpdecker/jsdiff
+
+Used for bounded line comparisons in the turn review.
+
+BSD 3-Clause License
+
+Copyright (c) 2009-2015, Kevin Decker <kpdecker@gmail.com>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

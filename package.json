@@ -1,7 +1,7 @@
 {
   "name": "eaicoding-desktop",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "scripts": {
     "postinstall": "node scripts/prepare-ort.mjs",
@@ -16,6 +16,7 @@
     "test:agent-retrieval": "node scripts/test-agent-retrieval.mjs",
     "test:agent-runtime": "node scripts/test-agent-runtime.mjs",
     "test:code-highlight": "node scripts/test-code-highlight.mjs",
+    "test:code-work": "node scripts/test-code-work.mjs",
     "test:ui": "node scripts/test-ui-smoke.mjs",
     "test:native-gui": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-native-gui.ps1",
     "benchmark:agent": "node scripts/benchmark-agent.mjs",
@@ -49,6 +50,7 @@
     "big.js": "^7.0.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "diff": "8.0.2",
     "i18next": "^26.0.8",
     "idb-keyval": "^6.2.2",
     "nanoid": "^5.0.9",

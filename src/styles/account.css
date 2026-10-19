@@ -43,3 +43,11 @@
 .account-signout-dialog footer button { height:36px; min-width:72px; padding:0 14px; border:.5px solid var(--border); border-radius:8px; font:inherit; font-size:14px; background:transparent; color:inherit; cursor:pointer; }
 .account-signout-dialog button:disabled { opacity:.5; cursor:default; }
 @container settings-content (max-width:360px) { .account-identity-card { flex-wrap:wrap; gap:8px; } }
+
+.platform-overlay {position:fixed;inset:0;z-index:1001;display:flex;flex-direction:column;background:var(--background);color:var(--foreground);pointer-events:auto;outline:none;}
+.platform-header {box-sizing:border-box;height:48px;flex:none;padding:11px 16px 6px;border-bottom:.5px solid var(--border);}
+.platform-back {display:inline-flex;align-items:center;justify-content:center;gap:8px;height:28px;padding:0 6px;border:0;border-radius:4px;background:transparent;color:var(--muted-foreground);font:14px/22px var(--font-sans);cursor:pointer;}
+.platform-back:hover {background:var(--accent);}
+.platform-viewport {position:relative;flex:1;min-height:0;}
+.platform-status {position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;font-size:14px;color:var(--muted-foreground);}
+.platform-status button {height:32px;padding:0 12px;border:.5px solid var(--border);border-radius:6px;background:transparent;font-size:13px;cursor:pointer;}

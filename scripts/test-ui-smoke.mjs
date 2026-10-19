@@ -56,6 +56,15 @@ mockIPC((cmd, args) => {
     if (window.fixtureDeferDetails) return new Promise(resolve => { window.fixtureResolveDetails = () => resolve(details); });
     return details;
   }
+  if (cmd.startsWith('deepseek_platform_')) {
+    window.fixtureNativeCalls = [...(window.fixtureNativeCalls ?? []), { cmd, args }];
+    if (cmd === 'deepseek_platform_open') {
+      if (window.fixturePlatformFailure) throw new Error('fixture platform unavailable');
+      if (window.fixtureDeferPlatform) return new Promise(resolve => { window.fixtureResolvePlatform = () => { resolve(null); }; });
+      queueMicrotask(() => emit('deepseek-platform-loaded', { id: args.id }));
+    }
+    return null;
+  }
   if (cmd === 'deepseek_account_start') {
     window.fixtureAccountView = { ...window.fixtureAccountView, signedIn: false, phase: 'initializing', error: null, attemptId: 'attempt-' + (++window.fixtureAccountNumber) };
     return window.fixtureAccountView;
@@ -196,6 +205,10 @@ try {
   await page.getByRole('textbox', { name: '消息输入框', exact: true }).waitFor();
   await page.setViewportSize({ width: 1366, height: 900 });
   console.log('PASS login-first gate, Harness 600x700 geometry, browser/copy actions, cancellation, failure/retry and account-to-workspace transition');
+  assert.deepEqual(await page.locator('.harness-composer-send').evaluate(button => {
+    const rect = button.getBoundingClientRect(), icon = button.querySelector('svg');
+    return { width: rect.width, height: rect.height, radius: getComputedStyle(button).borderRadius, iconWidth: icon.getAttribute('width'), iconHeight: icon.getAttribute('height') };
+  }), { width: 34, height: 34, radius: '999px', iconWidth: '16', iconHeight: '16' });
   assert.equal(await page.getByRole('complementary', { name: '工作区面板', exact: true }).isVisible(), false, 'the right workspace starts collapsed, as in Harness');
   await page.getByRole('button', { name: '打开工作区', exact: true }).click();
   await page.getByRole('complementary', { name: '工作区面板', exact: true }).waitFor();
@@ -245,7 +258,26 @@ try {
   await center.getByText('¥12.34', { exact: true }).waitFor();
   await center.getByText('¥5.60', { exact: true }).waitFor();
   await center.getByRole('link', { name: '查询用量', exact: true }).click();
-  await page.waitForFunction(() => window.fixtureNativeCalls.some(call => call.cmd === 'plugin:opener|open_url' && call.args.url === 'https://platform.deepseek.com/usage'));
+  const platformDialog = page.getByRole('dialog', { name: '查询用量', exact: true });
+  await platformDialog.waitFor();
+  await page.waitForFunction(() => window.fixtureNativeCalls.some(call => call.cmd === 'deepseek_platform_open' && call.args.page === 'usage'));
+  assert.equal(await page.evaluate(() => window.fixtureNativeCalls.some(call => call.cmd === 'plugin:opener|open_url' && /\/usage|\/top_up/.test(call.args.url))), false, 'usage and recharge must stay embedded');
+  await page.screenshot({ path: path.join(screenshots, 'platform-usage.png'), animations: 'disabled' });
+  await platformDialog.getByRole('button', { name: '返回个人中心', exact: true }).click();
+  await platformDialog.waitFor({ state: 'hidden' });
+  await center.waitFor();
+  await page.evaluate(() => { window.fixturePlatformFailure = true; });
+  await center.getByRole('link', { name: '充值', exact: true }).click();
+  const topupDialog = page.getByRole('dialog', { name: '充值', exact: true });
+  await topupDialog.getByText('操作未完成，请重试', { exact: true }).waitFor();
+  await page.evaluate(() => { window.fixturePlatformFailure = false; });
+  await topupDialog.getByRole('button', { name: '重试', exact: true }).click();
+  await page.waitForFunction(() => window.fixtureNativeCalls.filter(call => call.cmd === 'deepseek_platform_open' && call.args.page === 'top-up').length === 2);
+  await topupDialog.getByRole('button', { name: '返回个人中心', exact: true }).click();
+  await topupDialog.waitFor({ state: 'hidden' });
+  await center.waitFor();
+  await page.waitForFunction(() => document.querySelector('.settings-dialog').contains(document.activeElement));
+  console.log('PASS embedded official usage/recharge, native close, failure/retry and account focus restoration');
   await page.screenshot({ path: path.join(screenshots, 'account-center.png'), animations: 'disabled' });
   await page.evaluate(() => { window.fixtureDetailsUnavailable = true; });
   await center.getByRole('button', { name: '刷新', exact: true }).click();
@@ -298,6 +330,14 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.classList.contains('dark')), true);
   await page.getByRole('radio', { name: '浅色', exact: true }).focus();
   await page.keyboard.press('Space');
+  const busyBehavior = page.getByRole('combobox', { name: '繁忙时的发送行为', exact: true });
+  await busyBehavior.click();
+  await page.getByRole('option', { name: '插话发送', exact: true }).click();
+  assert.equal(await page.evaluate(() => window.fixtureSettings.getState().busyEnterBehavior), 'steer');
+  await busyBehavior.click();
+  await page.getByRole('option', { name: '排队发送', exact: true }).click();
+  await page.getByRole('switch', { name: '显示代码工作视图', exact: true }).uncheck();
+  await page.getByRole('switch', { name: '显示代码工作视图', exact: true }).check();
   const petSwitch = page.getByRole('switch', { name: '显示宠物', exact: true });
   await petSwitch.check();
   assert.equal(await page.evaluate(() => window.fixtureSettings.getState().petEnabled), true);
@@ -417,6 +457,25 @@ try {
   await details.getByRole('textbox', { name: '搜索模块内容', exact: true }).fill('启动线程99');
   await details.locator('.module-detail-item').filter({ hasText: '启动线程99' }).click();
   assert.match(await details.getByRole('article', { name: '接口详情' }).textContent(), /任务指针/);
+  await details.getByRole('button', { name: '复制签名', exact: true }).click();
+  const copyNotice = page.locator('[data-sonner-toast][data-mounted="true"]').filter({ hasText: '签名已复制' });
+  await copyNotice.waitFor();
+  await copyNotice.evaluate(node => Promise.all(node.getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => {}))));
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), '整数型 启动线程99（任务: 整数型）');
+  assert.equal(await copyNotice.evaluate(node => {
+    // Include the passive notice in hit testing without changing modal interaction.
+    const original = node.style.pointerEvents;
+    node.style.pointerEvents = 'auto';
+    try {
+      const text = node.querySelector('[data-title]');
+      const rect = text.getBoundingClientRect();
+      return node.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+    } finally { node.style.pointerEvents = original; }
+  }), true, 'settings copy notices must paint above the modal backdrop, without being dimmed or blurred');
+  assert.equal(await settingsDialog.isVisible(), true, 'copying must leave module settings open');
+  assert.equal(await page.evaluate(() => document.querySelector('.settings-dialog').contains(document.activeElement)), true, 'copy notices must retain modal focus');
+  await page.screenshot({ path: path.join(screenshots, 'settings-copy-notice.png'), animations: 'disabled' });
+  console.log('PASS module signature clipboard, notice paint order above settings and retained modal focus');
   await details.getByRole('tab', { name: '类型与其他声明', exact: true }).click();
   await details.locator('.module-detail-item').filter({ hasText: '任务信息' }).waitFor();
   await details.getByRole('tab', { name: '完整解析文本', exact: true }).click();
@@ -593,6 +652,33 @@ try {
   await page.evaluate(async () => { await window.fixtureEmitToken('LATE_CHUNK_SHOULD_NOT_PAINT'); await window.fixtureEmitReasoning('LATE_REASONING_SHOULD_NOT_PAINT'); await window.fixtureFinishStream(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
   assert.equal(await reply.textContent(), stopped, 'late tokens cannot overwrite the stopped result');
   console.log('PASS live SSE reasoning/answer separation, retained reasoning, one-round greeting, reply copy and ignored late chunks after stop');
+  const busyRequestStart = await page.evaluate(() => window.fixtureRequests.length);
+  await page.evaluate(() => { window.fixtureStreamMode = true; window.fixturePendingRequest = null; });
+  await input.fill('你好'); await input.press('Enter');
+  await page.waitForFunction(() => Boolean(window.fixturePendingRequest));
+  await input.fill('你是谁');
+  await page.getByRole('button', { name: '排队发送', exact: true }).click();
+  await page.getByLabel('待发送消息', { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.fixtureRequests.length), busyRequestStart + 1);
+  assert.equal(await input.inputValue(), '');
+  await page.evaluate(async () => { await window.fixtureEmitToken('你好。'); await window.fixtureFinishStream(); });
+  await page.waitForFunction(start => window.fixtureRequests.length === start + 2, busyRequestStart);
+  await page.getByLabel('待发送消息', { exact: true }).waitFor({ state: 'hidden' });
+  await page.getByRole('button', { name: '发送消息', exact: true }).waitFor();
+  assert.match(await page.evaluate(() => JSON.stringify(window.fixtureRequests.at(-1).messages)), /你是谁/);
+  await page.evaluate(() => { window.fixtureStreamMode = true; window.fixturePendingRequest = null; });
+  await input.fill('你好'); await input.press('Enter');
+  await page.waitForFunction(() => Boolean(window.fixturePendingRequest));
+  await input.fill('改用一句话自我介绍');
+  assert.equal(await page.getByRole('button', { name: '停止生成', exact: true }).count(), 1);
+  await input.press('Control+Enter');
+  assert.equal(await input.inputValue(), '');
+  await page.evaluate(async () => { await window.fixtureEmitToken('已经过时的答案'); await window.fixtureFinishStream(); });
+  await page.waitForFunction(start => window.fixtureRequests.length === start + 4, busyRequestStart);
+  await page.getByRole('button', { name: '发送消息', exact: true }).waitFor();
+  assert.match(await page.evaluate(() => JSON.stringify(window.fixtureRequests.at(-1).messages)), /改用一句话自我介绍/);
+  assert.equal(await page.getByLabel('待发送消息', { exact: true }).count(), 0);
+  console.log('PASS busy queue admission/drain, separate Stop, Ctrl+Enter steering and greeting-to-steering continuation');
 
   await page.evaluate(() => {
     const state = window.fixtureChat.getState();
@@ -879,6 +965,50 @@ try {
   assert.equal(await executionPanel.locator('[data-state="stopped"]').count(), 1);
   assert.match(await executionPanel.locator('.agent-tool-error').textContent(), /窗口文件不可写/);
   console.log('PASS live multi-tool timeline, lazy details, completion collapse, failures/stops, keyboard file tabs, JSON paging, repeated-edit cache invalidation, scroll retention and narrow preview');
+  await page.evaluate(() => {
+    const state = window.fixtureChat.getState(), trace = structuredClone(window.fixtureComplexTrace);
+    const changes = [
+      { path: 'D:/fixture/review.epl', before: '首行\n旧代码\n', after: '首行\n中间代码\n' },
+      { path: 'D:/fixture/review.epl', before: '首行\n中间代码\n', after: '首行\n最终代码\n' },
+      { path: 'D:/fixture/new.epl', before: null, after: '新建源码\n' },
+    ];
+    trace.steps.push({ index: 3, assistantText: '更新源码', toolCalls: changes.map((change, i) => ({ id: 'review-' + i, name: 'save_text_file', arguments: { path: change.path, content: change.after } })),
+      toolResults: changes.map((change, i) => ({ toolCallId: 'review-' + i, toolName: 'save_text_file', ok: true, content: { path: change.path, bytes: change.after.length }, sourceChange: change, durationMs: 3 })), finishReason: 'tool_call', startedAt: 1, endedAt: 4 });
+    state.updateMessage(state.activeSessionId, window.fixtureComplexId, { content: '改动已完成。', isStreaming: false, agentTrace: trace });
+  });
+  await page.locator('.turn-changes-summary').last().click();
+  const review = page.getByRole('region', { name: '本轮代码差异', exact: true });
+  await review.getByText('最终代码', { exact: true }).waitFor();
+  await review.getByText('旧代码', { exact: true }).waitFor();
+  assert.equal(await review.getByText('中间代码', { exact: true }).count(), 0, 'review compares turn start and end across repeated edits');
+  await review.getByRole('combobox', { name: '选择改动文件', exact: true }).click();
+  assert.equal(await page.getByRole('option').count(), 2);
+  await page.getByRole('option', { name: 'D:/fixture/review.epl', exact: true }).click();
+  await review.getByRole('button', { name: '并排对比', exact: true }).click();
+  await review.getByRole('button', { name: '差异自动换行', exact: true }).click();
+  assert.equal(await review.locator('.review-body').getAttribute('data-split'), 'true');
+  await page.screenshot({ path: path.join(screenshots, 'turn-review.png'), animations: 'disabled' });
+  await review.getByRole('combobox', { name: '选择改动文件', exact: true }).click();
+  await page.getByRole('option', { name: 'D:/fixture/new.epl', exact: true }).click();
+  await review.getByText('本轮新建的文件', { exact: true }).waitFor();
+  await page.getByRole('tab', { name: '轨迹', exact: true }).click();
+  const trajectory = page.getByRole('region', { name: '轨迹视图', exact: true });
+  await trajectory.getByRole('textbox', { name: '搜索轨迹', exact: true }).fill('save_text_file');
+  await trajectory.getByRole('button', { name: '检查 save_text_file', exact: true }).last().click();
+  const inspection = trajectory.getByRole('complementary', { name: '轨迹详情', exact: true });
+  await inspection.getByRole('button', { name: '复制轨迹详情', exact: true }).click();
+  assert.match(await page.evaluate(() => navigator.clipboard.readText()), /save_text_file/);
+  assert.equal(await inspection.locator('pre').textContent().then(value => value.includes('sourceChange')), false);
+  await page.screenshot({ path: path.join(screenshots, 'trajectory-view.png'), animations: 'disabled' });
+  await page.getByRole('tab', { name: '对话', exact: true }).click();
+  await openSettings(); await page.getByRole('tab', { name: '通用', exact: true }).click();
+  await page.getByRole('switch', { name: '显示代码工作视图', exact: true }).uncheck();
+  await page.keyboard.press('Escape');
+  assert.equal(await page.getByRole('tablist', { name: '会话视图', exact: true }).count(), 0);
+  assert.equal(await review.isVisible(), false);
+  await openSettings(); await page.getByRole('tab', { name: '通用', exact: true }).click();
+  await page.getByRole('switch', { name: '显示代码工作视图', exact: true }).check(); await page.keyboard.press('Escape');
+  console.log('PASS trajectory ledger/search/inspection/copy, code-work toggle, multi-file turn-start/end diff, split/wrap and new-file review');
   await page.evaluate(async () => {
     const state = window.fixtureChat.getState(), trace = structuredClone(window.fixtureComplexTrace);
     trace.outcome = 'max_steps'; trace.finalAnswer = '';

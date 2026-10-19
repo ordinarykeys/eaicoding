@@ -809,6 +809,7 @@ pub async fn deepseek_account_logout(app: AppHandle) -> Result<(), String> {
     let _ = inner.load(&data_dir(&app)?).await;
     let token = inner.grant.as_ref().map(|g| g.token.clone());
     let result = clear_grant(&mut inner, &data_dir(&app)?).await;
+    close_platform_views(&app);
     drop(inner);
     publish(&app);
     if let Some(token) = token {
@@ -869,9 +870,163 @@ pub async fn expire(app: &AppHandle, token: &str) {
             let _ = clear_grant(&mut inner, &dir).await;
         }
         inner.view.error = Some("DeepSeek 登录已失效，请重新登录。".into());
+        close_platform_views(app);
         drop(inner);
         publish(app);
     }
+}
+
+#[derive(Clone, Copy, Deserialize)]
+pub struct PlatformBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+impl PlatformBounds {
+    fn validate(self) -> Result<Self, String> {
+        if [self.x, self.y, self.width, self.height]
+            .into_iter()
+            .any(|value| !value.is_finite() || !(0.0..=100_000.0).contains(&value))
+            || self.width < 1.0
+            || self.height < 1.0
+        {
+            return Err("网页显示区域无效".into());
+        }
+        Ok(self)
+    }
+}
+fn platform_label(id: &str) -> Result<(), String> {
+    if !id.starts_with("account-platform-")
+        || id.len() > 80
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err("账号网页标识无效".into());
+    }
+    Ok(())
+}
+fn platform_url(page: &str) -> Result<Url, String> {
+    let path = match page {
+        "usage" => "/usage",
+        "top-up" => "/top_up",
+        _ => return Err("不支持的账号页面".into()),
+    };
+    Url::parse(&format!("{PLATFORM}{path}")).map_err(|_| "官方页面地址无效".into())
+}
+fn platform_navigation(url: &Url) -> bool {
+    url.origin().ascii_serialization() == PLATFORM
+        && url.username().is_empty()
+        && url.password().is_none()
+}
+fn platform_bootstrap(token: &str) -> String {
+    // This runs only in the isolated official main frame, never the application renderer.
+    let token = serde_json::to_string(token).expect("JSON string");
+    format!(
+        r#"(() => {{
+      if (window !== window.top || location.origin !== 'https://platform.deepseek.com') return;
+      const token = {token};
+      Object.defineProperty(window, 'dsh', {{ value: Object.freeze({{
+        protocolVersion: 1, displayMode: 'embedded', getAuthToken: () => token,
+        getLocale: () => 'zh_CN', onLocaleChange: () => () => {{}}
+      }}), writable: false, configurable: false }});
+    }})()"#
+    )
+}
+fn close_platform_views(app: &AppHandle) {
+    for (label, view) in app.webviews() {
+        if label.starts_with("account-platform-") {
+            let _ = view.close();
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn deepseek_platform_open(
+    app: AppHandle,
+    id: String,
+    page: String,
+    bounds: PlatformBounds,
+) -> Result<(), String> {
+    platform_label(&id)?;
+    let bounds = bounds.validate()?;
+    let url = platform_url(&page)?;
+    let state = app.state::<AccountState>();
+    let mut inner = state.0.lock().await;
+    inner.load(&data_dir(&app)?).await?;
+    let grant = inner.grant.as_ref().ok_or("请先登录 DeepSeek")?;
+    let script = platform_bootstrap(&grant.token);
+    close_platform_views(&app);
+    let window = app.get_window("main").ok_or("主窗口不可用")?;
+    let event_app = app.clone();
+    let event_id = id.clone();
+    let popup_app = app.clone();
+    // Separate private storage prevents browser cookies or a previous account from authenticating this page.
+    let directory = app
+        .path()
+        .app_cache_dir()
+        .map_err(|_| "网页缓存目录不可用")?
+        .join("platform-private")
+        .join(&id);
+    let view = tauri::webview::WebviewBuilder::new(&id, tauri::WebviewUrl::External(url))
+        .data_directory(directory)
+        .incognito(true)
+        .initialization_script(script)
+        .on_navigation(platform_navigation)
+        .on_new_window(move |url, _| {
+            // Match Harness: only payment/documentation popups leave the embedded view.
+            // The browser receives no embedded session or credential bridge.
+            if url.scheme() == "https" && url.username().is_empty() && url.password().is_none() {
+                let _ = popup_app.opener().open_url(url.as_str(), None::<&str>);
+            }
+            tauri::webview::NewWindowResponse::Deny
+        })
+        .on_page_load(move |view, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Started {
+                let _ = view.hide();
+            }
+            if payload.event() == tauri::webview::PageLoadEvent::Finished
+                && platform_navigation(payload.url())
+            {
+                let _ = view.show();
+                let _ =
+                    event_app.emit_to("main", "deepseek-platform-loaded", json!({"id":event_id}));
+            }
+        });
+    window
+        .add_child(
+            view,
+            tauri::LogicalPosition::new(bounds.x, bounds.y),
+            tauri::LogicalSize::new(bounds.width, bounds.height),
+        )
+        .map_err(|_| "无法打开官方账号页面")?;
+    Ok(())
+}
+#[tauri::command]
+pub async fn deepseek_platform_layout(
+    app: AppHandle,
+    id: String,
+    bounds: PlatformBounds,
+) -> Result<(), String> {
+    platform_label(&id)?;
+    let bounds = bounds.validate()?;
+    if let Some(view) = app.get_webview(&id) {
+        view.set_bounds(tauri::Rect {
+            position: tauri::LogicalPosition::new(bounds.x, bounds.y).into(),
+            size: tauri::LogicalSize::new(bounds.width, bounds.height).into(),
+        })
+        .map_err(|_| "无法更新网页大小")?;
+    }
+    Ok(())
+}
+#[tauri::command]
+pub async fn deepseek_platform_close(app: AppHandle, id: String) -> Result<(), String> {
+    platform_label(&id)?;
+    if let Some(view) = app.get_webview(&id) {
+        view.close().map_err(|_| "无法关闭官方页面")?;
+    }
+    Ok(())
 }
 
 /// Resize the single trusted renderer, avoiding a brief workspace flash before login.
@@ -915,6 +1070,43 @@ pub async fn deepseek_account_present(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn embedded_platform_contract_and_isolation() {
+        assert_eq!(
+            platform_url("usage").unwrap().as_str(),
+            "https://platform.deepseek.com/usage"
+        );
+        assert_eq!(
+            platform_url("top-up").unwrap().as_str(),
+            "https://platform.deepseek.com/top_up"
+        );
+        assert!(platform_url("https://example.com").is_err());
+        assert!(platform_label("main").is_err());
+        assert!(platform_label("account-platform-../secret").is_err());
+        assert!(platform_label("account-platform-fixture").is_ok());
+        for url in [
+            "https://evil.example/",
+            "https://platform.deepseek.com.evil.example/",
+            "https://user@platform.deepseek.com/",
+            "http://platform.deepseek.com/",
+            "file:///C:/secret",
+        ] {
+            assert!(!platform_navigation(&Url::parse(url).unwrap()));
+        }
+        assert!(platform_navigation(&platform_url("usage").unwrap()));
+        assert!(PlatformBounds {
+            x: f64::NAN,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0
+        }
+        .validate()
+        .is_err());
+        let bootstrap = platform_bootstrap("fixture-\"\\\n-token");
+        assert!(bootstrap.contains("window !== window.top"));
+        assert!(bootstrap.contains("displayMode: 'embedded'"));
+        assert!(bootstrap.contains("fixture-\\\"\\\\\\n-token"));
+    }
     #[test]
     fn account_details_validation() {
         assert_eq!(

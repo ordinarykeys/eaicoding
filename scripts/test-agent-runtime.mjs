@@ -480,6 +480,67 @@ try {
   assert.equal(api.useSettingsStore.getState().profiles[0].provider, 'deepseek');
   assert(api.TOOL_DEFINITIONS.some(t => t.name === 'generate_gui_project'));
   console.log('PASS cancellation during tool execution, DeepSeek-only factory and GUI registration');
+  let firstSteerRequest, finishSteerRequest;
+  const steeringReady = new Promise(resolve => { firstSteerRequest = resolve; });
+  const steeringRequests = [];
+  let staleWrites = 0;
+  mockIPC((cmd, args) => {
+    if (cmd === 'write_text_file') { staleWrites++; return { path: args.filePath, bytes: 1 }; }
+    if (cmd !== 'llm_proxy_stream') throw new Error(cmd);
+    steeringRequests.push(args.request.body);
+    if (steeringRequests.length === 1) return new Promise(resolve => { finishSteerRequest = resolve; firstSteerRequest(); });
+    return response('我是易语言编程助手。');
+  }, { shouldMockEvents: true });
+  const steering = api.startAgentRun({ config, userInput: '你好', history: [], sessionId: null });
+  await steeringReady;
+  assert.equal(steering.steer('请改为一句话说明你是谁'), true);
+  finishSteerRequest(response(JSON.stringify({ tool_calls: [{ id: 'stale-write', name: 'save_text_file', arguments: { path: 'D:/fixture/stale.epl', content: code } }] })));
+  const steeredTrace = await steering.promise;
+  assert.equal(steeredTrace.outcome, 'answer');
+  assert.equal(steeredTrace.finalAnswer, '我是易语言编程助手。');
+  assert.equal(staleWrites, 0, 'a correction must prevent stale proposed writes');
+  assert.equal(steeringRequests.length, 2, 'a greeting can continue past its original single response when steered');
+  assert(steeringRequests[1].messages.some(message => message.role === 'user' && message.content.includes('一句话说明你是谁')));
+  assert(steeringRequests[1].tools.some(tool => tool.function.name === 'save_text_file'));
+  assert.equal(steering.steer('too late'), false);
+  clearMocks();
+  let releaseRunningTool, signalRunningTool;
+  const runningToolReady = new Promise(resolve => { signalRunningTool = resolve; });
+  let batchRequests = 0;
+  const batchWrites = [];
+  mockIPC((cmd, args) => {
+    if (cmd === 'llm_proxy_stream') {
+      batchRequests++;
+      return response(batchRequests === 1 ? JSON.stringify({ tool_calls: [
+        { id: 'already-running', name: 'read_file', arguments: { file_path: 'D:/fixture/first.txt' } },
+        { id: 'not-started', name: 'save_text_file', arguments: { path: 'D:/fixture/second.txt', content: 'second' } },
+      ] }) : '已读到第一个文件的内容，尚未修改文件。');
+    }
+    if (cmd === 'write_text_file') {
+      batchWrites.push(args.filePath);
+      return { path: args.filePath, bytes: 5 };
+    }
+    if (cmd === 'read_text_file_for_agent') return new Promise(resolve => { releaseRunningTool = () => resolve({ path: args.filePath, content: 'first', encoding: 'UTF-8', bytes: 5, truncated: false }); signalRunningTool(); });
+    throw new Error(cmd);
+  }, { shouldMockEvents: true });
+  const batchSteering = api.startAgentRun({ config, userInput: '处理这两个文本文件', history: [], sessionId: null });
+  await runningToolReady;
+  batchSteering.steer('不要再修改，只说明现状');
+  releaseRunningTool();
+  const batchTrace = await batchSteering.promise;
+  assert.equal(batchTrace.outcome, 'answer', batchTrace.finalAnswer);
+  assert.deepEqual(batchWrites, []);
+  assert(batchTrace.steps[0].toolResults.some(result => result.toolCallId === 'not-started' && !result.ok));
+  clearMocks();
+  mockIPC((cmd, args) => {
+    if (cmd === 'write_text_file') return { path: args.filePath, bytes: 5, source_change: { path: args.filePath, before: '旧源码', after: '新源码' } };
+    throw new Error(cmd);
+  });
+  const mutation = await api.executeTool('save_text_file', 'capture', { path: 'D:/fixture/capture.epl', content: '新源码' }, { allowDialog: false });
+  assert.equal(mutation.sourceChange.before, '旧源码');
+  assert(!('source_change' in mutation.content));
+  assert(!api.toolResultToMessage(mutation).content.includes('旧源码'), 'review snapshots must not inflate model observations');
+  console.log('PASS safe steering, stale-tool cancellation, greeting continuation and UI-only exact mutation snapshots');
 } finally {
   clearMocks(); delete globalThis.window;
   await rm(temp, { recursive: true, force: true });

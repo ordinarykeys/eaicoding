@@ -1,5 +1,9 @@
 import { useChatScroll } from "@/hooks/use-chat-scroll";
 import { ChatComposer } from "@/components/chat-composer";
+import { TrajectoryView } from "@/components/trajectory-view";
+import { TurnReview } from "@/components/turn-review";
+import { turnChanges } from "@/lib/turn-changes";
+import "@/styles/code-work.css";
 import { WorkspacePane, type WorkspaceTab } from "@/components/workspace-pane";
 import { ConversationMenu } from "@/components/conversation-menu";
 import { copyText } from "@/lib/clipboard";
@@ -89,10 +93,16 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
   const updateMessage = useChatStore((s) => s.updateMessage);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const resolveLLMConfig = useSettingsStore((s) => s.resolveLLMConfig);
+  const codeWorkView = useSettingsStore(s => s.codeWorkView);
+  const [conversationView, setConversationView] = useState<"chat" | "trajectory">("chat");
+  const [reviewMessageId, setReviewMessageId] = useState<string | null>(null);
 
   const [input, setInput] = useState("");
   const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [pendingMessages, setPendingMessages] = useState<{ id: string; sessionId: string; text: string; files: string[] }[]>([]);
+  const drainQueue = useRef(true);
+  const activeRunSession = useRef<string | null>(null);
   const [statusLine, setStatusLine] = useState<string | null>(null);
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | null>(null);
   const [previewVisible, setPreviewVisible] = useState(false);
@@ -132,6 +142,11 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
     }
     return files;
   }, [session?.messages]);
+  const latestTrace = useMemo(() => [...(session?.messages ?? [])].reverse().find(message => message.role === "assistant")?.agentTrace, [session?.messages]);
+  const latestChangedFiles = useMemo(() => turnChanges(latestTrace), [latestTrace]);
+  const reviewTrace = session?.messages.find(message => message.id === reviewMessageId)?.agentTrace ?? latestTrace;
+  const changedFiles = useMemo(() => turnChanges(reviewTrace), [reviewTrace]);
+  useEffect(() => { if (!codeWorkView) { setConversationView("chat"); if (workspaceTab === "review") setWorkspaceTab("start"); } }, [codeWorkView, workspaceTab]);
   const previewItems = useMemo(() => openedDocuments.map(item => availableDocuments.get(item.id) ?? item), [openedDocuments, availableDocuments]);
   const openPreview = useCallback((document: PreviewDocument) => {
     setOpenedDocuments(previous => previous.some(item => item.id === document.id)
@@ -172,6 +187,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
 
   useEffect(() => {
     setOpenedDocuments([]); setSelectedPreviewId(null); setWorkspaceTab("start"); setWorkspaceFocused(false); setPreviewVisible(false);
+    setConversationView("chat"); setReviewMessageId(null);
   }, [activeSessionId]);
 
   useEffect(() => { void invoke<string>("default_workspace").then(setDefaultWorkspace).catch(error => toast.error(`读取默认工作区失败：${String(error)}`)); }, []);
@@ -243,10 +259,12 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
   const runAgentMessage = useCallback(async (options: {
     text: string;
     files?: string[];
+    sessionId?: string;
     onAccepted?: () => void;
   }) => {
     const text = options.text.trim();
     const files = options.files ?? [];
+    const targetSessionId = options.sessionId ?? useChatStore.getState().activeSessionId;
     if (!text && files.length === 0) return;
     if (isStreamingRef.current || sendingRef.current) {
       return;
@@ -284,13 +302,16 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
       userContent = text ? `${fileBlock}\n\n用户补充说明：${text}` : fileBlock;
     }
 
-    let sid = useChatStore.getState().activeSessionId;
+    let sid = targetSessionId;
     if (!sid) {
       sid = createSession(deriveSessionTitle(userContent));
     }
 
     toLatest();
     setIsStreaming(true);
+    drainQueue.current = false;
+    isStreamingRef.current = true;
+    activeRunSession.current = sid;
     // Coalesce persistence writes during streaming; the finally block below
     // disables throttling, which flushes the final answer to disk.
     setChatPersistThrottling(true);
@@ -384,6 +405,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
 
     try {
       const trace = await handle.promise;
+      drainQueue.current = trace.outcome === "answer";
       acceptingTokens = false;
       cancelTokenFrame();
       const finalContent = renderTraceForBubble(trace, /*isFinal*/ true);
@@ -418,6 +440,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
       }
     } catch (err) {
       acceptingTokens = false;
+      drainQueue.current = false;
       cancelTokenFrame();
       const message = err instanceof Error ? err.message : String(err);
       updateMessage(sid, assistantMsgId, {
@@ -444,6 +467,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
       setChatPersistThrottling(false);
       if (mountedRef.current) {
         setIsStreaming(false);
+        isStreamingRef.current = false;
         setStatusLine(null);
         setIsPaused(false);
       }
@@ -460,13 +484,37 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
     t,
   ]);
 
-  const handleSend = useCallback(async () => {
+  const handleSend = useCallback(async (alternate = false) => {
     const text = input.trim();
     const files = attachedFiles;
     if (!text && files.length === 0) return;
-    if (isStreamingRef.current || sendingRef.current) return;
+    if (isStreamingRef.current || sendingRef.current) {
+      const sessionId = useChatStore.getState().activeSessionId;
+      if (!sessionId) return;
+      const preferred = useSettingsStore.getState().busyEnterBehavior;
+      const behavior = alternate ? preferred === "queue" ? "steer" : "queue" : preferred;
+      const correction = [files.length ? `用户补充了本地文件，请用工具读取：\n${files.map(path => `- ${path}`).join("\n")}` : "", text].filter(Boolean).join("\n\n");
+      if (behavior === "steer" && activeRunSession.current === sessionId && runHandleRef.current?.steer(correction)) {
+        appendMessage(sessionId, { role: "user", content: correction });
+      } else {
+        setPendingMessages(previous => [...previous, { id: crypto.randomUUID(), sessionId, text, files }]);
+      }
+      setInput(""); setAttachedFiles([]);
+      return;
+    }
+    drainQueue.current = true;
     await runAgentMessage({ text, files, onAccepted: () => { setInput(""); setAttachedFiles([]); } });
-  }, [input, attachedFiles, runAgentMessage]);
+  }, [input, attachedFiles, runAgentMessage, appendMessage]);
+
+  useEffect(() => {
+    if (isStreaming || sendingRef.current || !drainQueue.current) return;
+    const next = pendingMessages.find(item => item.sessionId === activeSessionId);
+    if (!next) return;
+    drainQueue.current = false;
+    void runAgentMessage({ text: next.text, files: next.files, sessionId: next.sessionId, onAccepted: () => {
+      setPendingMessages(previous => previous.filter(item => item.id !== next.id));
+    } });
+  }, [pendingMessages, isStreaming, activeSessionId, runAgentMessage]);
 
   const handleAgentChoice = useCallback(async (choice: string, request: AgentUserChoiceRequest) => {
     const question = request.question.trim();
@@ -479,6 +527,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
   }, [runAgentMessage]);
 
   const handleStop = useCallback(() => {
+    drainQueue.current = false;
     abortRef.current?.();
     abortRef.current = null;
     setStatusLine("正在停止...");
@@ -505,6 +554,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
       handleSend();
     }
   };
+  const handleReview = useCallback((id: string) => { setReviewMessageId(id); setWorkspaceTab("review"); setPreviewVisible(true); }, []);
 
   return (
     <DocumentPreviewContext.Provider value={openPreview}>
@@ -559,7 +609,14 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
             )}
           </header>
 
-          <ScrollArea ref={scrollRootRef} className="chat-message-scroll flex-1 px-0">
+          {codeWorkView && Boolean(session?.messages.length) && <div className="conversation-view-tabs" role="tablist" aria-label="会话视图">
+            <button type="button" role="tab" aria-selected={conversationView === "chat"} onClick={() => setConversationView("chat")}>对话</button>
+            <button type="button" role="tab" aria-selected={conversationView === "trajectory"} onClick={() => setConversationView("trajectory")}>轨迹</button>
+            <button type="button" className="conversation-changes-action" disabled={!latestChangedFiles.length} onClick={() => { setReviewMessageId(null); setWorkspaceTab("review"); setPreviewVisible(true); }}>本轮改动{latestChangedFiles.length > 0 && ` · ${latestChangedFiles.length}`}</button>
+          </div>}
+          {codeWorkView && conversationView === "trajectory" && <TrajectoryView key={activeSessionId} messages={session?.messages ?? []} />}
+
+          <ScrollArea ref={scrollRootRef} className="chat-message-scroll flex-1 px-0" style={conversationView === "trajectory" && codeWorkView ? { display: "none" } : undefined}>
             <div ref={scrollContentRef} className="chat-message-content mx-auto max-w-3xl px-6 py-6 space-y-6">
               {!session?.messages.length && (
                 <div className="chat-empty-welcome flex min-h-[46vh] flex-col items-center justify-center text-center text-muted-foreground">
@@ -582,7 +639,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
 
               {virtualMessages.items.map((msg, index) => (
                 <Fragment key={msg.id}>
-                  <MessageBubble message={msg} onChoice={handleAgentChoice} />
+                  <MessageBubble message={msg} onChoice={handleAgentChoice} onReview={handleReview} />
                   {virtualMessages.offset + index === lastAssistantMessageIndex && (
                     <div className="message-enter chat-pet-row flex justify-start">
                       <DesktopPet placement="chat" />
@@ -594,14 +651,16 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
           </ScrollArea>
 
           <div className="chat-composer-host relative shrink-0">
+            {pendingMessages.some(item => item.sessionId === activeSessionId) && <div className="composer-queue" aria-label="待发送消息">{pendingMessages.filter(item => item.sessionId === activeSessionId).map(item => <div key={item.id}><span>排队中</span><p>{item.text || item.files.map(fileName).join("、")}</p><button type="button" aria-label="立即发送排队消息" disabled={isStreaming} onClick={() => { drainQueue.current = true; setPendingMessages(previous => [...previous]); }}>发送</button><button type="button" aria-label="编辑排队消息" onClick={() => { setInput(item.text); setAttachedFiles(item.files); setPendingMessages(previous => previous.filter(entry => entry.id !== item.id)); }}>编辑</button><button type="button" aria-label="取消排队消息" onClick={() => setPendingMessages(previous => previous.filter(entry => entry.id !== item.id))}><X size={13} /></button></div>)}</div>}
             {showLatest && <button type="button" className="chat-jump-latest" onClick={toLatest}><CaretDown size={14} />回到最新</button>}
-            <ChatComposer value={input} onChange={setInput} onSend={() => void handleSend()} onStop={handleStop} running={isStreaming}
+            <ChatComposer value={input} onChange={setInput} onSend={alternate => void handleSend(alternate)} onStop={handleStop} running={isStreaming}
               files={attachedFiles} onAttach={() => void handleAttachFile()} onRemove={path => setAttachedFiles(files => files.filter(file => file !== path))}
               onNewChat={() => { createSession(); setInput(""); setAttachedFiles([]); }}
               focusKey={activeSessionId} />
           </div>
         </div>
         <WorkspacePane key={activeSessionId ?? "empty"} root={workspace} visible={previewVisible} tab={workspaceTab} onTab={setWorkspaceTab}
+          hasReview={codeWorkView} review={<TurnReview key={reviewMessageId ?? "latest"} files={changedFiles} onOpen={openPreview} />}
           onShow={() => setPreviewVisible(true)} onHide={() => { setPreviewVisible(false); setWorkspaceFocused(false); }}
           onChooseRoot={() => void chooseWorkspace()} onOpenFile={openPreview} sidebarOpen={sidebarOpen} onToggleSidebar={onToggleSidebar}
           focused={workspaceFocused} onFocus={() => setWorkspaceFocused(value => !value)} width={previewWidth} onResize={setPreviewWidth} nativeOverlay={settingsOpen}
@@ -687,11 +746,15 @@ function renderTraceForBubble(trace: AgentTrace, isFinal: boolean): string {
 const MessageBubble = memo(function MessageBubble({
   message,
   onChoice,
+  onReview,
 }: {
   message: ChatMessage;
   onChoice: (choice: string, request: AgentUserChoiceRequest) => void;
+  onReview: (id: string) => void;
 }) {
   const { t } = useTranslation();
+  const codeWorkView = useSettingsStore(s => s.codeWorkView);
+  const changes = useMemo(() => turnChanges(message.agentTrace), [message.agentTrace]);
   const isUser = message.role === "user";
   const trace = message.agentTrace;
   const pendingChoice = !isUser ? trace?.pendingUserChoice : undefined;
@@ -730,6 +793,7 @@ const MessageBubble = memo(function MessageBubble({
         )}
 
         {!message.isStreaming && displayContent && <ReplyActions text={displayContent} isUser={isUser} timestamp={message.timestamp} />}
+        {codeWorkView && changes.length > 0 && <button type="button" className="turn-changes-summary" onClick={() => onReview(message.id)}><Code size={14} />{changes.length} 个文件已更改<span>查看本轮改动</span></button>}
 
         {pendingChoice && (
           <AgentChoicePrompt
@@ -822,7 +886,6 @@ function AgentTracePanel({ trace, running, activeToolId }: { trace: AgentTrace; 
     return () => clearInterval(timer);
   }, [running]);
   const elapsedMs = Math.max(0, (running ? now : trace.endedAt) - trace.startedAt);
-  const codeDiff = useMemo(() => extractCodeDiff(trace), [trace]);
   const steps = trace.steps.filter(step => step.toolCalls.length > 0);
   const currentCall = activeToolId ? steps.flatMap(step => step.toolCalls).find(call => call.id === activeToolId) : null;
   const completedItems = trace.plan?.items.filter(item => item.status === "done" || item.status === "skipped").length ?? 0;
@@ -864,7 +927,6 @@ function AgentTracePanel({ trace, running, activeToolId }: { trace: AgentTrace; 
             </Fragment>;
           })}
           {running && !activeToolId && <div className="agent-next-status" role="status"><span className="assistant-activity-dot" />正在整理下一步…</div>}
-          {codeDiff && <CodeDiffPanel diff={codeDiff} />}
         </div>
       )}
     </div>
@@ -1205,113 +1267,6 @@ function ToolDiagnostics({ call, result }: { call: ToolCall; result: ToolResult 
 // Code diff: before vs after comparison
 // ---------------------------------------------------------------------------
 
-interface CodeDiffData {
-  originalCode: string;
-  optimizedCode: string;
-  originalPath: string;
-}
-
-function extractCodeDiff(trace: AgentTrace): CodeDiffData | null {
-  const originals = new Map<string, string>();
-  let fallbackOriginalCode: string | null = null;
-  let fallbackOriginalPath = "";
-  let diffCandidate: CodeDiffData | null = null;
-
-  for (const step of trace.steps) {
-    for (let i = 0; i < step.toolCalls.length; i++) {
-      const call = step.toolCalls[i];
-      const result = step.toolResults[i];
-      if (!result?.ok) continue;
-
-      if (call.name === "read_file") {
-        const rc = extractResultContent(result.content);
-        const path = rc.filePath ?? String(call.arguments.file_path ?? "");
-        if (rc.fileContent && isLikelyEplContent(rc.fileContent, path)) {
-          if (path) {
-            originals.set(path, rc.fileContent);
-          }
-          if (!fallbackOriginalCode) {
-            fallbackOriginalCode = rc.fileContent;
-            fallbackOriginalPath = path;
-          }
-        }
-      }
-
-      if (call.name === "save_text_file") {
-        const path = String(call.arguments.path ?? "");
-        const content = typeof call.arguments.content === "string"
-          ? call.arguments.content
-          : null;
-        if (!content || !isLikelyEplContent(content, path)) continue;
-
-        const original = originals.get(path) ?? fallbackOriginalCode;
-        if (original && original !== content) {
-          diffCandidate = {
-            originalCode: original,
-            optimizedCode: content,
-            originalPath: path || fallbackOriginalPath,
-          };
-        }
-      }
-
-      if (call.name === "generate_efile_from_code") {
-        const code = typeof call.arguments.code === "string"
-          ? call.arguments.code
-          : null;
-        if (code && fallbackOriginalCode && fallbackOriginalCode !== code) {
-          diffCandidate = {
-            originalCode: fallbackOriginalCode,
-            optimizedCode: code,
-            originalPath: fallbackOriginalPath,
-          };
-        }
-      }
-    }
-  }
-
-  return diffCandidate;
-}
-
-function CodeDiffPanel({ diff }: { diff: CodeDiffData }) {
-  const [tab, setTab] = useState<"original" | "optimized">("optimized");
-  return (
-    <div className="rounded-md overflow-hidden bg-background/30">
-      <div className="flex items-center gap-0 bg-background/40">
-        <button
-          type="button"
-          onClick={() => setTab("original")}
-          className={cn(
-            "px-3 py-1.5 text-xs transition",
-            tab === "original" ? "bg-background text-foreground font-medium" : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          原始代码
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab("optimized")}
-          className={cn(
-            "px-3 py-1.5 text-xs transition",
-            tab === "optimized" ? "bg-background text-foreground font-medium" : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          优化后代码
-        </button>
-        <span className="ml-auto px-2 text-[10px] text-muted-foreground truncate">
-          {diff.originalPath.split(/[\\/]/).pop()}
-        </span>
-      </div>
-      <div className="max-h-[400px] overflow-auto">
-        <CodeBlock
-          language="epl"
-          code={tab === "original" ? diff.originalCode : diff.optimizedCode}
-        />
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // EPL code extraction from trace — for right-side preview panel
 // ---------------------------------------------------------------------------
 

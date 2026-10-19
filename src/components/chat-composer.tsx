@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUp, CaretDown, Check, Code, FilePlus, Plus, Square, X } from "@phosphor-icons/react";
+import { CaretDown, Check, Code, FilePlus, Plus, X } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useSettingsStore } from "@/stores/settings";
 
@@ -74,13 +74,17 @@ function ModelPicker({ disabled }: { disabled: boolean }) {
 }
 
 export function ChatComposer({ value, onChange, onSend, onStop, running, files, onAttach, onRemove, onNewChat, focusKey }: {
-  value: string; onChange: (value: string) => void; onSend: () => void; onStop: () => void; running: boolean;
+  value: string; onChange: (value: string) => void; onSend: (alternate?: boolean) => void; onStop: () => void; running: boolean;
   files: string[]; onAttach: () => void; onRemove: (path: string) => void; onNewChat: () => void;
   focusKey?: string | null;
 }) {
   const editor = useRef<HTMLTextAreaElement>(null);
   const menuRoot = useRef<HTMLDivElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const busyEnter = useSettingsStore(s => s.busyEnterBehavior);
+  const empty = !value.trim() && !files.length;
+  const primaryStops = running && empty;
+  const primaryLabel = primaryStops ? "停止生成" : running ? busyEnter === "queue" ? "排队发送" : "插话发送" : "发送消息";
   useLayoutEffect(() => {
     const field = editor.current;
     if (!field) return;
@@ -115,7 +119,7 @@ export function ChatComposer({ value, onChange, onSend, onStop, running, files, 
         placeholder={files.length ? "说明这些易语言工程或模块需要怎样修改…" : "描述易语言功能、窗口界面或需要修复的问题…"}
         onChange={event => onChange(event.target.value)} onKeyDown={event => {
           if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-          if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (!running) onSend(); }
+          if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (!empty) onSend(event.ctrlKey || event.metaKey); }
         }} />
       <div className="harness-composer-row">
         <div className="harness-composer-tools">
@@ -129,8 +133,9 @@ export function ChatComposer({ value, onChange, onSend, onStop, running, files, 
           </div>
         </div>
         <div className="harness-composer-trailing"><ModelPicker disabled={running} />
-          <button type="button" className="harness-composer-send" aria-label={running ? "停止生成" : "发送消息"} disabled={!running && !value.trim() && !files.length} onClick={running ? onStop : onSend}>
-            {running ? <Square size={15} weight="fill" /> : <ArrowUp size={19} weight="bold" />}
+          {running && !empty && <button type="button" className="harness-composer-send" aria-label="停止生成" onMouseDown={event => event.preventDefault()} onClick={onStop}><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" /></svg></button>}
+          <button type="button" className="harness-composer-send" aria-label={primaryLabel} title={primaryLabel} disabled={!running && empty} onMouseDown={event => event.preventDefault()} onClick={() => primaryStops ? onStop() : onSend()}>
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">{primaryStops ? <rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" /> : <path d="M8.3125 0.980183C8.66767 1.0531 8.97902 1.20418 9.2627 1.43233C9.48724 1.61297 9.73029 1.85793 9.97949 2.10714L14.707 6.83468L13.293 8.24874L9 3.95577V15.0417H7V3.95577L2.70703 8.24874L1.29297 6.83468L6.02051 2.10714C6.26971 1.85793 6.51277 1.61297 6.7373 1.43233C6.97662 1.23986 7.28445 1.04402 7.6875 0.980183C7.8973 0.947006 8.1031 0.95516 8.3125 0.980183Z" fill="currentColor" />}</svg>
           </button>
         </div>
       </div>

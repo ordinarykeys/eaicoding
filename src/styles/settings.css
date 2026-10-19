@@ -235,3 +235,8 @@
 .module-detail-error {font-size:12px;color:var(--destructive);overflow-wrap:anywhere}
 .settings-diagnostics {font-size:12px;color:var(--muted-foreground);padding-top:16px}
 .settings-diagnostics summary {cursor:pointer}
+
+.settings-coding-row { display:flex;align-items:center;justify-content:space-between;gap:24px;padding:16px 0;border-bottom:.5px solid var(--border);font-size:14px;line-height:22px; }
+.settings-coding-row > div:first-child { flex:1;min-width:0; }
+.settings-coding-row p { margin:4px 0 0;color:var(--muted-foreground);font-size:12px;line-height:18px; }
+.settings-coding-row .settings-busy-selector { flex:none;width:auto;height:36px;gap:12px;padding:0 14px;border:0;background:var(--secondary);font-weight:400; }

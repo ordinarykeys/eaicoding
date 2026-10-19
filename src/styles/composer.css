@@ -14,9 +14,9 @@
 .harness-model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .harness-model-trigger > svg { flex: none; transition: transform 120ms ease; }
 .harness-model-trigger[aria-expanded="true"] > svg { transform: rotate(180deg); }
-.harness-composer-send { display: grid; flex: none; place-items: center; width: 34px; height: 34px; transform: translateY(-2px); border: 0; border-radius: 8px; background: var(--primary); color: var(--primary-foreground); cursor: pointer; }
+.harness-composer-send { display: grid; flex: none; place-items: center; width: 34px; height: 34px; transform: translateY(-2px); border: 0; border-radius: 999px; corner-shape: round; background: var(--primary); color: #fff; cursor: pointer; }
 .harness-composer-send:hover:not(:disabled) { filter: brightness(1.08); }
-.harness-composer-send:disabled { opacity: .4; cursor: default; }
+.harness-composer button.harness-composer-send:disabled { opacity: .4; cursor: default; }
 .harness-composer button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .harness-composer button:disabled { cursor: default; opacity: .45; }
 .harness-composer-hint { min-height: 20px; padding: 4px 0 0; color: var(--muted-foreground); font: 11px/18px var(--font-sans); text-align: center; }
@@ -52,3 +52,9 @@
   .harness-composer-tools, .harness-composer-trailing { gap: 6px; }
   .harness-composer-row { gap: 6px; }
 }
+
+.composer-queue {max-width:952px;margin:0 auto 8px;padding:4px 12px;border-radius:10px;background:var(--card);font-size:12px;}
+.composer-queue > div {display:flex;align-items:center;gap:8px;padding:6px 0;}
+.composer-queue span {color:var(--muted-foreground);flex:none;}
+.composer-queue p {flex:1;min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.composer-queue button {padding:3px 5px;cursor:pointer;color:var(--muted-foreground);}

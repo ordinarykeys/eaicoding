@@ -20,6 +20,14 @@ fn decode_source(bytes: &[u8]) -> (String, String) {
 pub struct WriteTextResult {
     pub path: String,
     pub bytes: usize,
+    pub source_change: Option<SourceChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceChange {
+    pub path: String,
+    pub before: Option<String>,
+    pub after: String,
 }
 
 fn should_use_crlf(path: &Path) -> bool {
@@ -61,6 +69,12 @@ async fn write_text_file_inner(
     encoding: Option<String>,
 ) -> Result<WriteTextResult, String> {
     let path = PathBuf::from(&file_path);
+    // Capture both sides under FILE_WRITE_LOCK; never infer a baseline from a paged read.
+    let before = match tokio::fs::metadata(&path).await {
+        Ok(metadata) if metadata.len() <= 1_048_576 => tokio::fs::read(&path).await.map(Some).ok(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
+        _ => None,
+    };
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -86,6 +100,15 @@ async fn write_text_file_inner(
     };
 
     let byte_count = bytes.len();
+    let source_change = if byte_count <= 1_048_576 {
+        before.map(|before| SourceChange {
+            path: file_path.clone(),
+            before: before.map(|bytes| decode_source(&bytes).0),
+            after: decode_source(&bytes).0,
+        })
+    } else {
+        None
+    };
     tokio::fs::write(&path, bytes)
         .await
         .map_err(|err| format!("写入文件失败：{}", err))?;
@@ -93,6 +116,7 @@ async fn write_text_file_inner(
     Ok(WriteTextResult {
         path: path.to_string_lossy().to_string(),
         bytes: byte_count,
+        source_change,
     })
 }
 
@@ -234,6 +258,7 @@ pub struct TextPatchResult {
     replacements: usize,
     bytes: usize,
     code_hash: String,
+    source_change: Option<SourceChange>,
 }
 
 fn replace_unique(source: &str, search: &str, replacement: &str) -> Result<String, String> {
@@ -283,12 +308,51 @@ pub async fn apply_text_patch_for_agent(
         replacements: 1,
         bytes: written.bytes,
         code_hash: code_hash(&updated),
+        source_change: written.source_change,
     })
 }
 
 #[cfg(test)]
 mod source_tests {
     use super::*;
+    #[test]
+    fn native_mutations_capture_exact_before_and_after() {
+        tauri::async_runtime::block_on(async {
+            let path = std::env::temp_dir().join(format!(
+                "eaicoding-review-{:016x}.epl",
+                rand::random::<u64>()
+            ));
+            let name = path.to_string_lossy().to_string();
+            let created = write_text_file(
+                name.clone(),
+                "首行\n目标 ＝ 1\n".into(),
+                Some("gbk".into()),
+                None,
+            )
+            .await
+            .unwrap();
+            let change = created.source_change.unwrap();
+            assert_eq!(change.before, None);
+            assert_eq!(change.after, "首行\r\n目标 ＝ 1\r\n");
+            let read = read_text_file_for_agent(name.clone(), Some(2), None, None, None)
+                .await
+                .unwrap();
+            assert!(read.is_partial);
+            let edited = apply_text_patch_for_agent(
+                name.clone(),
+                "目标 ＝ 1".into(),
+                "目标 ＝ 2".into(),
+                read.code_hash,
+                None,
+            )
+            .await
+            .unwrap();
+            let change = edited.source_change.unwrap();
+            assert_eq!(change.before.as_deref(), Some("首行\r\n目标 ＝ 1\r\n"));
+            assert_eq!(change.after, "首行\r\n目标 ＝ 2\r\n");
+            std::fs::remove_file(path).unwrap();
+        });
+    }
     #[test]
     fn paging_preserves_all_chinese_source_and_line_numbers() {
         let source = "首行\r\n".repeat(5000) + "尾部业务\n";

@@ -18,6 +18,7 @@ import {
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Card,
   CardHeader,
@@ -158,6 +159,7 @@ function SettingsPanel({ section, onSectionChange }: { section: string; onSectio
             </TabsContent>}
             {visited.has("appearance") && <TabsContent forceMount value="appearance" className="settings-pane">
               <AppearanceSettings />
+              <CodingPreferences />
               <PetSettingsCard />
               <details className="settings-diagnostics"><summary>执行诊断</summary><Suspense fallback={null}><AgentCheckpointPanel /></Suspense></details>
             </TabsContent>}
@@ -185,6 +187,19 @@ function AppearanceSettings() {
       </fieldset>
     </section>
   );
+}
+
+function CodingPreferences() {
+  const behavior = useSettingsStore(s => s.busyEnterBehavior);
+  const setBehavior = useSettingsStore(s => s.setBusyEnterBehavior);
+  const codeWorkView = useSettingsStore(s => s.codeWorkView);
+  const setCodeWorkView = useSettingsStore(s => s.setCodeWorkView);
+  return <section className="settings-coding-preferences">
+    <div className="settings-coding-row"><div><div>繁忙时的发送行为</div><p>智能体运行时 Enter 键和发送按钮的行为；Ctrl+Enter 使用另一行为</p></div>
+      <Select value={behavior} onValueChange={value => setBehavior(value as "queue" | "steer")}><SelectTrigger className="settings-busy-selector" aria-label="繁忙时的发送行为"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="queue">排队发送</SelectItem><SelectItem value="steer">插话发送</SelectItem></SelectContent></Select>
+    </div>
+    <label className="settings-coding-row"><div><div>显示代码工作视图</div><p>开启后，显示轨迹、本轮代码差异</p></div><input type="checkbox" role="switch" aria-label="显示代码工作视图" className="settings-switch" checked={codeWorkView} onChange={event => setCodeWorkView(event.target.checked)} /></label>
+  </section>;
 }
 
 // ---- Sub-components ----

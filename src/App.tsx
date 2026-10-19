@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import { Toaster } from "sonner";
+import { createPortal } from "react-dom";
 import { Sidebar } from "@/components/sidebar";
 import { ChatView } from "@/components/chat-view";
 import { SettingsView } from "@/components/settings-view";
@@ -10,6 +11,8 @@ import { DeepSeekLogin } from "@/components/deepseek-login";
 import { useDeepSeekAccount } from "@/stores/deepseek-account";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { PlatformOverlay } from "@/components/platform-overlay";
+import { usePlatformPage } from "@/stores/platform-page";
 
 const MIN_SIDEBAR_WIDTH = 200;
 const MAX_SIDEBAR_WIDTH = 480;
@@ -22,6 +25,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const theme = useSettingsStore((s) => s.theme);
+  const platformPage = usePlatformPage(s => s.page);
   const { ready, view, refresh, refreshDetails } = useDeepSeekAccount();
 
   useEffect(() => { if (view.signedIn) void refreshDetails(); }, [view.signedIn, refreshDetails]);
@@ -95,12 +99,14 @@ export default function App() {
               className="flex h-full min-w-0 flex-col transition-[padding] duration-200"
               style={{ paddingLeft: sidebarOpen ? sidebarWidth + 16 : 0 }}
             >
-              <ChatView sidebarOpen={sidebarOpen} onToggleSidebar={toggleSidebar} settingsOpen={settingsOpen || accountOverlayOpen} />
+              <ChatView sidebarOpen={sidebarOpen} onToggleSidebar={toggleSidebar} settingsOpen={settingsOpen || accountOverlayOpen || platformPage !== null} />
             </main>
           </div>
         </div>
-        <Toaster richColors position="top-right" theme={theme} />
+        {/* Escape #root's stacking context so settings cannot dim or blur notices. */}
+        {createPortal(<Toaster richColors position="top-right" theme={theme} />, document.body)}
         <SettingsView section={settingsSection} onSectionChange={setSettingsSection} />
+        <PlatformOverlay />
       </div>
     </Dialog>
   );

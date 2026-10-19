@@ -28,6 +28,7 @@ npm run build
 npm run test:agent-runtime
 npm run test:module-parser
 npm run test:code-highlight
+npm run test:code-work
 npm run test:agent-choice
 npm run test:agent-epl
 npm run test:agent-retrieval
@@ -141,3 +142,19 @@ Tauri JS API 固定在 2.10.x、剪贴板插件在 2.3.x，与 Rust 的同一 mi
 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-installer.ps1` 使用同一生产 helper，新增 128 MiB 单文件真实解压、哈希比对、工作线程暂停时移动和限时消息响应、缺失压缩包/工具失败验证，确认成功前不显示 100%。另编译运行 `test-installer-progress.cpp`，覆盖百分比跨管道分片、噪声/回退与仅成功到 100% 的门控。它只在 `.tmp` 内操作，不安装产品或修改产品注册表。测试不能代替所有磁盘、显卡和实时杀毒环境下的流畅度验收。
 
 本轮 7 项账号后端测试通过，其中更新后的 401 与数据投影用例另单独通过；完整 Edge 界面及 Worker 回归通过。0.1.4 已完成前端生产构建、Rust release 构建及 NSIS/便携版打包，安装器 fixture 连续复测通过。附件校验覆盖 x64 PE、产品版本、独立 7-Zip 内层包、22 个工具文件、第三方声明/完整 LGPL 文本及 SHA256；安装版和便携版主程序仅有 Tauri 包类型的三字节差异。未自动安装或发布 GitHub Release。
+
+## 0.1.5 设置通知层级
+
+`#root` 的 `position: relative; z-index: 1` 会建立层叠上下文；放在其中的 Sonner 即使自身层级很高，仍低于挂到 body 的设置遮罩。参考 Harness 的 Toast Portal 实现，App 将 Toaster 挂到 `document.body`，让通知与设置浮层在同一外层比较层级。保留模态指针与焦点约束。
+
+`npm run test:ui` 新增模块详情“复制签名”的实际操作：校验剪贴板内容，等待通知入场动画后进行绘制层级命中检查，并检查设置保持打开和焦点仍在弹窗内；截图为 `.tmp/ui-validation/settings-copy-notice.png`。命中检查只临时允许通知参与测试，不修改产品的模态交互。
+
+## 0.1.5 Harness 交互对照
+
+参考 Harness 的 InputBar（34px 圆形、16px SVG）、EnterBehaviorRow、DeveloperToolsRow、PlatformOverlay、TrajectoryTable、ReviewTab 和 FileDiff；具体源码见第三方声明。继续使用 EAiCoding 主题与 Tauri，未引入 Harness 的 Electron 或插件运行时。
+
+运行中有草稿时发送，空草稿时停止；Ctrl+Enter 选择排队/插话的另一行为。插话在模型/工具边界进入上下文，当前正在执行的工具完成后再处理；旧模型轮提出但尚未执行的调用会被跳过。普通排队仅在本轮成功后自动继续；失败或停止后保留供手动发送、编辑或取消。排队按会话隔离，当前版本队列只保留在本次运行内存中。
+
+账号用量与充值使用独立原生 WebView，官方主帧具备与 Harness 相同的 window.dsh embedded 协议。主界面只发送固定页面枚举、视图标识与边界，不接收 token；禁止非官方主页面导航，网页不能调用应用命令。私有网页数据隔离，退出/凭据失效时关闭。用量和充值主页面留在应用内；与 Harness 一致，页面主动打开的 HTTPS 支付/文档新窗口交给系统浏览器，不携带内嵌会话。模拟界面验证加载/返回/重试和焦点恢复；未用真实账号执行用量查询或支付。
+
+轨迹读取会话中已有消息与工具证据，采用表格加右侧检查器、分页与搜索，不伪造请求性能或用量字段。代码差异使用原生写入锁内的真实快照，按文件汇总本轮首尾；正文从 ToolResult.content 分离，模型观察与历史摘要不重复携带完整源码。每侧上限 1 MiB，缺少可靠快照时不推测完整差异；二进制产物继续走文件展示。差异计算限时 150ms，长文件每页最多 300 行，轨迹每页最多 200 条。
