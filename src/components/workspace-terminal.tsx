@@ -67,9 +67,8 @@ export function WorkspaceTerminal({ id, root, visible }: { id: string; root: str
   }, [theme, attempt]);
   useEffect(() => { if (visible) { fitRef.current(); terminalRef.current?.focus(); } }, [visible]);
   return <section className="workspace-terminal" hidden={!visible} aria-label="工作区终端">
-    <div className="workbench-path" title={root}>PowerShell · {root}</div>
+    <div className="workbench-path">PowerShell · {root}</div>
     {(error || exited) && <div className="document-notice" role={error ? "alert" : "status"}>{error || "终端已退出"}<button type="button" onClick={() => setAttempt(value => value + 1)}>重新打开</button></div>}
     <div className="terminal-screen" ref={host} />
-    <div className="workbench-hint">Ctrl+C 中断命令 · Ctrl+Shift+C 复制选中文本</div>
   </section>;
 }

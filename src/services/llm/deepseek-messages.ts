@@ -20,6 +20,25 @@ type Block = {
   tool_use_id?: string;
   content?: string;
 };
+
+/** Keep the server's useful validation message without dumping response bodies or credentials. */
+function errorDetail(text: string): string {
+  let detail = "";
+  try {
+    const value = JSON.parse(text);
+    const error = value?.error;
+    detail = typeof error?.message === "string" ? error.message
+      : typeof value?.message === "string" ? value.message : "";
+  } catch { /* HTML/proxy error pages are not useful validation messages. */ }
+  detail = detail.replace(/Bearer\s+\S+|\bsk-[A-Za-z0-9_-]+/gi, "[已隐藏]")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 1200);
+  return detail;
+}
+
+function httpError(status: number, text: string): LLMError {
+  const detail = errorDetail(text);
+  return new LLMError(`DeepSeek HTTP ${status}${detail ? `：${detail}` : ""}`, status);
+}
 export class DeepSeekMessagesProvider extends BaseLLMProvider {
   async stream(
     messages: ChatMessage[],
@@ -43,9 +62,11 @@ export class DeepSeekMessagesProvider extends BaseLLMProvider {
                   content: message.content,
                 },
               ]
-            : ((saved?.deepseekModel === this.config.model
-                ? saved.deepseekBlocks?.map((b) => ({ ...b }))
-                : undefined) ?? [
+            : [
+                // Replay only provider-owned thinking/signatures. Text and calls
+                // come from the current history, including synthesized tool turns.
+                ...(message.role === "assistant" && saved?.deepseekModel === this.config.model
+                  ? saved.deepseekBlocks?.filter(b => b.type === "thinking").map(b => ({ ...b })) ?? [] : []),
                 ...(message.content
                   ? [{ type: "text", text: message.content }]
                   : []),
@@ -55,7 +76,8 @@ export class DeepSeekMessagesProvider extends BaseLLMProvider {
                   name: call.name,
                   input: call.arguments,
                 })),
-              ]);
+              ];
+        if (!content.length) continue;
         const role = message.role === "assistant" ? "assistant" : "user";
         const previous = history.at(-1);
         if (previous?.role === role) previous.content.push(...content);
@@ -69,6 +91,23 @@ export class DeepSeekMessagesProvider extends BaseLLMProvider {
               Number(b.type === "tool_result") -
               Number(a.type === "tool_result"),
           );
+      // Match Harness's local validation before sending malformed tool history.
+      let pending = new Set<string>();
+      for (const message of history) {
+        if (message.role === "assistant") {
+          const calls = message.content.filter(block => block.type === "tool_use");
+          pending = new Set(calls.map(block => block.id!));
+          if (pending.size !== calls.length || calls.some(block => !block.id))
+            throw new Error("对话历史存在重复或无效的工具调用编号。请新建任务后重试。");
+        } else {
+          for (const result of message.content.filter(block => block.type === "tool_result")) {
+            if (!result.tool_use_id || !pending.delete(result.tool_use_id))
+              throw new Error("对话历史中的工具结果缺少对应调用。请新建任务后重试。");
+          }
+          if (pending.size) throw new Error("对话历史中的工具调用缺少结果，尚不能继续请求模型。");
+        }
+      }
+      if (pending.size) throw new Error("对话历史末尾仍有未完成的工具调用，尚不能继续请求模型。");
       const effort = this.config.reasoningEffort ?? "high";
       if (!["off", "low", "high", "max"].includes(effort))
         throw new Error(`DeepSeek 不支持推理强度 ${effort}`);
@@ -112,7 +151,7 @@ export class DeepSeekMessagesProvider extends BaseLLMProvider {
         signal: controller.signal,
       });
       if (!response.ok)
-        throw new LLMError(`DeepSeek HTTP ${response.status}`, response.status);
+        throw httpError(response.status, await response.text());
       const blocks: Block[] = [],
         args = new Map<number, string>();
       const closed = new Set<number>();
@@ -134,10 +173,11 @@ export class DeepSeekMessagesProvider extends BaseLLMProvider {
             stop_reason?: string;
           };
           message?: { stop_reason?: string };
+          error?: { message?: string };
         };
         const index = event.index ?? 0;
         if (event.type === "error")
-          throw new Error("DeepSeek 流返回错误，本轮工具未执行。");
+          throw new Error(`DeepSeek 流返回错误：${errorDetail(JSON.stringify({ error: event.error })) || "本轮工具未执行。"}`);
         if (event.type === "content_block_start" && event.content_block) {
           blocks[index] = { ...event.content_block };
           if (event.content_block.type === "text" && event.content_block.text) {

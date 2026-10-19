@@ -1,6 +1,7 @@
 mod crypto;
 mod deepseek_account;
 mod deepseek_web;
+mod desktop_menu;
 mod eagent_tools;
 mod easy_language_sdk;
 mod ecode_parser;
@@ -47,6 +48,7 @@ pub fn run() {
         .setup(|app| {
             setup_window_effects(app);
             system_tray::setup(app.handle())?;
+            desktop_menu::setup(app.handle())?;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -60,6 +62,9 @@ pub fn run() {
         .invoke_handler({
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
                 parse_efile,
+                desktop_menu::show_caption_menu,
+                desktop_menu::exit_application,
+                desktop_menu::check_application_update,
                 export_efile_to_ecode,
                 summarize_ecode_project_for_agent,
                 generate_efile_from_ecode,

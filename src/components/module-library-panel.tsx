@@ -224,7 +224,6 @@ function UserModuleRow({
       <div className="min-w-0 flex-1">
         <button type="button" onClick={onOpen} aria-label={`查看模块 ${entry.name}`}
           className="module-library-name block w-full truncate text-left text-sm font-medium"
-          title={entry.sourcePath ?? entry.storedPath}
         >
           {entry.name}
         </button>
@@ -246,7 +245,6 @@ function UserModuleRow({
         {entry.lastError && (
           <pre
             className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded bg-destructive/10 px-2 py-1 text-[11px] text-destructive"
-            title="点击复制完整错误"
             onClick={() => {
               void navigator.clipboard?.writeText(entry.lastError ?? "").then(() => {
                 toast.success("已复制错误信息");

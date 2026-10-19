@@ -54,7 +54,7 @@
 .settings-field input:focus, .settings-field select:focus, .settings-model-row input:focus, .settings-model-add input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px var(--ring); }
 .settings-key-input { position: relative; }.settings-key-input input { padding-right: 40px; font-family: var(--font-mono); }
 .settings-key-input button { position: absolute; right: 10px; top: 9px; color: var(--muted-foreground); cursor: pointer; }
-.settings-hint { font-size: 12px; line-height: 18px; color: var(--muted-foreground); }
+.settings-status { font-size: 12px; line-height: 18px; color: var(--muted-foreground); }
 .settings-model-catalog { display: flex; flex-direction: column; gap: 8px; }
 .settings-model-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; margin-bottom: 3px; }
 .settings-model-head small { margin-left: 6px; color: var(--muted-foreground); }
@@ -223,7 +223,7 @@
 .workbench-load-more { display: block; margin: 12px auto; padding: 7px 14px; border-radius: 5px; background: var(--secondary); font-size: 12px; cursor: pointer; }
 .workbench-path { flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 8px 12px; border-bottom: .5px solid var(--border); font-size: 11px; color: var(--muted-foreground); }
 .terminal-screen { flex: 1; min-height: 0; padding: 8px 4px 4px 10px; overflow: hidden; }
-.terminal-screen .xterm { height: 100%; }.workbench-hint { flex: none; color: var(--muted-foreground); padding: 4px 12px; font-size: 10px; }
+.terminal-screen .xterm { height: 100%; }
 .browser-toolbar { display: flex; align-items: center; gap: 3px; padding: 6px; border-bottom: .5px solid var(--border); flex: none; }
 .browser-toolbar input { flex: 1; min-width: 0; height: 28px; padding: 0 8px; border: .5px solid var(--border); border-radius: 4px; font-size: 11px; outline: none; }
 .browser-toolbar input:focus { border-color: var(--primary); }.browser-go { padding: 4px 6px; font-size: 11px; cursor: pointer; }

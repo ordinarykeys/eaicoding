@@ -2,6 +2,7 @@ import { type PointerEvent, useCallback, useEffect, useMemo, useState } from "re
 import { useChatStore } from "@/stores/chat";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CopySimple, Minus, Square, X, SidebarSimple, Plus } from "@phosphor-icons/react";
+import { WindowMenu } from "./window-menu";
 
 type WindowResizeDirection =
   | "East"
@@ -102,7 +103,7 @@ export function WindowResizeHandles() {
   );
 }
 
-export function WindowTitlebar({ sidebarOpen, onToggleSidebar }: { sidebarOpen?: boolean; onToggleSidebar?: () => void }) {
+export function WindowTitlebar({ sidebarOpen, onToggleSidebar, onMenuOverlayChange }: { sidebarOpen?: boolean; onToggleSidebar?: () => void; onMenuOverlayChange?: (open: boolean) => void }) {
   const { appWindow, isMaximized, refreshMaximized } = useMaximizedState();
 
   const minimize = () => {
@@ -148,6 +149,7 @@ export function WindowTitlebar({ sidebarOpen, onToggleSidebar }: { sidebarOpen?:
           </div>
         </div>
         </>}
+        {onToggleSidebar && onMenuOverlayChange && <WindowMenu onOverlayChange={onMenuOverlayChange} />}
       </div>
 
       <div className="no-window-drag flex h-full items-center">
@@ -174,7 +176,6 @@ export function WindowTitlebar({ sidebarOpen, onToggleSidebar }: { sidebarOpen?:
         <button
           type="button"
           aria-label="Close"
-          title="隐藏到系统托盘"
           className="window-control window-control-close"
           onClick={close}
         >

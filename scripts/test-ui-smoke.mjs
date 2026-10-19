@@ -57,6 +57,11 @@ idbStorage.setItem = async (name, value) => {
 };
 mockIPC((cmd, args) => {
   window.fixtureIpc.push(cmd);
+  if (cmd === 'show_caption_menu') {
+    window.fixtureCaptionRequest = { ...args, active: document.activeElement?.getAttribute('aria-label'), start: document.activeElement?.selectionStart, end: document.activeElement?.selectionEnd };
+    return new Promise(resolve => { window.fixtureCloseCaption = resolve; });
+  }
+  if (cmd === 'check_application_update') return { version: 'v0.1.8', url: 'https://github.com/ordinarykeys/eaicoding/releases/tag/v0.1.8' };
   if (cmd === 'deepseek_account_status') {
     if (window.fixtureAccountUnavailable) return { ...window.fixtureAccountView, signedIn: false };
     return { ...window.fixtureAccountView };
@@ -456,6 +461,33 @@ try {
       '[aria-label="消息输入框"]',
     );
   });
+  const caption = page.getByRole("menubar", { name: "应用菜单" });
+  assert.deepEqual(await caption.getByRole("menuitem").allTextContents(), ["应用", "编辑"]);
+  await page.evaluate(() => { const input = document.querySelector('[aria-label="消息输入框"]'); input.focus(); input.setSelectionRange(2, 6); });
+  await caption.getByRole("menuitem", { name: "编辑", exact: true }).click();
+  await page.waitForFunction(() => window.fixtureCaptionRequest?.name === 'edit');
+  assert.deepEqual(await page.evaluate(() => ({ active: window.fixtureCaptionRequest.active, start: window.fixtureCaptionRequest.start, end: window.fixtureCaptionRequest.end })), { active: "消息输入框", start: 2, end: 6 });
+  await page.evaluate(() => window.fixtureCloseCaption());
+  await page.waitForFunction(() => document.querySelector('[role="menubar"] [aria-expanded="true"]') === null);
+  await caption.getByRole("menuitem", { name: "应用", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(() => window.fixtureCaptionRequest?.active === '消息输入框');
+  assert.deepEqual(await page.evaluate(() => [document.activeElement.selectionStart, document.activeElement.selectionEnd]), [2, 6]);
+  await page.evaluate(() => window.fixtureCloseCaption());
+  await page.evaluate(() => window.fixtureEmit("caption-menu-action", "about"));
+  await page.getByRole("dialog", { name: "关于 EAiCoding" }).waitFor();
+  await page.screenshot({ path: path.join(screenshots, "application-about.png") });
+  await page.getByRole("button", { name: "关闭", exact: true }).click();
+  await page.evaluate(() => window.fixtureEmit("caption-menu-action", "updates"));
+  await page.getByText("最新发布版本 v0.1.8", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "关闭", exact: true }).click();
+  await page.evaluate(() => window.fixtureEmit("caption-menu-action", "exit"));
+  await page.getByRole("dialog", { name: "退出 EAiCoding？" }).waitFor();
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  assert.equal(await page.evaluate(() => window.fixtureIpc.includes('exit_application')), false);
+  assert.equal(await page.locator('[title], [role="tooltip"], .harness-composer-hint, .workbench-hint').count(), 0);
+  console.log("PASS caption menu pointer/keyboard focus and selection, about/update/exit actions and no tooltips");
   const openSettings = async () => {
     await page.getByRole("button", { name: "账号菜单", exact: true }).click();
     await page.getByRole("menuitem", { name: "设置", exact: true }).click();
@@ -491,7 +523,7 @@ try {
     "sidebar footer is the account identity",
   );
   await accountTrigger.click();
-  assert.deepEqual(await page.getByRole("menuitem").allTextContents(), [
+  assert.deepEqual(await page.getByRole("menu", { name: "账号操作" }).getByRole("menuitem").allTextContents(), [
     "设置Ctrl+,",
     "退出登录",
   ]);
@@ -1031,10 +1063,7 @@ try {
     .fill("D:/fixture/new-environment");
   await page.evaluate(() => window.fixtureResolveEnv());
   await scanButton.waitFor();
-  await page
-    .getByRole("status")
-    .filter({ hasText: "打开本页不会自动扫描磁盘" })
-    .waitFor();
+  assert.equal(await page.getByText(/打开本页不会自动扫描磁盘/).count(), 0, "remove extra environment instruction tips");
   assert.equal(
     await page.getByText("编译链状态正常", { exact: true }).count(),
     0,
@@ -1081,10 +1110,7 @@ try {
   );
   await page.getByRole("tab", { name: "易语言环境", exact: true }).click();
   await page.evaluate(() => window.fixtureResolveEnv());
-  await page
-    .getByRole("status")
-    .filter({ hasText: "打开本页不会自动扫描磁盘" })
-    .waitFor();
+  assert.equal(await page.getByText(/打开本页不会自动扫描磁盘/).count(), 0);
   assert.equal(
     await page.getByText("编译链状态正常", { exact: true }).count(),
     0,

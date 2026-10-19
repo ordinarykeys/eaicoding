@@ -110,18 +110,18 @@ export function DocumentPreview({ items, activeId, onSelect, onClose, onCloseTab
         tabs.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
       }}>
         {items.map(item => <div className="document-tab" key={item.id} data-active={item.id === active.id}>
-          <button type="button" role="tab" tabIndex={item.id === active.id ? 0 : -1} aria-selected={item.id === active.id} title={item.path ?? item.title} onClick={() => onSelect(item.id)}><Code size={14} /><span>{item.title}</span></button>
+          <button type="button" role="tab" tabIndex={item.id === active.id ? 0 : -1} aria-selected={item.id === active.id} onClick={() => onSelect(item.id)}><Code size={14} /><span>{item.title}</span></button>
           <button type="button" aria-label={`关闭 ${item.title}`} onClick={() => onCloseTab(item.id)}><X size={12} /></button>
         </div>)}
       </div>
-      <button type="button" className="document-icon" aria-label="关闭预览" title="关闭预览" onClick={onClose}><X size={15} /></button>
+      <button type="button" className="document-icon" aria-label="关闭预览" onClick={onClose}><X size={15} /></button>
     </div>
     <div className="document-path-row">
-      <span title={active.path ?? active.title}>{active.path ?? active.title}</span>
+      <span>{active.path ?? active.title}</span>
       {active.path && <>
-        <button type="button" className="document-icon" aria-label="刷新文件" title="刷新文件" disabled={busy} onClick={() => void read()}>{busy ? <CircleNotch size={15} className="animate-spin" /> : <ArrowClockwise size={15} />}</button>
-        <button type="button" className="document-icon" aria-label="在系统中打开" title="在系统中打开" onClick={() => void open()}><FileText size={15} /></button>
-        <button type="button" className="document-icon" aria-label="打开文件所在目录" title="打开文件所在目录" onClick={() => void open(true)}><FolderOpen size={15} /></button>
+        <button type="button" className="document-icon" aria-label="刷新文件" disabled={busy} onClick={() => void read()}>{busy ? <CircleNotch size={15} className="animate-spin" /> : <ArrowClockwise size={15} />}</button>
+        <button type="button" className="document-icon" aria-label="在系统中打开" onClick={() => void open()}><FileText size={15} /></button>
+        <button type="button" className="document-icon" aria-label="打开文件所在目录" onClick={() => void open(true)}><FolderOpen size={15} /></button>
       </>}
     </div>
     {error && <div className="document-notice document-error" role="alert">{error}<button type="button" disabled={busy} onClick={() => void read()}>重试</button></div>}

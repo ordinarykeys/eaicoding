@@ -92,11 +92,11 @@ export const CodeBlock = memo(function CodeBlock({ language, code, embedded = fa
       <span className="source-language">{epl ? "易语言" : language || "代码"}</span>
       <span className="source-line-count">{lines.length} 行</span>
       <div className="source-actions">
-        {!embedded && openPreview && <button type="button" aria-label="在右侧预览" title="在右侧预览" onClick={() => openPreview({ id: `snippet:${lang}:${code}`, title: epl ? "易语言代码.epl" : `代码.${lang || "txt"}`, code, language: epl ? "epl" : lang })}><SidebarSimple size={15} /></button>}
+        {!embedded && openPreview && <button type="button" aria-label="在右侧预览" onClick={() => openPreview({ id: `snippet:${lang}:${code}`, title: epl ? "易语言代码.epl" : `代码.${lang || "txt"}`, code, language: epl ? "epl" : lang })}><SidebarSimple size={15} /></button>}
         {epl && <button type="button" className="source-view-toggle" onClick={() => setIde(v => !v)} aria-pressed={ide}>{ide ? "源码视图" : "易语言视图"}</button>}
-        {!ide && <button type="button" aria-label="自动换行" title={wrapped ? "关闭自动换行" : "自动换行"} aria-pressed={wrapped} onClick={() => setWrapped(v => !v)}>{wrapped ? <TextOutdent size={15} /> : <TextAlignLeft size={15} />}</button>}
-        <button type="button" aria-label="保存代码" title="保存代码" onClick={() => void download()}><DownloadSimple size={15} /></button>
-        <button type="button" aria-label={copied ? "已复制" : "复制代码"} title={copied ? "已复制" : "复制代码"} onClick={() => void copy()}>{copied ? <Check size={15} /> : <CopySimple size={15} />}</button>
+        {!ide && <button type="button" aria-label="自动换行" aria-pressed={wrapped} onClick={() => setWrapped(v => !v)}>{wrapped ? <TextOutdent size={15} /> : <TextAlignLeft size={15} />}</button>}
+        <button type="button" aria-label="保存代码" onClick={() => void download()}><DownloadSimple size={15} /></button>
+        <button type="button" aria-label={copied ? "已复制" : "复制代码"} onClick={() => void copy()}>{copied ? <Check size={15} /> : <CopySimple size={15} />}</button>
       </div>
     </div>
     {ide && epl ? <div className="source-ide"><EplRenderer code={code} theme={theme === "dark" ? 2 : 1} /></div>

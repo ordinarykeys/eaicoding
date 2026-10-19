@@ -72,7 +72,7 @@ export function WorkspaceBrowser({ visible }: { visible: boolean }) {
       <button type="button" className="document-icon" aria-label="刷新网页" disabled={!url} onClick={() => void action("reload")}><ArrowClockwise size={15} /></button>
       <input aria-label="网页地址" placeholder="输入网址，如 https://www.deepseek.com" value={address} onChange={event => setAddress(event.target.value)} />
       <button type="submit" className="browser-go">打开</button>
-      <button type="button" className="document-icon" aria-label="在系统浏览器打开" title="在系统浏览器打开" disabled={!url} onClick={() => void openUrl(url).catch(error => setError(String(error)))}><ArrowSquareOut size={15} /></button>
+      <button type="button" className="document-icon" aria-label="在系统浏览器打开" disabled={!url} onClick={() => void openUrl(url).catch(error => setError(String(error)))}><ArrowSquareOut size={15} /></button>
     </form>
     {error && <div className="document-notice document-error" role="alert">{error}</div>}
     <div ref={host} className="browser-surface">{!url && <div className="workbench-placeholder"><Globe size={36} weight="light" /><p>浏览网页和项目文档</p><small>在上方输入网址，网页会在这里打开。</small></div>}</div>

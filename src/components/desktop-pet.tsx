@@ -233,7 +233,6 @@ export function DesktopPet({ placement = "floating" }: DesktopPetProps) {
       >
         <div
           onDoubleClick={onDoubleClick}
-          title="易语言 AI 助手"
           className={
             isChatPlacement
               ? "chat-inline-pet-shell"
@@ -302,7 +301,6 @@ export function DesktopPet({ placement = "floating" }: DesktopPetProps) {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onDoubleClick={onDoubleClick}
-        title={"易语言 AI 助手 · Clawd 螃蟹 · 双击休眠/唤醒，可拖拽"}
         className="relative w-[120px] h-[120px] cursor-grab active:cursor-grabbing"
         style={{
           filter:

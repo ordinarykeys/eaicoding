@@ -63,7 +63,7 @@ function AgentCheckpointRow({ checkpoint }: { checkpoint: AgentCheckpoint }) {
   return (
     <div className="rounded-md bg-card px-3 py-2">
       <div className="flex items-center gap-2">
-        <span className="truncate text-sm font-medium" title={checkpoint.goal}>
+        <span className="truncate text-sm font-medium">
           {checkpoint.goal}
         </span>
         <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">

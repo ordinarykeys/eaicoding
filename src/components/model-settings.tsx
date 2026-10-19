@@ -178,9 +178,6 @@ export function ModelSettings() {
           </div>
           {visited.has("catalog") && (
             <div className={css.addPanel} hidden={mode !== "catalog"}>
-              <p className={css.advancedHint}>
-                选择提供商，使用 API 密钥或它支持的其他认证方式完成连接。
-              </p>
               <label className={css.field}>
                 <span className={css.fieldLabel}>提供商</span>
                 <select
@@ -490,7 +487,6 @@ function ProviderForm({
       {hasKey && <label className={css.field}>
         <span className={css.fieldLabel}>
           API 密钥{" "}
-          <span title="密钥由桌面后台加密保存，不会写入聊天记录。">ⓘ</span>
         </span>
         <span className={css.keyInput}>
           <input

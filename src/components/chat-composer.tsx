@@ -47,7 +47,7 @@ export function ChatComposer({ value, onChange, onSend, onStop, running, files, 
   }, [menuOpen]);
   return <div className="harness-composer-dock">
     <div className="harness-composer" data-composer-card>
-      {files.length > 0 && <div className="harness-composer-files">{files.map(path => <div className="harness-file-chip" key={path} title={path}><FilePlus size={14} /><span>{path.split(/[\\/]/).pop()}</span><button type="button" aria-label={`移除附件 ${path.split(/[\\/]/).pop()}`} onClick={() => onRemove(path)}><X size={12} /></button></div>)}</div>}
+      {files.length > 0 && <div className="harness-composer-files">{files.map(path => <div className="harness-file-chip" key={path}><FilePlus size={14} /><span>{path.split(/[\\/]/).pop()}</span><button type="button" aria-label={`移除附件 ${path.split(/[\\/]/).pop()}`} onClick={() => onRemove(path)}><X size={12} /></button></div>)}</div>}
       <textarea ref={editor} className="harness-composer-input" aria-label="消息输入框" value={value} rows={1}
         placeholder={files.length ? "说明这些易语言工程或模块需要怎样修改…" : "描述易语言功能、窗口界面或需要修复的问题…"}
         onChange={event => onChange(event.target.value)} onKeyDown={event => {
@@ -67,12 +67,11 @@ export function ChatComposer({ value, onChange, onSend, onStop, running, files, 
         </div>
         <div className="harness-composer-trailing"><ModelPicker disabled={running} />
           {running && !empty && <button type="button" className="harness-composer-send" aria-label="停止生成" onMouseDown={event => event.preventDefault()} onClick={onStop}><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" /></svg></button>}
-          <button type="button" className="harness-composer-send" aria-label={primaryLabel} title={primaryLabel} disabled={!running && empty} onMouseDown={event => event.preventDefault()} onClick={() => primaryStops ? onStop() : onSend()}>
+          <button type="button" className="harness-composer-send" aria-label={primaryLabel} disabled={!running && empty} onMouseDown={event => event.preventDefault()} onClick={() => primaryStops ? onStop() : onSend()}>
             <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">{primaryStops ? <rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" /> : <path d="M8.3125 0.980183C8.66767 1.0531 8.97902 1.20418 9.2627 1.43233C9.48724 1.61297 9.73029 1.85793 9.97949 2.10714L14.707 6.83468L13.293 8.24874L9 3.95577V15.0417H7V3.95577L2.70703 8.24874L1.29297 6.83468L6.02051 2.10714C6.26971 1.85793 6.51277 1.61297 6.7373 1.43233C6.97662 1.23986 7.28445 1.04402 7.6875 0.980183C7.8973 0.947006 8.1031 0.95516 8.3125 0.980183Z" fill="currentColor" />}</svg>
           </button>
         </div>
       </div>
     </div>
-    <p className="harness-composer-hint">Enter 发送 · Shift + Enter 换行</p>
   </div>;
 }

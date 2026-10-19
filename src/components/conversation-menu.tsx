@@ -52,13 +52,13 @@ export function ConversationMenu({ session, title, workspace, busy, onChooseWork
     {renaming ? <input className="conversation-rename" aria-label="会话名称" autoFocus value={draft} onChange={event => setDraft(event.target.value)} onBlur={rename} onKeyDown={event => {
       if (event.key === "Enter") { event.preventDefault(); rename(); }
       if (event.key === "Escape") { event.preventDefault(); setRenaming(false); }
-    }} /> : <h2 title={title}>{title}</h2>}
+    }} /> : <h2>{title}</h2>}
     <div className="conversation-header-menus">
-      <button type="button" className="conversation-workspace-trigger" aria-label="会话工作区" title={workspace || "选择工作区文件夹"} aria-haspopup="menu" aria-expanded={open === "workspace"} onClick={event => toggle("workspace", event.currentTarget)}><FolderOpen size={16} weight="duotone" /><CaretDown size={11} /></button>
-      <button type="button" className="document-icon" aria-label="会话菜单" title="会话菜单" aria-haspopup="menu" aria-expanded={open === "session"} onClick={event => toggle("session", event.currentTarget)}><DotsThree size={21} weight="bold" /></button>
+      <button type="button" className="conversation-workspace-trigger" aria-label="会话工作区" aria-haspopup="menu" aria-expanded={open === "workspace"} onClick={event => toggle("workspace", event.currentTarget)}><FolderOpen size={16} weight="duotone" /><CaretDown size={11} /></button>
+      <button type="button" className="document-icon" aria-label="会话菜单" aria-haspopup="menu" aria-expanded={open === "session"} onClick={event => toggle("session", event.currentTarget)}><DotsThree size={21} weight="bold" /></button>
       {open && <div className="conversation-popover" role="menu" aria-label={open === "workspace" ? "工作区操作" : "会话操作"}>
         {open === "workspace" ? <>
-          <div className="conversation-workspace-path" title={workspace}>{workspace || "尚未选择工作区"}</div>
+          <div className="conversation-workspace-path">{workspace || "尚未选择工作区"}</div>
           <button type="button" role="menuitem" disabled={busy} onClick={() => void run(onChooseWorkspace)}><FolderOpen size={15} />选择工作区文件夹</button>
           <button type="button" role="menuitem" disabled={!workspace} onClick={() => void run(() => openPath(workspace))}><FolderOpen size={15} />在资源管理器打开</button>
           <button type="button" role="menuitem" disabled={!workspace} onClick={() => void run(async () => { await copyText(workspace); toast.success("工作区路径已复制"); })}><CopySimple size={15} />复制工作区路径</button>

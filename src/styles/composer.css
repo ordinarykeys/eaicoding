@@ -19,7 +19,6 @@
 .harness-composer button.harness-composer-send:disabled { opacity: .4; cursor: default; }
 .harness-composer button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .harness-composer button:disabled { cursor: default; opacity: .45; }
-.harness-composer-hint { min-height: 20px; padding: 4px 0 0; color: var(--muted-foreground); font: 11px/18px var(--font-sans); text-align: center; }
 .harness-model-picker, .harness-command-root { position: relative; }
 .harness-model-menu, .harness-command-menu { position: absolute; bottom: calc(100% + 12px); z-index: 60; min-width: 248px; max-width: calc(100vw - 40px); padding: 6px; border: 0; border-radius: 8px; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 0 0 .5px var(--border), 0 3px 16px #00000018; }
 .harness-model-menu { position: fixed; z-index: 1100; bottom: auto; min-width: min(240px, calc(100vw - 24px)); width: max-content; max-width: min(420px, calc(100vw - 24px)); padding: 4px; }

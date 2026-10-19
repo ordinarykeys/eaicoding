@@ -42,12 +42,6 @@ import {
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { MarkdownView } from "@/components/markdown-view";
 import { CodeBlock } from "@/components/code-block";
 import { DocumentPreview } from "@/components/document-preview";
@@ -564,7 +558,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
 
   return (
     <DocumentPreviewContext.Provider value={openPreview}>
-    <TooltipProvider>
+
       <div className="chat-workspace relative h-full overflow-hidden bg-background" data-preview-open={previewVisible} data-workspace-focused={workspaceFocused && previewVisible}>
         <div
           className="harness-chat-column flex h-full min-w-0 flex-col transition-[padding] duration-200"
@@ -578,10 +572,9 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
                 {statusLine}
               </span>
             )}
-            {activePreview && (!previewVisible || workspaceTab !== "code") && <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground" aria-label="代码预览" title="代码预览" onClick={() => { setWorkspaceTab("code"); setPreviewVisible(true); }}><Code size={16} /></Button>}
+            {activePreview && (!previewVisible || workspaceTab !== "code") && <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground" aria-label="代码预览" onClick={() => { setWorkspaceTab("code"); setPreviewVisible(true); }}><Code size={16} /></Button>}
             {!previewVisible && (
-              <Tooltip>
-                <TooltipTrigger asChild>
+
                   <Button
                     variant="ghost"
                     size="icon"
@@ -591,11 +584,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
                   >
                     <SidebarSimple className="h-4 w-4 rotate-180" />
                   </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  打开工作区
-                </TooltipContent>
-              </Tooltip>
+
             )}
           </header>
 
@@ -669,7 +658,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
         )}
         </WorkspacePane>
       </div>
-    </TooltipProvider>
+
     </DocumentPreviewContext.Provider>
   );
 }
@@ -827,7 +816,7 @@ function ReplyActions({ text, isUser, timestamp }: { text: string; isUser: boole
   const time = new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(timestamp);
   return <div className="assistant-actions" data-user={isUser}>
     {isUser && <time dateTime={new Date(timestamp).toISOString()}>{time}</time>}
-    <button type="button" className="message-copy" aria-label={copied ? "已复制" : label} title={copied ? "已复制" : label} onClick={() => void copy()}>{copied ? <Check size={15} /> : <CopySimple size={15} />}<span>{copied ? "已复制" : "复制"}</span></button>
+    <button type="button" className="message-copy" aria-label={copied ? "已复制" : label} onClick={() => void copy()}>{copied ? <Check size={15} /> : <CopySimple size={15} />}<span>{copied ? "已复制" : "复制"}</span></button>
     {!isUser && <time dateTime={new Date(timestamp).toISOString()}>{time}</time>}
   </div>;
 }
@@ -851,7 +840,6 @@ function AgentChoicePrompt({
             type="button"
             disabled={disabled}
             className="rounded-md border border-border/70 bg-background px-3 py-1.5 text-xs text-foreground transition hover:border-foreground/30 hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
-            title={option.description}
             onClick={() => onChoice(value)}
           >
             {option.label}
@@ -920,7 +908,7 @@ function AgentTracePanel({ trace, running, activeToolId }: { trace: AgentTrace; 
         </div>
       )}
     </div>
-    {artifacts.length > 0 && <div className="agent-artifacts">{artifacts.map(path => <button type="button" key={path} title={path} onClick={() => void openPath(path).catch(error => toast.error(`打开失败：${String(error)}`))}><FileText size={14} />{fileName(path)}<span>打开</span></button>)}</div>}
+    {artifacts.length > 0 && <div className="agent-artifacts">{artifacts.map(path => <button type="button" key={path} onClick={() => void openPath(path).catch(error => toast.error(`打开失败：${String(error)}`))}><FileText size={14} />{fileName(path)}<span>打开</span></button>)}</div>}
   </>;
 }
 
@@ -1229,8 +1217,8 @@ function ToolCallRow({ call, result, running, active }: { call: ToolCall; result
         <span className="agent-tool-title">{toolLabel(call.name)}</span>
       </button>
       {summary && <><span className="agent-tool-separator">·</span>{preview && openPreview
-        ? <button type="button" className="agent-tool-file" title={preview.path ?? preview.title} onClick={() => openPreview(preview)}>{summary}</button>
-        : <button type="button" className="agent-tool-summary" title={summary} onClick={() => setOpen(value => !value)}>{summary}</button>}</>}
+        ? <button type="button" className="agent-tool-file" onClick={() => openPreview(preview)}>{summary}</button>
+        : <button type="button" className="agent-tool-summary" onClick={() => setOpen(value => !value)}>{summary}</button>}</>}
       <span className="agent-tool-state">{state === "running" ? "执行中" : state === "queued" ? "等待执行" : state === "failed" ? "失败" : state === "stopped" ? "未完成" : ""}</span>
     </div>
     {failed && <div className="agent-tool-error" role="status">{error || "执行失败，展开查看详情。"}</div>}
@@ -1241,8 +1229,8 @@ function ToolCallRow({ call, result, running, active }: { call: ToolCall; result
       {rc?.truncated && <p className="text-muted-foreground">当前为文件片段，可在右侧继续读取。</p>}
       {(rc?.stderr || rc?.stdout || error || rc?.repairInstruction) && <pre className="agent-tool-log">{[error, rc?.repairInstruction, rc?.stderr, rc?.stdout].filter(Boolean).join("\n")}</pre>}
       {rc?.changedFiles && <div className="agent-changed-files">{rc.changedFiles.map((file, index) => <div key={index}>{String(file.relativePath ?? file.path ?? "文件")} <span>+{Number(file.addedLines ?? 0)} / −{Number(file.removedLines ?? 0)}</span></div>)}</div>}
-      {path && <div className="agent-detail-path" title={path}>{shortenPath(path)}<FileActions filePath={path} /></div>}
-      {[rc?.buildReportPath, rc?.snapshotPath, rc?.workflowStatePath, rc?.ecodeDir].filter((item): item is string => Boolean(item)).map(item => <div className="agent-detail-path" key={item} title={item}>{shortenPath(item)}<FileActions filePath={item} /></div>)}
+      {path && <div className="agent-detail-path">{shortenPath(path)}<FileActions filePath={path} /></div>}
+      {[rc?.buildReportPath, rc?.snapshotPath, rc?.workflowStatePath, rc?.ecodeDir].filter((item): item is string => Boolean(item)).map(item => <div className="agent-detail-path" key={item}>{shortenPath(item)}<FileActions filePath={item} /></div>)}
       <ToolDiagnostics call={call} result={result} />
     </div>}
   </div>;

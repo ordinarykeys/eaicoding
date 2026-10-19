@@ -53,6 +53,7 @@ try {
   let latest,
     mode = "text",
     status = 200,
+    errorBody = "invalid key",
     official = false;
   const sse = (value) =>
     (value.type ? "event: " + value.type + "\n" : "") +
@@ -89,7 +90,7 @@ try {
         },
       });
       if (status !== 200)
-        return { status, statusText: "Unauthorized", text: "invalid key" };
+        return { status, statusText: "Rejected", text: errorBody };
       const tool = {
         id: "call-fixture",
         name: "read_file",
@@ -431,6 +432,38 @@ try {
   assert(rejected.error);
   assert(!rejected.complete);
   status = 200;
+  const empty = { id: "empty", role: "assistant", content: "", timestamp: 0 };
+  assert.ifError((await run("deepseek-messages", [empty])).error);
+  assert(latest.body.messages.every(message => message.content.length > 0), "skip empty history messages, as Harness does");
+  const replayHistory = [
+    { id: "a", role: "assistant", content: "执行当前工具", timestamp: 1,
+      toolCalls: [{ id: "current-call", name: "read_file", arguments: { file_path: "current.epl" } }],
+      providerMessage: { deepseekModel: config.model, deepseekBlocks: [
+        { type: "thinking", thinking: "原生推理", signature: "fixture-signature" },
+        { type: "text", text: "已被修改的旧文本" },
+        { type: "tool_use", id: "stale-call", name: "read_file", input: { file_path: "old.epl" } },
+      ] } },
+    { id: "t", role: "tool", toolCallId: "current-call", content: "工具结果", timestamp: 2 },
+  ];
+  assert.ifError((await run("deepseek-messages", replayHistory)).error);
+  const replay = latest.body.messages[0].content;
+  assert.deepEqual(replay.map(block => block.type), ["thinking", "text", "tool_use"]);
+  assert.equal(replay[0].signature, "fixture-signature");
+  assert.equal(replay[1].text, "执行当前工具");
+  assert.equal(replay[2].id, "current-call", "stale replay cannot replace live tool calls");
+  const beforeInvalid = latest;
+  assert.match((await run("deepseek-messages", [replayHistory[1]])).error.message, /缺少对应调用/);
+  assert.equal(latest, beforeInvalid, "reject unmatched tool history before network I/O");
+  status = 400;
+  errorBody = JSON.stringify({ error: { type: "invalid_request_error", message: "messages.1.content: invalid tool_use_id (Bearer fixture-secret sk-fixturesecret)" } });
+  const invalidRequest = await run("deepseek-messages");
+  assert.equal(invalidRequest.error.status, 400);
+  assert.match(invalidRequest.error.message, /messages.1.content: invalid tool_use_id/);
+  assert(!/fixture-secret|sk-fixturesecret/.test(invalidRequest.error.message));
+  assert.equal(invalidRequest.error.retryable, false);
+  assert(!invalidRequest.complete && invalidRequest.calls.length === 0);
+  status = 200;
+  console.log("PASS DeepSeek empty history, current tool replay with signed thinking, preflight validation and redacted HTTP 400 details");
   console.log(
     "PASS five provider protocols plus official DeepSeek Messages, real SDK stream/tool parsing, replay, truncation and credential-free transport",
   );

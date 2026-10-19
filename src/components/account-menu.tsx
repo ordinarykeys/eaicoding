@@ -56,7 +56,7 @@ export function AccountMenu({ onSettings, settingsOpen, onOverlayChange }: {
   }, [open]);
   return <div className="account-launcher">
     <AccountNoticeStack notices={notices} anchor={trigger} title="账号通知" closeLabel="关闭账号通知" onShown={noticeShown} onDismiss={dismissNotice} />
-    <button ref={trigger} type="button" className="account-trigger" aria-label="账号菜单" title={label}
+    <button ref={trigger} type="button" className="account-trigger" aria-label="账号菜单"
       aria-haspopup="menu" aria-expanded={open} aria-controls={open ? "account-menu" : undefined}
       onClick={() => setOpen(previous => !previous)} onKeyDown={event => {
         if (event.key === "ArrowUp" || event.key === "ArrowDown") { event.preventDefault(); setOpen(true); }

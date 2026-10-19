@@ -11,9 +11,6 @@ import { useCallback, useRef, useState, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { AccountMenu } from "@/components/account-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  TooltipProvider,
-} from "@/components/ui/tooltip";
 import { useChatStore } from "@/stores/chat";
 import { getSessionDisplayTitle } from "@/lib/session-title";
 import { cn } from "@/lib/utils";
@@ -90,13 +87,13 @@ export function Sidebar({ onOpenSettings, settingsOpen, onAccountOverlayChange, 
   }, [width, onResize, minWidth, maxWidth]);
 
   return (
-    <TooltipProvider>
+
       <aside className="claude-sidebar text-sidebar-foreground" style={{ width }}>
         <div className="sidebar-brand"><img src="/icon.ico" alt="" draggable={false} /><span>EAiCoding</span></div>
         <div className="sidebar-new-task"><Button variant="ghost" onClick={handleNew}><Plus size={16} />新建任务</Button></div>
 
         <div className="sidebar-quick-actions"><button type="button" onClick={() => onOpenSettings("knowledge")}><Books size={16} />模块库</button></div>
-        <div className="sidebar-workspace-heading"><span>工作区</span><button type="button" aria-label="选择工作区新建任务" title="选择工作区新建任务" onClick={() => void chooseWorkspace()}><FolderPlus size={15} /></button></div>
+        <div className="sidebar-workspace-heading"><span>工作区</span><button type="button" aria-label="选择工作区新建任务" onClick={() => void chooseWorkspace()}><FolderPlus size={15} /></button></div>
         <label className="sidebar-task-search"><MagnifyingGlass size={14} /><input aria-label="搜索任务" placeholder="搜索任务或工作区…" value={query} onChange={event => setQuery(event.target.value)} /></label>
 
         <ScrollArea className="flex-1 px-2 py-1">
@@ -107,7 +104,7 @@ export function Sidebar({ onOpenSettings, settingsOpen, onAccountOverlayChange, 
           )}
           <div className="space-y-0.5">
             {groups.map(([workspace, grouped]) => <section key={workspace} className="sidebar-workspace-group">
-              <button type="button" className="sidebar-group-toggle" aria-expanded={!collapsed.has(workspace)} title={workspace} onClick={() => setCollapsed(previous => { const next = new Set(previous); if (next.has(workspace)) next.delete(workspace); else next.add(workspace); return next; })}><CaretDown size={11} style={{ transform: collapsed.has(workspace) ? "rotate(-90deg)" : undefined }} /><FolderOpen size={14} /><span>{workspace.split(/[\\/]/).pop() || workspace}</span><small>{grouped.length}</small></button>
+              <button type="button" className="sidebar-group-toggle" aria-expanded={!collapsed.has(workspace)} onClick={() => setCollapsed(previous => { const next = new Set(previous); if (next.has(workspace)) next.delete(workspace); else next.add(workspace); return next; })}><CaretDown size={11} style={{ transform: collapsed.has(workspace) ? "rotate(-90deg)" : undefined }} /><FolderOpen size={14} /><span>{workspace.split(/[\\/]/).pop() || workspace}</span><small>{grouped.length}</small></button>
               {!collapsed.has(workspace) && grouped.map((session) => {
               const displayTitle = getSessionDisplayTitle(session);
               return (
@@ -122,7 +119,6 @@ export function Sidebar({ onOpenSettings, settingsOpen, onAccountOverlayChange, 
                 onClick={() => {
                   setActiveSession(session.id);
                 }}
-                title={displayTitle}
               >
                 <span className="block min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
                   {displayTitle}
@@ -153,6 +149,6 @@ export function Sidebar({ onOpenSettings, settingsOpen, onAccountOverlayChange, 
           onMouseDown={handleDragStart}
         />
       </aside>
-    </TooltipProvider>
+
   );
 }

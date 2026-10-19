@@ -257,7 +257,6 @@ export function ModelPicker({ disabled }: { disabled: boolean }) {
         aria-controls={open ? menuId : undefined}
         aria-busy={saving}
         disabled={disabled || saving}
-        title={current ? modelName(profile, current) : "选择模型"}
         onClick={() => {
           setOpen((v) => !v);
           setPane("root");
@@ -380,7 +379,6 @@ export function ModelPicker({ disabled }: { disabled: boolean }) {
                           }
                           key={m.id}
                           disabled={saving}
-                          title={m.id}
                           onClick={() => void choose(g.profile, m)}
                         >
                           <Label profile={g.profile} model={m} />

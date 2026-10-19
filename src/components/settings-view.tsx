@@ -26,7 +26,6 @@ import {
   CardContent,
 } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   useSettingsStore,
 } from "@/stores/settings";
@@ -92,7 +91,7 @@ function SettingsPanel({ section, onSectionChange }: { section: string; onSectio
   })));
 
   return (
-    <TooltipProvider>
+
       <Tabs value={section} onValueChange={selectSection} orientation="vertical" className="settings-layout">
         <nav className="settings-nav" aria-label="设置分类">
           <DialogPrimitive.Title className="settings-title">{t("settings.title")}</DialogPrimitive.Title>
@@ -139,7 +138,7 @@ function SettingsPanel({ section, onSectionChange }: { section: string; onSectio
           </div>
         </div>
       </Tabs>
-    </TooltipProvider>
+
   );
 }
 
@@ -292,14 +291,11 @@ function EasyLanguageEnvironmentCard({
               placeholder="D:\e"
             />
           </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
+
               <Button variant="outline" size="icon" aria-label="选择易语言安装目录" className="h-9 w-9 shrink-0" onClick={handleBrowse}>
                 <FolderOpen className="h-4 w-4" />
               </Button>
-            </TooltipTrigger>
-            <TooltipContent>选择目录</TooltipContent>
-          </Tooltip>
+
           <Button
             type="button"
             variant="outline"
@@ -316,11 +312,11 @@ function EasyLanguageEnvironmentCard({
           </Button>
         </div>
 
-        <p role="status" className="settings-hint" aria-live="polite">
+        {(isScanning || scan) && <p role="status" className="settings-status" aria-live="polite">
           {isScanning
             ? "正在后台检查工具链、支持库和例程，可以继续切换设置或关闭弹窗。"
-            : !scan ? "点击“扫描环境”检查工具链与文件统计，打开本页不会自动扫描磁盘。" : scan.counts_complete === false ? "部分目录未完成统计，当前数量仅包含已扫描文件，请查看下方提示。" : "环境扫描完成。"}
-        </p>
+            : scan?.counts_complete === false ? "部分目录未完成统计，当前数量仅包含已扫描文件。" : "环境扫描完成。"}
+        </p>}
 
         <div className="settings-directory-grid">
           <DirectorySettingField
@@ -375,7 +371,7 @@ function EasyLanguageEnvironmentCard({
                     >
                       {tool.exists ? "可用" : "缺失"}
                     </span>
-                    <span className="min-w-0 truncate font-mono" title={tool.path}>
+                    <span className="min-w-0 truncate font-mono">
                       {tool.name}
                     </span>
                   </div>
@@ -399,7 +395,6 @@ function EasyLanguageEnvironmentCard({
                     <span
                       key={library.name}
                       className="rounded-md bg-card px-2 py-1 text-[11px]"
-                      title={library.fne_path}
                     >
                       {library.name}
                     </span>
@@ -416,7 +411,6 @@ function EasyLanguageEnvironmentCard({
                     <div
                       key={module.path}
                       className="flex min-w-0 items-center gap-2 rounded-md bg-card px-2 py-1 text-[11px]"
-                      title={module.path}
                     >
                       <span className="min-w-0 flex-1 truncate">{module.name}</span>
                       <span className="shrink-0 text-muted-foreground">
@@ -462,8 +456,7 @@ function DirectorySettingField({
           className="min-w-0 text-xs font-mono"
           placeholder={placeholder}
         />
-        <Tooltip>
-          <TooltipTrigger asChild>
+
             <Button
               type="button"
               aria-label={`选择${label}`}
@@ -474,9 +467,7 @@ function DirectorySettingField({
             >
               <FolderOpen className="h-4 w-4" />
             </Button>
-          </TooltipTrigger>
-          <TooltipContent>选择目录</TooltipContent>
-        </Tooltip>
+
         {value && (
           <Button
             type="button"
@@ -512,7 +503,6 @@ function PetSettingsCard() {
   return (
     <section className="settings-general-group settings-pet-card">
       <div className="settings-general-heading">{t("settings.desktopPetTitle")}</div>
-      <p className="settings-hint">{t("settings.desktopPetDescription")}</p>
       <div className="settings-preferences">
         <label className="settings-preference-row">
           <span>{t("settings.showPet")}</span>

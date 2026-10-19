@@ -22,6 +22,7 @@ export default function App() {
   const [settingsSection, setSettingsSection] = useState("account");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountOverlayOpen, setAccountOverlayOpen] = useState(false);
+  const [menuOverlayOpen, setMenuOverlayOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [configureModels, setConfigureModels] = useState(false);
@@ -91,7 +92,7 @@ export default function App() {
       <div className="app-window-frame flex h-screen w-screen overflow-hidden bg-background text-foreground">
         <WindowResizeHandles />
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <WindowTitlebar sidebarOpen={sidebarOpen} onToggleSidebar={toggleSidebar} />
+          <WindowTitlebar sidebarOpen={sidebarOpen} onToggleSidebar={toggleSidebar} onMenuOverlayChange={setMenuOverlayOpen} />
           <div className="app-window-body relative min-h-0 flex-1 overflow-hidden">
             {sidebarOpen && (
               <Sidebar
@@ -109,7 +110,7 @@ export default function App() {
               className="app-main-surface flex h-full min-w-0 flex-col"
               style={{ marginLeft: sidebarOpen ? sidebarWidth : 0 }}
             >
-              <ChatView sidebarOpen={sidebarOpen} onToggleSidebar={toggleSidebar} settingsOpen={settingsOpen || accountOverlayOpen || platformPage !== null} />
+              <ChatView sidebarOpen={sidebarOpen} onToggleSidebar={toggleSidebar} settingsOpen={settingsOpen || accountOverlayOpen || menuOverlayOpen || platformPage !== null} />
             </main>
           </div>
         </div>
