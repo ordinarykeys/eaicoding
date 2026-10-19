@@ -9,15 +9,18 @@
 #include <gdiplus.h>
 #include <new>
 #include "progress.h"
+#include "extract.h"
 using namespace Gdiplus;
 struct ProgressPage {
     InstallProgress progress{GetTickCount64()};
     bool dark;
     UINT dpi;
-    HWND source;
     ULONG_PTR gdiplus;
     Image* brand;
-    WCHAR captions[5][128];
+    Bitmap* canvas = nullptr;
+    WCHAR captions[6][128];
+    WCHAR lastCaption[160] = {};
+    bool runtime = false;
 };
 
 // NSIS shows its page after MUI's SHOW callback; keep its controls off screen.
@@ -51,7 +54,18 @@ static LRESULT CALLBACK ProgressProc(HWND window, UINT message, WPARAM wparam, L
         SetTimer(window, 1, 16, nullptr);
     }
     if (message == WM_ERASEBKGND) return 1;
-    if (message == WM_TIMER) { InvalidateRect(window, nullptr, FALSE); return 0; }
+    if (message == WM_TIMER && page) {
+        const HWND parent = GetParent(window);
+        const int stage = static_cast<int>(reinterpret_cast<INT_PTR>(GetPropW(parent, L"EAiCodingInstaller.Stage")));
+        const double fraction = reinterpret_cast<UINT_PTR>(GetPropW(parent, L"EAiCodingInstaller.ExtractProgress")) / 100.0;
+        page->runtime = GetPropW(parent, L"EAiCodingInstaller.Runtime") != nullptr;
+        page->progress.Advance(stage, fraction, GetTickCount64());
+        if (!IsIconic(parent)) {
+            RECT area{MulDiv(48, page->dpi, 96), MulDiv(480, page->dpi, 96), MulDiv(552, page->dpi, 96), MulDiv(542, page->dpi, 96)};
+            InvalidateRect(window, &area, FALSE);
+        }
+        return 0;
+    }
     if (message == WM_LBUTTONDOWN && page) {
         const int x = LOWORD(lparam) * 96 / page->dpi;
         const int y = HIWORD(lparam) * 96 / page->dpi;
@@ -67,19 +81,12 @@ static LRESULT CALLBACK ProgressProc(HWND window, UINT message, WPARAM wparam, L
         PAINTSTRUCT paint;
         HDC dc = BeginPaint(window, &paint);
         {
-            Bitmap buffer(MulDiv(600, page->dpi, 96), MulDiv(600, page->dpi, 96), PixelFormat32bppPARGB);
-            Graphics graphics(&buffer);
+            // Reuse the DPI-sized canvas; do not allocate/rescale the brand at 60 Hz.
+            Graphics graphics(page->canvas);
             graphics.ScaleTransform(page->dpi / 96.0f, page->dpi / 96.0f);
-            graphics.Clear(page->dark ? Color(255, 21, 21, 23) : Color(255, 255, 255, 255));
+            SolidBrush background(page->dark ? Color(255, 21, 21, 23) : Color(255, 255, 255, 255));
+            graphics.FillRectangle(&background, Rect(48, 480, 504, 62));
             graphics.SetSmoothingMode(SmoothingModeAntiAlias);
-            graphics.SetInterpolationMode(InterpolationModeHighQualityBicubic);
-            graphics.SetPixelOffsetMode(PixelOffsetModeHalf);
-            graphics.DrawImage(page->brand, Rect(0, 174, 600, 196));
-            const int raw = static_cast<int>(SendMessageW(page->source, PBM_GETPOS, 0, 0));
-            PBRANGE range{};
-            SendMessageW(page->source, PBM_GETRANGE, FALSE, reinterpret_cast<LPARAM>(&range));
-            const double fraction = range.iHigh > range.iLow ? static_cast<double>(raw - range.iLow) / (range.iHigh - range.iLow) : 0;
-            page->progress.Advance(1, fraction, GetTickCount64());
             const int percent = static_cast<int>(page->progress.value);
             SolidBrush track(page->dark ? Color(255, 97, 102, 107) : Color(255, 233, 236, 242));
             SolidBrush ink(page->dark ? Color(255, 255, 255, 255) : Color(255, 15, 17, 21));
@@ -92,13 +99,18 @@ static LRESULT CALLBACK ProgressProc(HWND window, UINT message, WPARAM wparam, L
             centered.SetLineAlignment(StringAlignmentCenter);
             WCHAR caption[160];
             wsprintfW(caption, page->captions[page->progress.CaptionStage()], percent);
-            SetWindowTextW(window, caption);
+            if (page->runtime) lstrcpynW(caption, page->captions[5], 160);
+            if (lstrcmpW(caption, page->lastCaption) != 0) {
+                SetWindowTextW(window, caption);
+                lstrcpynW(page->lastCaption, caption, 160);
+            }
+            if (!page->progress.succeeded) {
+                Pen activity(page->dark ? Color(180, 255, 255, 255) : Color(160, 15, 17, 21), 1.5f);
+                graphics.DrawArc(&activity, RectF(128, 519, 10, 10), static_cast<REAL>(GetTickCount64() % 1200) * .3f, 240);
+            }
             graphics.DrawString(caption, -1, &font, RectF(48, 512, 504, 22), &centered, &ink);
-            Font controls(&family, 16, FontStyleRegular, UnitPixel);
-            graphics.DrawString(L"\x2212", -1, &controls, RectF(504, 8, 40, 32), &centered, &ink);
-            graphics.DrawString(L"\x00d7", -1, &controls, RectF(548, 8, 40, 32), &centered, &ink);
             Graphics screen(dc);
-            screen.DrawImage(&buffer, 0, 0);
+            screen.DrawImage(page->canvas, 0, 0);
         }
         EndPaint(window, &paint);
         if (page->progress.value == 100) SetPropW(GetParent(window), L"EAiCodingInstaller.CompletedPercent", reinterpret_cast<HANDLE>(100));
@@ -106,6 +118,7 @@ static LRESULT CALLBACK ProgressProc(HWND window, UINT message, WPARAM wparam, L
     }
     if (message == WM_NCDESTROY && page) {
         KillTimer(window, 1);
+        delete page->canvas;
         delete page->brand;
         GdiplusShutdown(page->gdiplus);
         delete page;
@@ -116,7 +129,7 @@ static LRESULT CALLBACK ProgressProc(HWND window, UINT message, WPARAM wparam, L
 // Runs on the NSIS UI thread; the stock installation section runs on its worker.
 extern "C" __declspec(dllexport) HWND __cdecl InstallerShowProgress(HWND parent, HWND source,
         BOOL dark, UINT dpi, const WCHAR* brand, const WCHAR* preparing, const WCHAR* extracting,
-        const WCHAR* copying, const WCHAR* registering, const WCHAR* cleaning) {
+        const WCHAR* copying, const WCHAR* registering, const WCHAR* cleaning, const WCHAR* runtime) {
     HINSTANCE module = GetModuleHandleW(nullptr);
     WNDCLASSW type = {};
     type.lpfnWndProc = ProgressProc;
@@ -133,18 +146,37 @@ extern "C" __declspec(dllexport) HWND __cdecl InstallerShowProgress(HWND parent,
         GdiplusShutdown(page->gdiplus); delete page; return nullptr;
     }
     ShowWindow(stockPage, SW_HIDE);
-    page->source = source;
     page->dark = dark != FALSE;
     page->dpi = dpi;
-    const WCHAR* captions[] = {preparing, extracting, copying, registering, cleaning};
-    for (int i = 0; i < 5; ++i) lstrcpynW(page->captions[i], captions[i], 128);
+    const WCHAR* captions[] = {preparing, extracting, copying, registering, cleaning, runtime};
+    for (int i = 0; i < 6; ++i) lstrcpynW(page->captions[i], captions[i], 128);
     page->brand = new Image(brand);
     if (page->brand->GetLastStatus() != Ok) {
         delete page->brand; GdiplusShutdown(page->gdiplus); delete page; return nullptr;
     }
+    page->canvas = new Bitmap(MulDiv(600, dpi, 96), MulDiv(600, dpi, 96), PixelFormat32bppPARGB);
+    if (page->canvas->GetLastStatus() != Ok) {
+        delete page->canvas; delete page->brand; GdiplusShutdown(page->gdiplus); delete page; return nullptr;
+    }
+    {
+        Graphics graphics(page->canvas);
+        graphics.ScaleTransform(dpi / 96.0f, dpi / 96.0f);
+        graphics.Clear(page->dark ? Color(255, 21, 21, 23) : Color(255, 255, 255, 255));
+        graphics.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+        graphics.SetPixelOffsetMode(PixelOffsetModeHalf);
+        graphics.DrawImage(page->brand, Rect(0, 174, 600, 196));
+        FontFamily family(L"Microsoft YaHei UI");
+        Font controls(&family, 16, FontStyleRegular, UnitPixel);
+        StringFormat centered;
+        centered.SetAlignment(StringAlignmentCenter);
+        centered.SetLineAlignment(StringAlignmentCenter);
+        SolidBrush ink(page->dark ? Color(255, 255, 255, 255) : Color(255, 15, 17, 21));
+        graphics.DrawString(L"\x2212", -1, &controls, RectF(504, 8, 40, 32), &centered, &ink);
+        graphics.DrawString(L"\x00d7", -1, &controls, RectF(548, 8, 40, 32), &centered, &ink);
+    }
     HWND window = CreateWindowExW(0, type.lpszClassName, L"", WS_CHILD | WS_VISIBLE,
         0, 0, MulDiv(600, dpi, 96), MulDiv(600, dpi, 96), parent, nullptr, module, page);
-    if (!window) { delete page->brand; GdiplusShutdown(page->gdiplus); delete page; }
+    if (!window) { delete page->canvas; delete page->brand; GdiplusShutdown(page->gdiplus); delete page; }
     return window;
 }
 

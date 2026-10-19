@@ -11,7 +11,7 @@ ManifestDPIAwareness PerMonitorV2
   SetCompress off
 !else
   ; Set the compression algorithm. We default to LZMA.
-  SetCompressor /SOLID "{{compression}}"
+  SetCompressor "{{compression}}"
 !endif
 
 !include MUI2.nsh
@@ -513,6 +513,7 @@ Section EarlyChecks
 SectionEnd
 
 Section WebView2
+  System::Call 'user32::SetPropW(p $HWNDPARENT, w "EAiCodingInstaller.Runtime", p 1)'
   ; Check if Webview2 is already installed and skip this section
   ${If} ${RunningX64}
     ReadRegStr $4 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\${WEBVIEW2APPGUID}" "pv"
@@ -537,7 +538,9 @@ Section WebView2
           DetailPrint "$(webview2DownloadSuccess)"
         ${Else}
           DetailPrint "$(webview2DownloadError)"
-          Abort "$(webview2AbortError)"
+          SetErrorLevel 2
+          MessageBox MB_OK|MB_ICONSTOP "$(webview2AbortError)" /SD IDOK
+          Quit
         ${EndIf}
         StrCpy $6 "$TEMP\MicrosoftEdgeWebview2Setup.exe"
         Goto install_webview2
@@ -569,7 +572,9 @@ Section WebView2
           DetailPrint "$(webview2InstallSuccess)"
         ${Else}
           DetailPrint "$(webview2InstallError)"
-          Abort "$(webview2AbortError)"
+          SetErrorLevel 2
+          MessageBox MB_OK|MB_ICONSTOP "$(webview2AbortError)" /SD IDOK
+          Quit
         ${EndIf}
       webview2_done:
     ${EndIf}
@@ -602,6 +607,7 @@ Section WebView2
       ${EndIf}
     !endif
   ${EndIf}
+  System::Call 'user32::RemovePropW(p $HWNDPARENT, w "EAiCodingInstaller.Runtime")'
 SectionEnd
 
 Section Install
@@ -613,21 +619,25 @@ Section Install
 
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
-  ; Copy main executable
-  File "${MAINBINARYSRCPATH}"
-
-  ; Copy resources
-  {{#each resources_dirs}}
-    CreateDirectory "$INSTDIR\\{{this}}"
-  {{/each}}
-  {{#each resources}}
-    File /a "/oname={{this.[1]}}" "{{no-escape @key}}"
-  {{/each}}
-
-  ; Copy external binaries
-  {{#each binaries}}
-    File /a "/oname={{this}}" "{{no-escape @key}}"
-  {{/each}}
+  ; Build from the precise executable supplied by Tauri (including its bundle marker).
+  !system 'node "${EAICODING_UI_SOURCE_DIR}\..\..\scripts\prepare-installer-payload.mjs" "${MAINBINARYSRCPATH}"' = 0
+  !insertmacro InstallerPublishStage 0
+  ; The payload is already compressed. Avoid a second solid decompression pass.
+  SetCompress off
+  File /oname=$PLUGINSDIR\payload.7z "${EAICODING_UI_SOURCE_DIR}\..\target\installer-ui\payload.7z"
+  SetCompress auto
+  !insertmacro InstallerPublishStage 1
+  System::Store /NOUNLOAD "S"
+  System::Call /NOUNLOAD '$PLUGINSDIR\window-frame.dll::InstallerExtract(p $HWNDPARENT, w "$PLUGINSDIR\7za.exe", w "$PLUGINSDIR\payload.7z", w "$INSTDIR", w "$PLUGINSDIR\extract.log") i.s ?c'
+  System::Store "L"
+  Pop $R0
+  ${If} $R0 != 0
+    DetailPrint "Payload extraction failed ($R0): $PLUGINSDIR\extract.log"
+    SetErrorLevel 2
+    MessageBox MB_OK|MB_ICONSTOP "$(INSTALLER_EXTRACT_FAILED) ($R0)" /SD IDOK
+    Quit
+  ${EndIf}
+  !insertmacro InstallerPublishStage 3
 
   ; Create file associations
   {{#each file_associations as |association| ~}}
@@ -704,6 +714,9 @@ Section Install
   !ifmacrodef NSIS_HOOK_POSTINSTALL
     !insertmacro NSIS_HOOK_POSTINSTALL
   !endif
+
+  !insertmacro InstallerPublishStage 4
+  Delete "$PLUGINSDIR\payload.7z"
 
   ; Auto close this page for passive mode
   ${If} $PassiveMode = 1

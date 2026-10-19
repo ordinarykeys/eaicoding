@@ -43,3 +43,8 @@ try {
   }
 } finally { $icon.Dispose() }
 Write-Output "Prepared EAiCoding native installer resources: $output"
+
+# Harness also uses the pinned 7zip-bin package for its separate extraction process.
+$sevenZipRoot = Join-Path $repoRoot 'node_modules/7zip-bin'
+Copy-Item -LiteralPath (Join-Path $sevenZipRoot 'win/x64/7za.exe') -Destination (Join-Path $output '7za.exe')
+Copy-Item -LiteralPath (Join-Path $sevenZipRoot 'LICENSE.txt') -Destination (Join-Path $output '7zip-LICENSE.txt')

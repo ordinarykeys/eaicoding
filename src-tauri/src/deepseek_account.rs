@@ -40,6 +40,25 @@ pub struct AccountView {
     pub error: Option<String>,
     pub attempt_id: Option<String>,
 }
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Wallet {
+    currency: String,
+    balance: String,
+}
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDetails {
+    name: Option<String>,
+    contact: Option<String>,
+    profile_available: bool,
+    wallets: Option<Vec<Wallet>>,
+    bonus_wallets: Option<Vec<Wallet>>,
+}
+#[derive(Debug, PartialEq)]
+enum DetailError {
+    Expired,
+    Unavailable,
+}
 #[derive(Serialize, Deserialize)]
 struct StoredGrant {
     encrypted_token: String,
@@ -214,6 +233,154 @@ fn text_field(value: &Value, key: &str) -> Result<String, String> {
         .filter(|v| !v.is_empty() && v.len() <= 16384)
         .map(str::to_string)
         .ok_or("授权服务响应缺少必要字段".into())
+}
+
+fn account_identity(value: &Value) -> (Option<String>, Option<String>) {
+    let nonempty = |v: &Value, limit| {
+        v.as_str()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.chars().take(limit).collect::<String>())
+    };
+    (
+        nonempty(&value["id_profile"]["name"], 120).or_else(|| nonempty(&value["name"], 120)),
+        nonempty(&value["mobile"], 160)
+            .or_else(|| nonempty(&value["mobile_number"], 160))
+            .or_else(|| nonempty(&value["email"], 160)),
+    )
+}
+fn detail_payload(value: Value) -> Result<Value, DetailError> {
+    if value["code"].as_i64() == Some(40003) || value["data"]["biz_code"].as_i64() == Some(40003) {
+        return Err(DetailError::Expired);
+    }
+    if value["code"].as_i64() != Some(0) || value["data"]["biz_code"].as_i64() != Some(0) {
+        return Err(DetailError::Unavailable);
+    }
+    Ok(value["data"]["biz_data"].clone())
+}
+async fn account_read(
+    origin: &str,
+    path: &str,
+    token: &str,
+    timezone: i32,
+) -> Result<Value, DetailError> {
+    let mut response = ACCOUNT_HTTP
+        .get(format!("{origin}{path}"))
+        .headers(
+            grant_headers(client_headers(timezone), token).map_err(|_| DetailError::Unavailable)?,
+        )
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|_| DetailError::Unavailable)?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(DetailError::Expired);
+    }
+    if !response.status().is_success() {
+        return Err(DetailError::Unavailable);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| DetailError::Unavailable)?
+    {
+        if bytes.len() + chunk.len() > 262144 {
+            return Err(DetailError::Unavailable);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    detail_payload(serde_json::from_slice(&bytes).map_err(|_| DetailError::Unavailable)?)
+}
+fn wallets(value: &Value) -> Option<Vec<Wallet>> {
+    let entries: Vec<Wallet> = serde_json::from_value(value.clone()).ok()?;
+    if entries.len() > 32
+        || entries.iter().any(|wallet| {
+            !matches!(wallet.currency.as_str(), "CNY" | "USD")
+                || wallet.balance.len() > 128
+                || !wallet
+                    .balance
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || b".-+eE".contains(&c))
+                || !wallet.balance.parse::<f64>().is_ok_and(f64::is_finite)
+        })
+    {
+        return None;
+    }
+    Some(entries)
+}
+async fn read_account_details(
+    origin: &str,
+    token: &str,
+    timezone: i32,
+) -> Result<AccountDetails, DetailError> {
+    let (profile, balance) = tokio::join!(
+        account_read(origin, "/auth-api/v0/users/current", token, timezone),
+        account_read(origin, "/api/v0/users/get_user_summary", token, timezone)
+    );
+    if matches!(profile, Err(DetailError::Expired)) || matches!(balance, Err(DetailError::Expired))
+    {
+        return Err(DetailError::Expired);
+    }
+    let mut details = AccountDetails::default();
+    if let Ok(profile) = profile {
+        if profile["email"].is_string()
+            || profile["mobile"].is_string()
+            || profile["mobile_number"].is_string()
+        {
+            (details.name, details.contact) = account_identity(&profile);
+            details.profile_available = true;
+        }
+    }
+    if let Ok(balance) = balance {
+        if let (Some(normal), Some(bonus)) = (
+            wallets(&balance["normal_wallets"]),
+            wallets(&balance["bonus_wallets"]),
+        ) {
+            details.wallets = Some(normal);
+            details.bonus_wallets = Some(bonus);
+        }
+    }
+    Ok(details)
+}
+
+#[tauri::command]
+pub async fn deepseek_account_details(
+    app: AppHandle,
+    timezone_offset_seconds: Option<i32>,
+) -> Result<AccountDetails, String> {
+    let state = app.state::<AccountState>();
+    let token = {
+        let mut inner = state.0.lock().await;
+        inner.load(&data_dir(&app)?).await?;
+        inner
+            .grant
+            .as_ref()
+            .ok_or("请先登录 DeepSeek")?
+            .token
+            .clone()
+    };
+    let details =
+        match read_account_details(PLATFORM, &token, timezone_offset_seconds.unwrap_or(0)).await {
+            Ok(details) => details,
+            Err(DetailError::Expired) => {
+                expire(&app, &token).await;
+                return Err("DeepSeek 登录已失效，请重新登录。".into());
+            }
+            Err(DetailError::Unavailable) => return Err("账号资料暂不可用，请重试。".into()),
+        };
+    let mut inner = state.0.lock().await;
+    let grant = inner
+        .grant
+        .as_mut()
+        .filter(|grant| grant.token == token)
+        .ok_or("账号已切换")?;
+    if details.profile_available {
+        grant.name = details.name.clone();
+        grant.contact = details.contact.clone();
+    }
+    drop(inner);
+    publish(&app);
+    Ok(details)
 }
 async fn device_id(dir: &Path) -> Result<String, String> {
     let path = dir.join("deepseek-device-v1.json");
@@ -425,16 +592,7 @@ async fn commit_authorization(
         completion
             .query_pairs_mut()
             .append_pair("login_source", "desktop");
-        let user = &exchanged["user"];
-        let name = user["id_profile"]["name"]
-            .as_str()
-            .or(user["name"].as_str())
-            .map(|v| v.chars().take(120).collect());
-        let contact = user["email"]
-            .as_str()
-            .or(user["mobile"].as_str())
-            .or(user["mobile_number"].as_str())
-            .map(|v| v.chars().take(160).collect());
+        let (name, contact) = account_identity(&exchanged["user"]);
         let stored = StoredGrant {
             encrypted_token: crate::crypto::encrypt_secret(token.clone())
                 .map_err(|_| STORAGE_ERROR)?,
@@ -757,6 +915,83 @@ pub async fn deepseek_account_present(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn account_details_validation() {
+        assert_eq!(
+            account_identity(&json!({"email":"","mobile":"13800000000","id_profile":{"name":""}})),
+            (None, Some("13800000000".into()))
+        );
+        assert!(wallets(&json!([{"currency":"CNY","balance":"0E-16"}])).is_some());
+        for value in [
+            json!([{"currency":"EUR","balance":"1"}]),
+            json!([{"currency":"CNY","balance":"NaN"}]),
+            json!([{"currency":"CNY","balance":0}]),
+            json!(null),
+        ] {
+            assert!(wallets(&value).is_none());
+        }
+        assert_eq!(
+            detail_payload(json!({"code":40003})),
+            Err(DetailError::Expired)
+        );
+        assert_eq!(
+            detail_payload(json!({"code":0,"data":{"biz_code":40003}})),
+            Err(DetailError::Expired)
+        );
+        assert_eq!(
+            detail_payload(json!({"code":0})),
+            Err(DetailError::Unavailable)
+        );
+    }
+    #[test]
+    fn account_details_http_projection() {
+        tauri::async_runtime::block_on(async {
+            for mode in ["ready", "unavailable", "expired"] {
+                let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+                let origin = format!("http://{}", listener.local_addr().unwrap());
+                let server = tokio::spawn(async move {
+                    for _ in 0..2 {
+                        let (mut stream, _) = listener.accept().await.unwrap();
+                        let mut bytes = Vec::new();
+                        while !bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+                            let mut buf = [0; 2048];
+                            let count = stream.read(&mut buf).await.unwrap();
+                            assert!(count > 0);
+                            bytes.extend_from_slice(&buf[..count]);
+                        }
+                        let request = String::from_utf8(bytes).unwrap();
+                        assert!(request
+                            .to_ascii_lowercase()
+                            .contains("x-dsh-auth-token: fixture-detail-token"));
+                        if request.starts_with("GET /auth-api/v0/users/current ") {
+                            respond_json(&mut stream, json!({"email":"fixture@example.invalid","id_profile":{"name":"测试账号"},"token":"must-not-project"})).await;
+                        } else {
+                            assert!(request.starts_with("GET /api/v0/users/get_user_summary "));
+                            match mode {
+                                "unavailable" => reply(&mut stream, "503 Service Unavailable", "", "offline").await,
+                                "expired" => reply(&mut stream, "401 Unauthorized", "", "expired").await,
+                                _ => respond_json(&mut stream, json!({"normal_wallets":[{"currency":"CNY","balance":"12.34"}],"bonus_wallets":[{"currency":"CNY","balance":"5.6"}]})).await,
+                            }
+                        }
+                    }
+                });
+                let result = read_account_details(&origin, "fixture-detail-token", 28800).await;
+                if mode == "expired" {
+                    assert!(matches!(result, Err(DetailError::Expired)));
+                    server.await.unwrap();
+                    continue;
+                }
+                let details = result.unwrap();
+                assert_eq!(details.name.as_deref(), Some("测试账号"));
+                assert!(details.profile_available);
+                assert_eq!(details.wallets.is_some(), mode == "ready");
+                let serialized = serde_json::to_string(&details).unwrap();
+                assert!(!serialized.contains("fixture-detail-token"));
+                assert!(!serialized.contains("must-not-project"));
+                server.await.unwrap();
+            }
+        });
+    }
     fn fixture() -> (LoginContext, String) {
         let id = random_secret();
         let state = AccountState::default();

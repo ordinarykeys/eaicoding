@@ -1,5 +1,4 @@
 import {
-  GearSix,
   Books,
   FolderOpen,
   FolderPlus,
@@ -11,7 +10,7 @@ import {
 } from "@phosphor-icons/react";
 import { useCallback, useRef, useState, useMemo } from "react";
 import { Button } from "@/components/ui/button";
-import { DialogTrigger } from "@/components/ui/dialog";
+import { AccountMenu } from "@/components/account-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Tooltip,
@@ -29,6 +28,7 @@ import { toast } from "sonner";
 interface SidebarProps {
   onOpenSettings: (section: string) => void;
   settingsOpen: boolean;
+  onAccountOverlayChange: (open: boolean) => void;
   onClose: () => void;
   width: number;
   onResize: (width: number) => void;
@@ -36,7 +36,7 @@ interface SidebarProps {
   maxWidth: number;
 }
 
-export function Sidebar({ onOpenSettings, settingsOpen, onClose, width, onResize, minWidth, maxWidth }: SidebarProps) {
+export function Sidebar({ onOpenSettings, settingsOpen, onAccountOverlayChange, onClose, width, onResize, minWidth, maxWidth }: SidebarProps) {
   const sessions = useChatStore((s) => s.sessions);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const createSession = useChatStore((s) => s.createSession);
@@ -172,21 +172,7 @@ export function Sidebar({ onOpenSettings, settingsOpen, onClose, width, onResize
         </ScrollArea>
 
         <div className="px-2 py-2">
-          <DialogTrigger asChild>
-            <Button
-              variant="ghost"
-              aria-label="设置"
-              aria-keyshortcuts="Control+, Meta+,"
-              className={cn(
-                "h-9 w-full justify-start gap-2 rounded-md bg-transparent px-3 text-sm text-muted-foreground hover:bg-sidebar-accent",
-                settingsOpen && "text-foreground",
-              )}
-            >
-              <GearSix className="h-4 w-4" />
-              设置
-              <kbd className="settings-shortcut" aria-hidden="true">Ctrl+,</kbd>
-            </Button>
-          </DialogTrigger>
+          <AccountMenu onSettings={() => onOpenSettings("account")} settingsOpen={settingsOpen} onOverlayChange={onAccountOverlayChange} />
         </div>
         <div
           className="sidebar-resize-handle"

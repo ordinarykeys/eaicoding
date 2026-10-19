@@ -69,6 +69,7 @@ pub fn run() {
                 scan_easy_language_env,
                 search_jingyi_module_rust,
                 deepseek_account::deepseek_account_status,
+                deepseek_account::deepseek_account_details,
                 deepseek_account::deepseek_account_start,
                 deepseek_account::deepseek_account_cancel,
                 deepseek_account::deepseek_account_logout,

@@ -1,0 +1,45 @@
+/* Harness AccountMenu/AccountSection/SignOutDialog proportions; EAiCoding theme tokens. */
+.account-launcher { flex: 1; min-width: 0; }
+.account-trigger { user-select: none; display:flex; align-items:center; width:100%; height:44px; gap:8px; padding:6px; border:0; border-radius:8px; background:transparent; color:var(--foreground); font:inherit; font-size:14px; cursor:pointer; }
+.account-trigger:hover,.account-trigger[aria-expanded="true"] { background:var(--sidebar-accent); }
+.account-trigger>span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.account-avatar { display:flex; align-items:center; justify-content:center; flex:none; width:24px; height:24px; border-radius:50%; background:var(--secondary); color:var(--muted-foreground); }
+.account-avatar[data-large="true"] { width:32px; height:32px; }
+.account-popover { position:fixed; z-index:55; padding:4px; border:.5px solid var(--border); border-radius:12px; background:var(--card); color:var(--foreground); box-shadow:0 8px 28px rgb(0 0 0 / 12%); }
+.account-popover>button { display:flex; align-items:center; gap:8px; width:100%; min-height:40px; padding:8px 10px; border:0; border-radius:8px; background:transparent; color:inherit; font:inherit; font-size:14px; cursor:pointer; }
+.account-popover>button:hover,.account-popover>button:focus-visible { background:var(--accent); outline:none; }
+.account-popover kbd { margin-left:auto; font:12px var(--font-sans); color:var(--muted-foreground); }
+.account-popover button:disabled { opacity:.5; cursor:default; }
+.account-trigger:focus-visible,.account-center button:focus-visible,.account-link:focus-visible,.account-signout-dialog button:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.account-center { display:flex; flex-direction:column; gap:16px; padding:8px 0; color:var(--foreground); font-size:13px; line-height:22px; }
+.account-identity-card,.account-balance-card { padding:12px 16px; border:.5px solid var(--border); border-radius:20px; background:var(--card); }
+.account-identity-card,.account-balance-row { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.account-identity { display:flex; align-items:center; gap:10px; min-width:0; min-height:44px; }
+.account-identity>div { display:flex; flex-direction:column; min-width:0; }
+.account-identity strong { font-size:14px; font-weight:500; overflow-wrap:anywhere; }
+.account-identity span { overflow-wrap:anywhere; }
+.account-muted { color:var(--muted-foreground); }
+.account-link { display:inline-flex; flex:none; align-items:center; justify-content:center; gap:2px; color:var(--foreground); text-decoration:none; white-space:nowrap; }
+.account-link:hover { text-decoration:underline; text-underline-offset:3px; }
+.account-balance-card { display:flex; flex-direction:column; gap:8px; }
+.account-balance-row { min-height:40px; padding:6px 0; }
+.account-divider { border-top:.5px solid var(--border); }
+.account-amount { display:flex; flex-wrap:wrap; justify-content:flex-end; font-size:18px; line-height:28px; font-weight:500; }
+.account-amount>span+span::before { content:' + '; white-space:pre; }
+.account-links { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
+.account-links .account-link { box-sizing:border-box; height:36px; min-width:58px; padding:0 14px; border:.5px solid var(--border); border-radius:8px; font-size:14px; text-decoration:none; }
+.account-primary { background:var(--foreground)!important; color:var(--background)!important; border-color:transparent!important; font-weight:500; }
+.account-links .account-link:hover,.account-refresh button:hover { background:var(--accent); }
+.account-refresh { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:12px; }
+.account-refresh button { display:inline-flex; align-items:center; gap:6px; flex:none; border:0; background:transparent; color:var(--muted-foreground); padding:4px 8px; border-radius:6px; cursor:pointer; }
+.account-refresh button:disabled { opacity:.5; cursor:default; }
+.account-signout-overlay { position:fixed; inset:0; z-index:60; background:rgb(0 0 0 / 24%); }
+.account-signout-dialog { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:60; box-sizing:border-box; width:min(420px,calc(100vw - 32px)); border:.5px solid var(--border); border-radius:20px; background:var(--card); color:var(--foreground); box-shadow:0 24px 80px rgb(0 0 0 / 18%); outline:none; }
+.account-signout-dialog header { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:22px 24px 12px; }
+.account-signout-dialog h2 { margin:0; font-size:16px; line-height:24px; font-weight:500; }
+.account-signout-dialog header button { display:flex; align-items:center; justify-content:center; width:28px; height:28px; padding:6px; border:0; border-radius:6px; background:transparent; color:inherit; cursor:pointer; }
+.account-signout-dialog p { margin:0; padding:0 24px; font-size:14px; line-height:22px; }
+.account-signout-dialog footer { display:flex; justify-content:flex-end; gap:8px; padding:24px; }
+.account-signout-dialog footer button { height:36px; min-width:72px; padding:0 14px; border:.5px solid var(--border); border-radius:8px; font:inherit; font-size:14px; background:transparent; color:inherit; cursor:pointer; }
+.account-signout-dialog button:disabled { opacity:.5; cursor:default; }
+@container settings-content (max-width:360px) { .account-identity-card { flex-wrap:wrap; gap:8px; } }

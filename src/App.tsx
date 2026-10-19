@@ -16,12 +16,16 @@ const MAX_SIDEBAR_WIDTH = 480;
 const DEFAULT_SIDEBAR_WIDTH = 280;
 
 export default function App() {
-  const [settingsSection, setSettingsSection] = useState("appearance");
+  const [settingsSection, setSettingsSection] = useState("account");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [accountOverlayOpen, setAccountOverlayOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const theme = useSettingsStore((s) => s.theme);
-  const { ready, view, refresh } = useDeepSeekAccount();
+  const { ready, view, refresh, refreshDetails } = useDeepSeekAccount();
+
+  useEffect(() => { if (view.signedIn) void refreshDetails(); }, [view.signedIn, refreshDetails]);
+  useEffect(() => { if (settingsOpen && view.signedIn) void refreshDetails(); }, [settingsOpen, view.signedIn, refreshDetails]);
 
   useEffect(() => {
     void refresh();
@@ -55,12 +59,15 @@ export default function App() {
     const handleSettingsShortcut = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key === ",") {
         event.preventDefault();
-        if (!event.repeat && useDeepSeekAccount.getState().view.signedIn) setSettingsOpen(open => !open);
+        if (!event.repeat && useDeepSeekAccount.getState().view.signedIn) {
+          if (!settingsOpen) setSettingsSection("account");
+          setSettingsOpen(open => !open);
+        }
       }
     };
     window.addEventListener("keydown", handleSettingsShortcut);
     return () => window.removeEventListener("keydown", handleSettingsShortcut);
-  }, []);
+  }, [settingsOpen]);
 
   if (!ready) return <div className="h-screen bg-background" aria-label="正在检查登录状态" />;
   if (!view.signedIn) return <DeepSeekLogin />;
@@ -76,6 +83,7 @@ export default function App() {
               <Sidebar
                 onOpenSettings={section => { setSettingsSection(section); setSettingsOpen(true); }}
                 settingsOpen={settingsOpen}
+                onAccountOverlayChange={setAccountOverlayOpen}
                 onClose={toggleSidebar}
                 width={sidebarWidth}
                 onResize={setSidebarWidth}
@@ -87,7 +95,7 @@ export default function App() {
               className="flex h-full min-w-0 flex-col transition-[padding] duration-200"
               style={{ paddingLeft: sidebarOpen ? sidebarWidth + 16 : 0 }}
             >
-              <ChatView sidebarOpen={sidebarOpen} onToggleSidebar={toggleSidebar} settingsOpen={settingsOpen} />
+              <ChatView sidebarOpen={sidebarOpen} onToggleSidebar={toggleSidebar} settingsOpen={settingsOpen || accountOverlayOpen} />
             </main>
           </div>
         </div>

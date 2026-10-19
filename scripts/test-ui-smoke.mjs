@@ -49,6 +49,13 @@ mockIPC((cmd, args) => {
     if (window.fixtureAccountUnavailable) return { ...window.fixtureAccountView, signedIn: false };
     return { ...window.fixtureAccountView };
   }
+  if (cmd === 'deepseek_account_details') {
+    window.fixtureDetailsReads = (window.fixtureDetailsReads ?? 0) + 1;
+    if (window.fixtureDetailsUnavailable) return { name: null, contact: null, profileAvailable: false, wallets: null, bonusWallets: null };
+    const details = { name: window.fixtureAccountView.name, contact: window.fixtureAccountView.contact, profileAvailable: true, wallets: [{ currency: 'CNY', balance: '12.34' }], bonusWallets: [{ currency: 'CNY', balance: '5.60' }] };
+    if (window.fixtureDeferDetails) return new Promise(resolve => { window.fixtureResolveDetails = () => resolve(details); });
+    return details;
+  }
   if (cmd === 'deepseek_account_start') {
     window.fixtureAccountView = { ...window.fixtureAccountView, signedIn: false, phase: 'initializing', error: null, attemptId: 'attempt-' + (++window.fixtureAccountNumber) };
     return window.fixtureAccountView;
@@ -75,7 +82,7 @@ mockIPC((cmd, args) => {
     const root = args.root;
     return { root, directory: args.directory ?? root, next_offset: null, entries: (args.directory && args.directory.endsWith('/代码')) ? [{ name: '示例.epl', path: root + '/代码/示例.epl', directory: false }] : [{ name: '代码', path: root + '/代码', directory: true }, { name: '说明.md', path: root + '/说明.md', directory: false }] };
   }
-  if (cmd.startsWith('browser_') || cmd === 'plugin:opener|open_path') { window.fixtureNativeCalls = [...(window.fixtureNativeCalls ?? []), { cmd, args }]; return null; }
+  if (cmd.startsWith('browser_') || (cmd === 'plugin:opener|open_path' || cmd === 'plugin:opener|open_url')) { window.fixtureNativeCalls = [...(window.fixtureNativeCalls ?? []), { cmd, args }]; return null; }
   if (cmd === 'terminal_open') { window.fixtureTerminals = [...(window.fixtureTerminals ?? []), args]; return null; }
   if (cmd === 'terminal_close') { window.fixtureClosedTerminals = [...(window.fixtureClosedTerminals ?? []), args.id]; return null; }
   if (cmd === 'terminal_write') { window.fixtureTerminalWrites = [...(window.fixtureTerminalWrites ?? []), args]; return null; }
@@ -126,6 +133,8 @@ await useChatStore.persist.rehydrate();
 useSettingsStore.setState({ petEnabled: false, approveSourceEdits: true });
 window.fixtureSettings = useSettingsStore;
 window.fixtureChat = useChatStore;
+window.fixtureFormatBalance = (await import('${sourceRoot}/lib/account-balance')).formatBalance;
+window.fixtureAccountStore = (await import('${sourceRoot}/stores/deepseek-account')).useDeepSeekAccount;
 window.fixtureFlushChat = (await import('${sourceRoot}/stores/chat-storage')).flushChatStorage;
 const { default: App } = await import('${sourceRoot}/App');
 createRoot(document.getElementById('root')).render(<App />);
@@ -193,14 +202,32 @@ try {
   await page.getByRole('button', { name: '收起工作区', exact: true }).click();
   await page.getByRole('textbox', { name: '消息输入框', exact: true }).fill('设置弹窗关闭后保留这份需求');
   await page.evaluate(() => { window.fixtureComposerNode = document.querySelector('[aria-label="消息输入框"]'); });
-  await page.getByRole('button', { name: '设置', exact: true }).click();
+  const openSettings = async () => {
+    await page.getByRole('button', { name: '账号菜单', exact: true }).click();
+    await page.getByRole('menuitem', { name: '设置', exact: true }).click();
+  };
+  assert.deepEqual(await page.evaluate(() => ['0', '0.009', '-0.001', '1.239', '-1.239', '12345678901234567890.12'].map(amount => window.fixtureFormatBalance(amount, '¥'))), ['¥0.00', '<¥0.01', '-¥0.01', '¥1.23', '-¥1.24', '¥12,345,678,901,234,567,890.12']);
+  const accountTrigger = page.getByRole('button', { name: '账号菜单', exact: true });
+  await accountTrigger.getByText('测试账号', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '设置', exact: true }).count(), 0, 'sidebar footer is the account identity');
+  await accountTrigger.click();
+  assert.deepEqual(await page.getByRole('menuitem').allTextContents(), ['设置Ctrl+,', '退出登录']);
+  const menuBox = await page.getByRole('menu', { name: '账号操作' }).boundingBox();
+  const triggerBox = await accountTrigger.boundingBox();
+  assert(menuBox.y + menuBox.height <= triggerBox.y, 'account menu opens above the footer');
+  await page.screenshot({ path: path.join(screenshots, 'account-menu.png'), animations: 'disabled' });
+  await page.keyboard.press('ArrowDown');
+  assert.equal(await page.getByRole('menuitem', { name: '退出登录', exact: true }).evaluate(node => node === document.activeElement), true);
+  await page.keyboard.press('Escape');
+  assert.equal(await accountTrigger.evaluate(node => node === document.activeElement), true);
+  await openSettings();
   const settingsDialog = page.getByRole('dialog', { name: '设置', exact: true });
   await settingsDialog.waitFor();
   assert.equal(await settingsDialog.getAttribute('aria-modal'), 'true');
   assert.equal(await page.evaluate(() => window.fixtureComposerNode.isConnected), true, 'opening settings must keep the chat mounted');
   assert.equal(await page.evaluate(() => document.querySelector('.settings-dialog').contains(document.activeElement)), true, 'focus moves into settings');
-  assert.equal(await page.getByRole('tab', { name: '通用', selected: true }).count(), 1);
-  assert.deepEqual(await page.getByRole('tab').allTextContents(), ['通用', '模型', '易语言环境', '模块库']);
+  assert.equal(await page.getByRole('tab', { name: '个人中心', selected: true }).count(), 1);
+  assert.deepEqual(await page.getByRole('tab').allTextContents(), ['个人中心', '通用', '模型', '易语言环境', '模块库']);
   await settingsDialog.evaluate(async node => { await Promise.all(node.getAnimations().map(animation => animation.finished)); });
   const layout = await page.evaluate(() => ({
     modal: document.querySelector('.settings-dialog').getBoundingClientRect().toJSON(),
@@ -213,11 +240,29 @@ try {
   assert.equal(layout.rail, 188);
   assert.equal(layout.nav, 40);
   assert.equal(layout.header, 54);
+  const center = page.getByRole('region', { name: '个人中心', exact: true });
+  await center.getByText('测试账号', { exact: true }).waitFor();
+  await center.getByText('¥12.34', { exact: true }).waitFor();
+  await center.getByText('¥5.60', { exact: true }).waitFor();
+  await center.getByRole('link', { name: '查询用量', exact: true }).click();
+  await page.waitForFunction(() => window.fixtureNativeCalls.some(call => call.cmd === 'plugin:opener|open_url' && call.args.url === 'https://platform.deepseek.com/usage'));
+  await page.screenshot({ path: path.join(screenshots, 'account-center.png'), animations: 'disabled' });
+  await page.evaluate(() => { window.fixtureDetailsUnavailable = true; });
+  await center.getByRole('button', { name: '刷新', exact: true }).click();
+  await center.getByText('账号资料暂不可用，可重试或前往开放平台查看。', { exact: true }).waitFor();
+  assert.equal(await center.locator('.account-amount').count(), 0, 'unavailable wallets must never display a fabricated zero');
+  await page.evaluate(() => { window.fixtureDetailsUnavailable = false; });
+  await center.getByRole('button', { name: '刷新', exact: true }).click();
+  await center.getByText('¥12.34', { exact: true }).waitFor();
+  const reads = await page.evaluate(() => window.fixtureDetailsReads);
   await page.getByRole('tab', { name: '模型', exact: true }).click();
+  await page.getByRole('tab', { name: '个人中心', exact: true }).click();
+  assert.equal(await page.evaluate(() => window.fixtureDetailsReads), reads, 'section switches do not refetch the account');
+  await page.getByRole('tab', { name: '模型', exact: true }).click();
+  console.log('PASS Harness account identity, upward menu/keyboard, personal center default, real balance projection, official links and unavailable-state retry');
   const openProviderEditor = async () => {
     if (!await page.locator('.settings-advanced').evaluate(node => node.open)) await page.locator('.settings-advanced > summary').click();
   };
-  await page.getByLabel('已授权登录', { exact: true }).waitFor();
   assert.equal(await page.locator('#deepseek-key, #deepseek-url').count(), 0, 'no API key or custom endpoint UI');
   const defaultModels = page.locator('#deepseek-model input[type="radio"]');
   assert.deepEqual(await defaultModels.evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label'))), ['DeepSeek-V4.1-Flash', 'DeepSeek-V4-Pro']);
@@ -284,9 +329,10 @@ try {
   await page.keyboard.press('Escape');
   await settingsDialog.waitFor({ state: 'hidden' });
   assert.equal(await page.getByRole('textbox', { name: '消息输入框', exact: true }).inputValue(), '设置弹窗关闭后保留这份需求');
-  assert.equal(await page.getByRole('button', { name: '设置', exact: true }).evaluate(node => node === document.activeElement), true, 'closing settings restores focus to its trigger');
-  await page.getByRole('button', { name: '设置', exact: true }).click();
-  assert.equal(await page.getByRole('tab', { name: '易语言环境', selected: true }).count(), 1, 'reopening retains the selected section');
+  assert.equal(await page.getByRole('button', { name: '账号菜单', exact: true }).evaluate(node => node === document.activeElement), true, 'closing settings restores focus to its trigger');
+  await openSettings();
+  assert.equal(await page.getByRole('tab', { name: '个人中心', selected: true }).count(), 1, 'account settings opens the personal center');
+  await page.getByRole('tab', { name: '易语言环境', exact: true }).click();
   await page.evaluate(() => window.fixtureResolveEnv());
   await page.getByRole('status').filter({ hasText: '打开本页不会自动扫描磁盘' }).waitFor();
   assert.equal(await page.getByText('编译链状态正常', { exact: true }).count(), 0, 'a closed modal must not publish results into the new one');
@@ -327,7 +373,8 @@ try {
   await page.locator('#deepseek-temperature').fill('0.9');
   await page.mouse.click(20, 450);
   await settingsDialog.waitFor({ state: 'hidden' });
-  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await openSettings();
+  await page.getByRole('tab', { name: '模型', exact: true }).click();
   await openProviderEditor();
   assert.equal(await page.locator('#deepseek-temperature').inputValue(), '0.4', 'closing the modal discards unsaved model parameters');
   await page.keyboard.press('Control+,');
@@ -341,7 +388,7 @@ try {
   await settingsDialog.waitFor({ state: 'hidden' });
   assert.equal(await retainedInput.evaluate(node => node === document.activeElement), true, 'keyboard settings returns focus even with the sidebar hidden');
   await page.getByRole('button', { name: '打开侧栏', exact: true }).click();
-  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await openSettings();
   console.log('PASS modal settings: stable size, theme/preferences, environment fields, focus trap/restore, Escape/mask close, narrow layout and retained chat draft');
   await page.evaluate(() => {
     window.fixtureSettings.setState({ userModules: Array.from({ length: 10000 }, (_, index) => ({
@@ -513,7 +560,7 @@ try {
   await page.evaluate(() => window.fixtureEmitToken('你好！'));
   await reply.getByText('你好！', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: '停止生成', exact: true }).count(), 1, 'partial Markdown must paint while IPC is still pending');
-  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await openSettings();
   await settingsDialog.waitFor();
   await page.evaluate(() => window.fixtureEmitToken('我可以帮你编写易语言窗口和事件代码，也能查阅精易模块接口。'));
   await reply.getByText('你好！我可以帮你编写易语言窗口和事件代码，也能查阅精易模块接口。', { exact: true }).waitFor();
@@ -760,7 +807,7 @@ try {
   const documentBody = pane.locator('.document-body');
   await documentBody.evaluate(element => { element.scrollTop = 500; });
   const filePosition = await documentBody.evaluate(element => element.scrollTop);
-  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await openSettings();
   await page.getByRole('button', { name: '关闭设置', exact: true }).click();
   await settingsDialog.waitFor({ state: 'hidden' });
   assert.equal(await pane.getByRole('tab', { selected: true }).textContent(), '窗口程序集_启动窗口.form.e.txt', 'settings must preserve the active document');
@@ -904,7 +951,12 @@ try {
   await workbench.getByRole('button', { name: '打开', exact: true }).click();
   await page.waitForFunction(() => window.fixtureNativeCalls.some(c => c.cmd === 'browser_open'));
   const browserId = await page.evaluate(() => window.fixtureNativeCalls.find(c => c.cmd === 'browser_open').args.id);
-  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await accountTrigger.click();
+  await page.waitForFunction(id => window.fixtureNativeCalls.filter(c => c.cmd === 'browser_layout' && c.args.id === id).at(-1)?.args.visible === false, browserId);
+  await page.getByRole('menuitem', { name: '退出登录', exact: true }).click();
+  await page.getByRole('dialog', { name: '退出登录', exact: true }).getByRole('button', { name: '取消', exact: true }).click();
+  await page.waitForFunction(id => window.fixtureNativeCalls.filter(c => c.cmd === 'browser_layout' && c.args.id === id).at(-1)?.args.visible === true, browserId);
+  await openSettings();
   await page.waitForFunction(id => window.fixtureNativeCalls.some(c => c.cmd === 'browser_layout' && c.args.id === id && c.args.visible === false), browserId);
   await page.keyboard.press('Escape');
   await page.waitForFunction(id => window.fixtureNativeCalls.filter(c => c.cmd === 'browser_layout' && c.args.id === id).at(-1)?.args.visible === true, browserId);
@@ -921,9 +973,19 @@ try {
   await page.waitForFunction(() => Boolean(window.fixturePendingRequest));
   await page.evaluate(() => window.fixtureEmitToken('退出前的草稿'));
   await page.locator('.assistant-message-content').last().getByText('退出前的草稿', { exact: true }).waitFor();
-  await page.getByRole('button', { name: '设置', exact: true }).click();
-  await page.getByRole('tab', { name: '模型', exact: true }).click();
-  await page.getByRole('button', { name: '退出登录', exact: true }).click();
+  await page.evaluate(() => { window.fixtureDeferDetails = true; window.fixtureResolveDetails = null; });
+  await openSettings();
+  await page.waitForFunction(() => Boolean(window.fixtureResolveDetails));
+  await page.keyboard.press('Escape');
+  await accountTrigger.click();
+  await page.getByRole('menuitem', { name: '退出登录', exact: true }).click();
+  const logoutDialog = page.getByRole('dialog', { name: '退出登录', exact: true });
+  await logoutDialog.getByText('当前有任务正在执行，退出登录将中断任务，是否退出登录？', { exact: true }).waitFor();
+  await logoutDialog.getByRole('button', { name: '取消', exact: true }).click();
+  assert.equal(await page.getByRole('button', { name: '停止生成', exact: true }).count(), 1, 'cancel sign-out keeps the task running');
+  await accountTrigger.click();
+  await page.getByRole('menuitem', { name: '退出登录', exact: true }).click();
+  await logoutDialog.getByRole('button', { name: '退出登录', exact: true }).click();
   await page.getByTestId('deepseek-login').waitFor();
   assert.equal(await page.getByRole('textbox', { name: '消息输入框', exact: true }).count(), 0);
   assert.equal(await page.locator('#deepseek-key, #deepseek-url').count(), 0);
@@ -940,7 +1002,9 @@ try {
     const state = window.fixtureChat.getState();
     return JSON.stringify(state.sessions.find(session => session.id === state.activeSessionId).messages.at(-1));
   }), afterLogout, 'logout must abort the agent and ignore late model output');
-  console.log('PASS logout aborts a running agent, ignores late output and returns to the exclusive login window');
+  await page.evaluate(async () => { window.fixtureResolveDetails(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+  assert.equal(await page.evaluate(() => window.fixtureAccountStore.getState().details), null, 'late account details cannot restore a signed-out profile');
+  console.log('PASS logout confirmation/cancel, task interruption, late model/detail isolation and exclusive login window');
   assert.deepEqual(errors, []);
   console.log('PASS Chinese fence, source copy, wrap toggle, IDE toggle, light/dark rendering and no page errors');
   console.log(`Screenshots: ${screenshots}`);

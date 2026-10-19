@@ -10,12 +10,12 @@ EAiCoding 桌面端是一款面向易语言开发者的本地 AI Coding Agent。
 
 文档入口：[架构与执行流程](docs/architecture.md) · [开发与验证](docs/development.md) · [更新记录](CHANGELOG.md) · [问题诊断与修复](项目诊断报告.md)
 
-当前版本：**0.1.3**。[发布说明](docs/releases/v0.1.3.md)包含本次改动、附件用途和升级注意事项。
+当前版本：**0.1.4**。[发布说明](docs/releases/v0.1.4.md)包含本次改动、附件用途和升级注意事项。
 
 ## 功能特性
 
 - AI 对话：仅接入 DeepSeek，预置 DeepSeek-V4.1-Flash（`deepseek-flash`）和 DeepSeek-V4-Pro（`deepseek-v4-pro`）。
-- 本地配置：API 配置、模型参数、对话记录和生成目录保存在本机。
+- 本地配置：模型参数、对话记录和生成目录保存在本机。
 - 易语言文件处理：支持解析 `.e/.ec`，导出 ecode 文本工程，回编生成 `.e`。
 - 原生窗口生成：可生成含窗口、控件布局、初始化和事件的易语言 GUI 工程，输出可编辑 ecode、`.e` 和编译后的 `.exe`；目前支持按钮、编辑框、标签、选择框、单选框。
 - 编译验证：内置易语言命令行编译相关工具，可对生成或修改后的 `.e` 做编译检查。
@@ -26,9 +26,10 @@ EAiCoding 桌面端是一款面向易语言开发者的本地 AI Coding Agent。
 - 代码展示：参照 DeepSeek Harness 的代码卡片，提供行号、复制、自动换行、保存、深浅色主题，并保留易语言 IDE 视图切换。
 - 自动编程：AI 自主选择技术方案并读写文件，完成修改后继续回编和编译验证；桌面入口没有固定总步数上限，可随时停止。
 - 回复与预览：流式 Markdown、独立推理区域、可展开工具记录、右侧文件页签和分页预览；上翻暂停跟随，点击“回到最新”恢复。
-- 设置弹窗：分为通用、模型、易语言环境、模块库，保留 Claude 暖色主题与紧凑输入区。
+- 设置弹窗：从左下角账号菜单进入，默认个人中心，包含通用、模型、易语言环境、模块库，保留 Claude 暖色主题与紧凑输入区。
 - 手机模式：桌面端可开启局域网桥接，手机 App 扫码后继续对话。
 - 单实例运行：重复打开应用时会聚焦已有窗口，避免多开造成状态混乱。
+- Windows 安装：使用 Harness 的 NSIS 界面与独立 7-Zip 解压流程，显示解压实际进度；进度画布复用，准备运行环境时显示对应状态。
 - 系统托盘：关闭窗口会隐藏到 Windows 右下角，任务继续保留；点击托盘图标或再次启动可恢复窗口，右键菜单可明确退出程序。
 - 易语言环境：打开设置只加载配置，点击“扫描环境”才后台检查工具链与文件数量；扫描期间可切页或关闭弹窗，目录链接和未完成统计会明确提示。
 
@@ -136,8 +137,8 @@ mkdir src-tauri\resources\eagent-tools\eroot
 1. 先把源码推送到 GitHub。
 2. 打开仓库页面，进入 `Releases`。
 3. 点击 `Draft a new release`。
-4. 新建标签，例如 `v0.1.3`，目标选择对应的发布提交。
-5. 标题填写 `EAiCoding v0.1.3`。
+4. 新建标签，例如 `v0.1.4`，目标选择对应的发布提交。
+5. 标题填写 `EAiCoding v0.1.4`。
 6. 在附件区域上传：
 
 ```text
@@ -150,16 +151,16 @@ src-tauri/resources/eagent-tools/eroot/e.zip
 也可以使用 GitHub CLI 上传：
 
 ```powershell
-gh release create v0.1.3 `
+gh release create v0.1.4 `
   src-tauri/resources/eagent-tools/eroot/e.zip `
-  --title "EAiCoding v0.1.3" `
+  --title "EAiCoding v0.1.4" `
   --notes "e.zip 为易语言运行环境包。下载后请放到 src-tauri/resources/eagent-tools/eroot/e.zip。"
 ```
 
 如果 Release 已经存在，可以追加上传：
 
 ```powershell
-gh release upload v0.1.3 src-tauri/resources/eagent-tools/eroot/e.zip
+gh release upload v0.1.4 src-tauri/resources/eagent-tools/eroot/e.zip
 ```
 
 建议同时提供 `e.zip` 的 SHA256，方便用户校验文件完整性：
@@ -170,7 +171,7 @@ Get-FileHash src-tauri\resources\eagent-tools\eroot\e.zip -Algorithm SHA256
 
 ## 模型配置
 
-首次启动显示固定 600×700 的登录窗口。点击「登录 DeepSeek」在系统浏览器完成官方授权，应用接收本机回调后自动进入开发工作区。等待期间可重新打开浏览器、复制登录链接或取消登录。只支持账号授权，不再提供 API Key 或自定义接口。设置「模型」可退出登录、切换默认模型和调整高级参数；输入区右下角仍可直接切换模型。
+首次启动显示固定 600×700 的登录窗口。点击「登录 DeepSeek」在系统浏览器完成官方授权，应用接收本机回调后自动进入开发工作区。等待期间可重新打开浏览器、复制登录链接或取消登录。只支持账号授权，不再提供 API Key 或自定义接口。登录后左下角显示账号名，点击向上展开「设置」和「退出登录」。设置默认进入「个人中心」，显示账号资料、充值/赠金余额及官方用量、充值入口；退出登录前会确认，执行中会提示中断任务。设置「模型」可切换默认模型和调整高级参数；输入区右下角仍可直接切换模型。
 
 | 配置 | 默认值 |
 | --- | --- |
@@ -181,7 +182,7 @@ Get-FileHash src-tauri\resources\eagent-tools\eroot\e.zip -Algorithm SHA256
 | 最大输出 Token | `256000`，输出上限而非固定生成长度 |
 | 生成随机性 | `0.2` |
 
-账号凭据由 Rust 加密保存在应用数据目录，前端只接收登录状态和账号显示信息，不接触授权 Token。退出会清除本地凭据；模型接口返回 401 时回到登录页。账号 Token 仅发送给 `https://api.deepseek.com`，不跟随网络重定向。
+账号凭据由 Rust 加密保存在应用数据目录，前端只接收登录状态和账号显示信息，不接触授权 Token。退出会清除本地凭据；模型接口返回 401 时回到登录页。账号 Token 仅由 Rust 发送给固定的 DeepSeek 官方 API 与开放平台账号接口，不跟随网络重定向。资料与余额读取失败会提供重试或官方查看入口，不显示虚假的零余额。
 
 设置 v8 清除旧 API Key 配置并固定官方接口，升级后需要授权登录，已有会话与模块库保留。旧版官方接口默认 `8192` 输出额度迁移为 `256000`，其他有效输出额度保留。输出被截断时会丢弃该轮不完整内容，并自动要求模型拆小操作，最多重试两次；已成功执行的工具不会重做。恢复仍失败会明确报告任务未完成。
 
@@ -290,11 +291,11 @@ src-tauri\target\release\bundle\nsis\
 npm run package:portable
 ```
 
-便携版输出（以 0.1.3 为例）：
+便携版输出（以 0.1.4 为例）：
 
 ```text
-release\v0.1.3\EAiCoding_0.1.3_x64-portable\EAiCoding.exe
-release\v0.1.3\EAiCoding_0.1.3_x64-portable.zip
+release\v0.1.4\EAiCoding_0.1.4_x64-portable\EAiCoding.exe
+release\v0.1.4\EAiCoding_0.1.4_x64-portable.zip
 ```
 
 一次性构建安装包、便携版并整理发布附件：
@@ -303,7 +304,7 @@ release\v0.1.3\EAiCoding_0.1.3_x64-portable.zip
 npm run package:release
 ```
 
-该命令将安装包、便携归档、独立 `e.zip`、`RELEASE_NOTES.md` 和 `SHA256SUMS.txt` 集中到 `release/v0.1.3/`。若刚完成同版本的安装包构建，可运行 `npm run package:release -- --skip-build` 复用它；便携版仍会核对生产主程序版本。命令只准备本地附件，不自动创建标签或发布 GitHub Release。
+该命令将安装包、便携归档、独立 `e.zip`、`RELEASE_NOTES.md` 和 `SHA256SUMS.txt` 集中到 `release/v0.1.4/`。若刚完成同版本的安装包构建，可运行 `npm run package:release -- --skip-build` 复用它；便携版仍会核对生产主程序版本。命令只准备本地附件，不自动创建标签或发布 GitHub Release。
 
 安装版升级前先退出旧程序，再运行新安装包；应用标识保持不变。便携版需完整解压并保留 `eagent-tools`，应用设置仍存于本机用户目录，不随便携目录移动。
 
@@ -399,6 +400,6 @@ npm run package:release
 
 登录窗口采用 Harness 的 600×700 布局，登录后工作区为 1280×820；Windows 安装器适配其 600×600 原生 NSIS 页面、DWM 窗框、GDI+ 按钮和进度动画，使用 EAiCoding 名称与图标。Tauri 负责安装文件、注册与卸载，不引入 Electron 运行时。右侧工作区默认收起；文档页保留复制当前文档，不汇总整轮代码。
 
-授权协议及交互以本地模拟服务回归验证；真实账号的浏览器授权和实际模型请求仍需要在应用中完成确认，本轮未使用个人凭据调用模型。插件系统、定时自动化及账号余额展示尚未接入。
+授权协议及交互以本地模拟服务回归验证；真实账号的浏览器授权和实际模型请求仍需要在应用中完成确认，本轮未使用个人凭据调用模型。个人中心已接入官方账号资料与余额接口，真实余额读取仍需登录后确认；插件系统与定时自动化尚未接入。
 
 适配来源与许可证见 [第三方声明](THIRD_PARTY_NOTICES.md)。

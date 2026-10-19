@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { CaretDown, CheckCircle, WarningCircle, SignOut } from "@phosphor-icons/react";
+import { CaretDown, CheckCircle, WarningCircle } from "@phosphor-icons/react";
 import { type ProviderProfile } from "@/stores/settings";
 import { DEEPSEEK_MODELS, normalizeDeepSeekModel } from "@/lib/deepseek-models";
-import { useDeepSeekAccount } from "@/stores/deepseek-account";
 
 type Draft = Pick<ProviderProfile, "model" | "maxTokens" | "temperature">;
 function draftOf(profile: ProviderProfile): Draft {
@@ -13,7 +12,6 @@ export function DeepSeekProfileCard({ profile, onUpdate }: {
   active?: boolean;
   onUpdate: (patch: Partial<Omit<ProviderProfile, "id" | "apiKeyEncrypted">>) => Promise<void>;
 }) {
-  const { view, logout, busy: accountBusy } = useDeepSeekAccount();
   const [draft, setDraft] = useState(() => draftOf(profile));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -35,16 +33,7 @@ export function DeepSeekProfileCard({ profile, onUpdate }: {
     finally { if (mounted.current) setBusy(false); }
   };
   return <section className="model-settings-section">
-    <h3>DeepSeek 账号</h3>
-    <p className="settings-intro">通过 DeepSeek 官方浏览器授权使用模型。</p>
-    <div className="provider-row-card">
-      <div className="provider-row-head">
-        <span className="provider-identity"><strong>{view.name || "DeepSeek"}</strong><span className="credential-dot configured" role="img" aria-label="已授权登录" /></span>
-        <div className="provider-row-actions"><button type="button" className="settings-danger" disabled={accountBusy} onClick={() => void logout()}><SignOut size={14} />退出登录</button></div>
-      </div>
-      <p className="settings-hint" style={{ padding: "0 16px 16px" }}>{view.contact || "已通过 DeepSeek 官方授权"}</p>
-    </div>
-    <h3 style={{ marginTop: 28 }}>模型</h3>
+    <h3>模型</h3>
     <p className="settings-intro">选择默认模型，也可在输入框右下角切换。</p>
     <form id="deepseek-editor" className="provider-editor" noValidate onSubmit={event => { event.preventDefault(); void apply(); }} aria-busy={busy}>
       <fieldset disabled={busy}>

@@ -14,6 +14,7 @@ import {
   Sun,
   WarningCircle,
   X,
+  User,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,6 +40,7 @@ import {
 } from "@/services/easy-language-env";
 const AgentCheckpointPanel = lazy(() => import("./agent-checkpoint-panel"));
 const ModuleLibraryPanel = lazy(() => import("@/components/module-library-panel"));
+const AccountCenter = lazy(() => import("@/components/account-center"));
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -108,6 +110,7 @@ function SettingsPanel({ section, onSectionChange }: { section: string; onSectio
         <nav className="settings-nav" aria-label="设置分类">
           <DialogPrimitive.Title className="settings-title">{t("settings.title")}</DialogPrimitive.Title>
           <TabsList className="settings-navigation" aria-label="设置分类">
+            <TabsTrigger value="account"><User size={16} />个人中心</TabsTrigger>
             <TabsTrigger value="appearance"><GearSix size={16} />通用</TabsTrigger>
             <TabsTrigger value="providers"><Key size={16} />模型</TabsTrigger>
             <TabsTrigger value="environment"><Code size={16} />易语言环境</TabsTrigger>
@@ -121,6 +124,9 @@ function SettingsPanel({ section, onSectionChange }: { section: string; onSectio
             </DialogPrimitive.Close>
           </header>
           <div className="settings-options">
+            {visited.has("account") && <TabsContent forceMount value="account" className="settings-pane">
+              <Suspense fallback={<p role="status">正在打开个人中心…</p>}><AccountCenter /></Suspense>
+            </TabsContent>}
             {visited.has("providers") && <TabsContent forceMount value="providers" className="settings-pane">
               {activeProfile ? (
                 <DeepSeekProfileCard

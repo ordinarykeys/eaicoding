@@ -13,6 +13,8 @@ Function InstallerInitialize
     StrCpy $InstallerTheme "auto"
     Call InstallerResolveTheme
     InitPluginsDir
+    File /oname=$PLUGINSDIR\7za.exe "${__FILEDIR__}\..\target\installer-ui\7za.exe"
+    File /oname=$PLUGINSDIR\7zip-LICENSE.txt "${__FILEDIR__}\..\target\installer-ui\7zip-LICENSE.txt"
     File /oname=$PLUGINSDIR\window-frame.dll "${__FILEDIR__}\..\target\installer-ui\window-frame.dll"
     File /oname=$PLUGINSDIR\brand.bmp "${__FILEDIR__}\..\target\installer-ui\brand.bmp"
     File /oname=$PLUGINSDIR\brand-2x.bmp "${__FILEDIR__}\..\target\installer-ui\brand-2x.bmp"
@@ -67,7 +69,7 @@ Function InstallerProgressShow
         StrCpy $0 1
         StrCpy $1 "$PLUGINSDIR\brand-dark-2x.bmp"
     ${EndIf}
-    System::Call '$PLUGINSDIR\window-frame.dll::InstallerShowProgress(p $HWNDPARENT, p $mui.InstFilesPage.ProgressBar, i r0, i $InstallerDpi, w r1, w "$(INSTALLER_NATIVE_PROGRESS)", w "$(INSTALLER_PROGRESS_EXTRACT)", w "$(INSTALLER_PROGRESS_COPY)", w "$(INSTALLER_PROGRESS_REGISTER)", w "$(INSTALLER_PROGRESS_CLEAN)") p.s ?c'
+    System::Call '$PLUGINSDIR\window-frame.dll::InstallerShowProgress(p $HWNDPARENT, p $mui.InstFilesPage.ProgressBar, i r0, i $InstallerDpi, w r1, w "$(INSTALLER_NATIVE_PROGRESS)", w "$(INSTALLER_PROGRESS_EXTRACT)", w "$(INSTALLER_PROGRESS_COPY)", w "$(INSTALLER_PROGRESS_REGISTER)", w "$(INSTALLER_PROGRESS_CLEAN)", w "$(INSTALLER_PROGRESS_RUNTIME)") p.s ?c'
     Pop $InstallerProgressWindow
     ${If} $InstallerProgressWindow == 0
         MessageBox MB_OK|MB_ICONSTOP "$(INSTALLER_UI_ERROR)"
@@ -87,3 +89,21 @@ Function InstallerFinish
     StrCpy $InstallerPhase "success"
     Call InstallerCreate
 FunctionEnd
+
+; Preserve the NSIS caller's registers and error flag, as in Harness's worker callbacks.
+!macro InstallerPublishStage Stage
+  Push $0
+  StrCpy $0 0
+  ${If} ${Errors}
+    StrCpy $0 1
+  ${EndIf}
+  System::Store /NOUNLOAD "S"
+  System::Call /NOUNLOAD 'user32::SetPropW(p $HWNDPARENT, w "EAiCodingInstaller.Stage", p ${Stage})'
+  System::Store "L"
+  ${If} $0 == 1
+    SetErrors
+  ${Else}
+    ClearErrors
+  ${EndIf}
+  Pop $0
+!macroend

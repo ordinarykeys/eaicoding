@@ -31,3 +31,8 @@ LangString INSTALLER_PATH_WRITABLE ${LANG_ENGLISH} "This location is not writabl
 LangString INSTALLER_PATH_WRITABLE ${LANG_SIMPCHINESE} "无法写入此位置。请选择当前用户可写入的文件夹；安装程序不会申请管理员权限。"
 LangString INSTALLER_DISK_SPACE ${LANG_ENGLISH} "There is not enough free disk space. Choose another location."
 LangString INSTALLER_DISK_SPACE ${LANG_SIMPCHINESE} "此磁盘的可用空间不足，请选择其他位置。"
+
+LangString INSTALLER_PROGRESS_RUNTIME ${LANG_ENGLISH} "Preparing WebView2 runtime…"
+LangString INSTALLER_PROGRESS_RUNTIME ${LANG_SIMPCHINESE} "正在准备 WebView2 运行环境…"
+LangString INSTALLER_EXTRACT_FAILED ${LANG_ENGLISH} "Could not extract application files. Check disk space and permissions, then retry."
+LangString INSTALLER_EXTRACT_FAILED ${LANG_SIMPCHINESE} "应用文件解压失败，请检查磁盘空间及写入权限后重试。"
