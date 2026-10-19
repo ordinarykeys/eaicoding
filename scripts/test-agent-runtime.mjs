@@ -27,7 +27,7 @@ const traceOf = steps => ({ goal: '优化工程', steps, finalAnswer: '', outcom
 const code = '.版本 2\n.程序集 程序集1\n.子程序 _启动子程序, 整数型\n返回 (0)';
 try {
   await build({
-    stdin: { contents: `export * from './agent/runner'; export * from './agent/epl-syntax'; export * from './agent/answer-compile-check'; export * from './llm/openai'; export * from './llm/index'; export * from './agent/tools'; export { searchUserModules } from './knowledge/module-search'; export { useSettingsStore, DEFAULT_PROVIDER_PROFILE } from '../stores/settings';`, resolveDir: path.join(root, 'src/services'), loader: 'ts' },
+    stdin: { contents: `export * from './agent/runner'; export * from './agent/runner-transport'; export * from './agent/epl-syntax'; export * from './agent/answer-compile-check'; export * from './llm/openai'; export * from './llm/index'; export * from './agent/tools'; export { searchUserModules } from './knowledge/module-search'; export { useSettingsStore, DEFAULT_PROVIDER_PROFILE } from '../stores/settings';`, resolveDir: path.join(root, 'src/services'), loader: 'ts' },
     outfile: path.join(temp, 'runtime.mjs'), bundle: true, platform: 'node', format: 'esm', target: 'node22',
     external: ['@huggingface/transformers', 'onnxruntime-node'],
     plugins: [{ name: 'inspect-runner-policies', setup(b) {
@@ -40,6 +40,8 @@ try {
     } }],
   });
   const api = await import(pathToFileURL(path.join(temp, 'runtime.mjs')).href);
+  for (const protocol of ['openai-chat-completions','openai-responses','anthropic-messages','google-generative-ai','bedrock-converse','pi-ai']) assert.equal(api.selectAgentToolTransport({ ...config, protocol }), 'native-openai-tools', protocol);
+  console.log('PASS all configured protocols, including native OAuth/cloud providers, use native agent tools');
   assert.equal(api.isCompleteExample(code), true);
   assert(api.findEplAnswerDiagnostics('```epl\n' + code + '\n如果真 (真)\n调试输出 (1)\n```').some(d => d.severity === 'error'));
   mockIPC(cmd => {
@@ -476,10 +478,10 @@ try {
   const aborted = await Promise.race([handle.promise, new Promise((_, reject) => setTimeout(() => reject(new Error('tool abort hung')), 300))]);
   assert.equal(aborted.outcome, 'aborted'); assert(cancelled);
   clearMocks();
-  assert.throws(() => api.createLLMProvider({ ...config, provider: 'gemini' }), /仅支持 DeepSeek/);
+  assert.throws(() => api.createLLMProvider({ ...config, provider: 'gemini' }), /已保存的模型配置/);
   assert.equal(api.useSettingsStore.getState().profiles[0].provider, 'deepseek');
   assert(api.TOOL_DEFINITIONS.some(t => t.name === 'generate_gui_project'));
-  console.log('PASS cancellation during tool execution, DeepSeek-only factory and GUI registration');
+  console.log('PASS cancellation during tool execution, provider credential routing and GUI registration');
   let firstSteerRequest, finishSteerRequest;
   const steeringReady = new Promise(resolve => { firstSteerRequest = resolve; });
   const steeringRequests = [];

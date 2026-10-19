@@ -6,16 +6,16 @@
 
 EAiCoding 桌面端是一款面向易语言开发者的本地 AI Coding Agent。它把大模型对话、易语言源码解析、精易模块知识库、代码展示、`.e/.ec` 工程处理和编译验证整合到一个 Windows 桌面应用中，目标是让易语言项目也能拥有类似现代 AI Coding 工具的工作流。
 
-桌面端基于 Tauri 2、React、TypeScript 和 Rust 构建。应用不依赖项目自带后端服务，模型配置、对话记录、用户模块索引和生成文件目录都保存在本机。模型推理使用 DeepSeek API，本地向量模型仅用于知识检索。
+桌面端基于 Tauri 2、React、TypeScript 和 Rust 构建。应用不依赖项目自带后端服务，模型配置、对话记录、用户模块索引和生成文件目录都保存在本机。支持 DeepSeek 官方账号、第三方 API 与自定义中转，本地向量模型仅用于知识检索。
 
 文档入口：[架构与执行流程](docs/architecture.md) · [开发与验证](docs/development.md) · [更新记录](CHANGELOG.md) · [问题诊断与修复](项目诊断报告.md)
 
-当前版本：**0.1.5**。[发布说明](docs/releases/v0.1.5.md)包含本次改动、附件用途和升级注意事项。
+当前版本：**0.1.6**。[发布说明](docs/releases/v0.1.6.md)包含本次改动、附件用途和升级注意事项。
 
 ## 功能特性
 
-- AI 对话：仅接入 DeepSeek，预置 DeepSeek-V4.1-Flash（`deepseek-flash`）和 DeepSeek-V4-Pro（`deepseek-v4-pro`）。
-- 本地配置：模型参数、对话记录和生成目录保存在本机。
+- AI 编程：支持 DeepSeek 官方账号及 42 个提供商目录、自定义中转；官方预置 DeepSeek-V4.1-Flash（`deepseek-flash`）和 DeepSeek-V4-Pro（`deepseek-v4-pro`）。
+- 模型配置：第三方提供商与自定义 API 双入口、在线获取模型、分组搜索选择，推理强度按具体模型能力展示；密钥只由桌面后台加密保存。
 - 易语言文件处理：支持解析 `.e/.ec`，导出 ecode 文本工程，回编生成 `.e`。
 - 原生窗口生成：可生成含窗口、控件布局、初始化和事件的易语言 GUI 工程，输出可编辑 ecode、`.e` 和编译后的 `.exe`；目前支持按钮、编辑框、标签、选择框、单选框。
 - 编译验证：内置易语言命令行编译相关工具，可对生成或修改后的 `.e` 做编译检查。
@@ -140,8 +140,8 @@ mkdir src-tauri\resources\eagent-tools\eroot
 1. 先把源码推送到 GitHub。
 2. 打开仓库页面，进入 `Releases`。
 3. 点击 `Draft a new release`。
-4. 新建标签，例如 `v0.1.5`，目标选择对应的发布提交。
-5. 标题填写 `EAiCoding v0.1.5`。
+4. 新建标签，例如 `v0.1.6`，目标选择对应的发布提交。
+5. 标题填写 `EAiCoding v0.1.6`。
 6. 在附件区域上传：
 
 ```text
@@ -154,16 +154,16 @@ src-tauri/resources/eagent-tools/eroot/e.zip
 也可以使用 GitHub CLI 上传：
 
 ```powershell
-gh release create v0.1.5 `
+gh release create v0.1.6 `
   src-tauri/resources/eagent-tools/eroot/e.zip `
-  --title "EAiCoding v0.1.5" `
+  --title "EAiCoding v0.1.6" `
   --notes "e.zip 为易语言运行环境包。下载后请放到 src-tauri/resources/eagent-tools/eroot/e.zip。"
 ```
 
 如果 Release 已经存在，可以追加上传：
 
 ```powershell
-gh release upload v0.1.5 src-tauri/resources/eagent-tools/eroot/e.zip
+gh release upload v0.1.6 src-tauri/resources/eagent-tools/eroot/e.zip
 ```
 
 建议同时提供 `e.zip` 的 SHA256，方便用户校验文件完整性：
@@ -174,20 +174,26 @@ Get-FileHash src-tauri\resources\eagent-tools\eroot\e.zip -Algorithm SHA256
 
 ## 模型配置
 
-首次启动显示固定 600×700 的登录窗口。点击「登录 DeepSeek」在系统浏览器完成官方授权，应用接收本机回调后自动进入开发工作区。等待期间可重新打开浏览器、复制登录链接或取消登录。只支持账号授权，不再提供 API Key 或自定义接口。登录后左下角显示账号名，点击向上展开「设置」和「退出登录」。设置默认进入「个人中心」，显示账号资料、充值/赠金余额及官方用量、充值入口；退出登录前会确认，执行中会提示中断任务。设置「模型」可切换默认模型和调整高级参数；输入区右下角仍可直接切换模型。
+首次启动显示 600×700 的欢迎窗口。可在系统浏览器授权登录 DeepSeek，或点击「使用其他模型提供商」配置 API。登录后左下角显示账号，菜单提供设置与退出；设置默认进入个人中心，用量和充值在应用内打开。
 
-| 配置 | 默认值 |
+设置「模型」参考 Harness 的提供商卡片与双标签创建流程。内置 42 个提供商目录，也可添加自定义标识、名称、地址、协议和模型；支持在线发现、筛选、多选及手动编辑。输入区右下角按提供商分组选择模型，模型超过 4 个时提供搜索。不会显示额外的全局 Token、随机性高级参数面板。
+
+| 官方 DeepSeek 配置 | 默认值 |
 | --- | --- |
-| 接口地址 | `https://api.deepseek.com` |
-| 请求协议 | OpenAI Chat Completions，`/chat/completions` |
+| 接口地址 | `https://api.deepseek.com/anthropic` |
+| 请求协议 | Messages，`/v1/messages` |
 | 默认模型 | DeepSeek-V4.1-Flash，`deepseek-flash` |
 | 另一个可选模型 | DeepSeek-V4-Pro，`deepseek-v4-pro` |
+| 推理强度 | 关闭、低、高、最高；默认高 |
 | 最大输出 Token | `256000`，输出上限而非固定生成长度 |
-| 生成随机性 | `0.2` |
 
-账号凭据由 Rust 加密保存在应用数据目录，前端只接收登录状态和账号显示信息，不接触授权 Token。退出会清除本地凭据；模型接口返回 401 时回到登录页。账号 Token 仅由 Rust 发送给固定的 DeepSeek 官方 API 与开放平台账号接口，不跟随网络重定向。资料与余额读取失败会提供重试或官方查看入口，不显示虚假的零余额。
+内置提供商复用 Harness 同版 `pi-ai 1.1.0` 的完整本地运行时，支持 API Key、8 个提供商的 OAuth、AWS Profile/凭据链及 SigV4、Vertex ADC/服务账号、Azure、Cloudflare 和 Anthropic WIF。设置中选择「其他认证方式」连接，按提示输入、打开授权页面或填写设备码；可以取消、重新连接和断开。推理选项来自具体模型的能力声明。具体认证方式与上游保持一致，详见 [模型认证](docs/model-authentication.md)。自定义中转继续支持四种 API 协议。
 
-设置 v8 清除旧 API Key 配置并固定官方接口，升级后需要授权登录，已有会话与模块库保留。旧版官方接口默认 `8192` 输出额度迁移为 `256000`，其他有效输出额度保留。输出被截断时会丢弃该轮不完整内容，并自动要求模型拆小操作，最多重试两次；已成功执行的工具不会重做。恢复仍失败会明确报告任务未完成。
+官方账号 Token 只由 Rust 注入官方 API；第三方密钥和授权独立加密保存，不进入 IndexedDB、聊天内容或请求日志。内置提供商由随包 Node 运行时调用，不依赖用户安装 Node；本地后台传入已保存的提供商和模型配置，过期授权刷新成功后先加密落盘再请求。自定义 API 代理校验已保存端点的 origin、路径范围和协议，不跟随重定向。第三方接口 401 不会退出 DeepSeek 账号；只使用第三方模型无需登录 DeepSeek。
+
+设置持久化版本为 v9，保留官方账号、已有会话与模块库。早期版本遗留的未加密 API 配置会清除，需要在模型页重新添加。输出被截断时不执行不完整工具参数，继续使用已有工具证据拆小操作重试；恢复仍失败会明确报告未完成。
+
+通用设置新增 DeepSeek 官方网页搜索与读取，默认关闭，仅官方账号模型可用；开启后按需调用，模块库仍优先。
 
 应用不会内置任何商业模型密钥。开源仓库中也不应提交真实 API Key、私有 Base URL、测试密钥或个人账号信息。
 
@@ -196,6 +202,8 @@ Get-FileHash src-tauri\resources\eagent-tools\eroot\e.zip -Algorithm SHA256
 ```powershell
 npm run build
 npm run test:agent-runtime
+npm run test:model-providers
+npm run test:model-auth
 npm run test:code-highlight
 npm run test:code-work
 npm run test:agent-choice
@@ -295,11 +303,11 @@ src-tauri\target\release\bundle\nsis\
 npm run package:portable
 ```
 
-便携版输出（以 0.1.5 为例）：
+便携版输出（以 0.1.6 为例）：
 
 ```text
-release\v0.1.5\EAiCoding_0.1.5_x64-portable\EAiCoding.exe
-release\v0.1.5\EAiCoding_0.1.5_x64-portable.zip
+release\v0.1.6\EAiCoding_0.1.6_x64-portable\EAiCoding.exe
+release\v0.1.6\EAiCoding_0.1.6_x64-portable.zip
 ```
 
 一次性构建安装包、便携版并整理发布附件：
@@ -308,7 +316,7 @@ release\v0.1.5\EAiCoding_0.1.5_x64-portable.zip
 npm run package:release
 ```
 
-该命令将安装包、便携归档、独立 `e.zip`、`RELEASE_NOTES.md` 和 `SHA256SUMS.txt` 集中到 `release/v0.1.5/`。若刚完成同版本的安装包构建，可运行 `npm run package:release -- --skip-build` 复用它；便携版仍会核对生产主程序版本。命令只准备本地附件，不自动创建标签或发布 GitHub Release。
+该命令将安装包、便携归档、独立 `e.zip`、`RELEASE_NOTES.md` 和 `SHA256SUMS.txt` 集中到 `release/v0.1.6/`。若刚完成同版本的安装包构建，可运行 `npm run package:release -- --skip-build` 复用它；便携版仍会核对生产主程序版本。命令只准备本地附件，不自动创建标签或发布 GitHub Release。
 
 安装版升级前先退出旧程序，再运行新安装包；应用标识保持不变。便携版需完整解压并保留 `eagent-tools`，应用设置仍存于本机用户目录，不随便携目录移动。
 
@@ -349,7 +357,7 @@ npm run package:release
 
 ### 提示输出达到 Token 上限
 
-更新后的执行器会自动拆小本轮操作并重试，不会执行被截断的工具参数。若仍失败，在「模型 → 自定义设置 → 高级参数」检查最大输出 Token；旧代理或手动设置的小额度会保留。只需继续当前任务，之前成功的工具结果仍保存在对话中。提高额度前应确认接口支持的范围，额度本身不保证任务一定完成。
+更新后的执行器会自动拆小本轮操作并重试，不会执行被截断的工具参数。第三方内置模型使用目录声明的输出额度，自定义模型使用兼容默认值；不再展示自行添加的全局高级参数面板。若仍失败，可把需求拆成较小的可验证步骤。只需继续当前任务，之前成功的工具结果仍保存在对话中。提高额度前应确认接口支持的范围，额度本身不保证任务一定完成。
 
 ### 为什么任务还在继续执行
 
@@ -402,7 +410,7 @@ npm run package:release
 
 已适配 Harness 源码的 Platform PKCE 流程：`auth_init` → 系统浏览器 → `127.0.0.1` 随机端口回调 → `auth_exchange` → 加密保存；推理使用 `x-dsh-auth-token`。应用使用自己的设备 ID 和名称，不读取 Harness 的私有配置或凭据。
 
-登录窗口采用 Harness 的 600×700 布局，登录后工作区为 1280×820；Windows 安装器适配其 600×600 原生 NSIS 页面、DWM 窗框、GDI+ 按钮和进度动画，使用 EAiCoding 名称与图标。Tauri 负责安装文件、注册与卸载，不引入 Electron 运行时。右侧工作区默认收起；文档页保留复制当前文档，不汇总整轮代码。
+登录窗口采用 Harness 的 600×700 布局，登录后工作区默认缩小为 1120×720，支持调整大小和最大化；Windows 安装器适配其 600×600 原生 NSIS 页面、DWM 窗框、GDI+ 按钮和进度动画，使用 EAiCoding 名称与图标。Tauri 负责安装文件、注册与卸载，不引入 Electron 运行时。右侧工作区默认收起；文档页保留复制当前文档，不汇总整轮代码。
 
 授权协议及交互以本地模拟服务回归验证；真实账号的浏览器授权和实际模型请求仍需要在应用中完成确认，本轮未使用个人凭据调用模型。个人中心已接入官方账号资料与余额接口，真实余额读取仍需登录后确认；插件系统与定时自动化尚未接入。
 

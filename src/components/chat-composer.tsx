@@ -1,77 +1,10 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { CaretDown, Check, Code, FilePlus, Plus, X } from "@phosphor-icons/react";
+import { CaretDown, Code, FilePlus, Plus, X } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useSettingsStore } from "@/stores/settings";
 
-import { DEEPSEEK_MODELS, deepSeekModelLabel as modelLabel, normalizeDeepSeekModel } from "@/lib/deepseek-models";
-
-function ModelPicker({ disabled }: { disabled: boolean }) {
-  const profiles = useSettingsStore(s => s.profiles);
-  const activeId = useSettingsStore(s => s.activeProfileId);
-  const update = useSettingsStore(s => s.updateProfile);
-  const profile = profiles.find(p => p.id === activeId) ?? profiles[0];
-  const models = DEEPSEEK_MODELS;
-  const currentModel = normalizeDeepSeekModel(profile?.model ?? "");
-  const menuId = useId();
-  const [open, setOpen] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [position, setPosition] = useState<CSSProperties>({ visibility: "hidden", left: 0, top: 0 });
-  const root = useRef<HTMLDivElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const outside = (event: MouseEvent) => { if (!root.current?.contains(event.target as Node) && !menu.current?.contains(event.target as Node)) setOpen(false); };
-    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { setOpen(false); trigger.current?.focus(); } };
-    document.addEventListener("mousedown", outside);
-    document.addEventListener("keydown", escape);
-    menu.current?.querySelector<HTMLButtonElement>('[aria-selected="true"]')?.focus();
-    return () => { document.removeEventListener("mousedown", outside); document.removeEventListener("keydown", escape); };
-  }, [open, models.length]);
-  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
-  useLayoutEffect(() => {
-    if (!open) return;
-    const place = () => {
-      const anchor = trigger.current?.getBoundingClientRect();
-      const popup = menu.current;
-      if (!anchor || !popup) return;
-      const left = Math.max(12, Math.min(anchor.right - popup.offsetWidth, window.innerWidth - popup.offsetWidth - 12));
-      const top = Math.max(12, Math.min(anchor.top - popup.offsetHeight - 8, window.innerHeight - popup.offsetHeight - 12));
-      setPosition({ left, top });
-    };
-    place();
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => { window.removeEventListener("resize", place); window.removeEventListener("scroll", place, true); };
-  }, [open]);
-  const choose = async (id: string) => {
-    if (!profile || saving) return;
-    if (profile.model === id) { setOpen(false); trigger.current?.focus(); return; }
-    setSaving(true);
-    try { await update(profile.id, { model: id }); setOpen(false); trigger.current?.focus(); }
-    catch (error) { toast.error(`切换模型失败：${String(error)}`); }
-    finally { setSaving(false); }
-  };
-  return <div className="harness-model-picker" ref={root}>
-    <button ref={trigger} type="button" className="harness-model-trigger" aria-label="选择模型" aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? menuId : undefined} aria-busy={saving} disabled={disabled || saving || !profile}
-      title={profile ? modelLabel(profile.model) : "选择 DeepSeek 模型"}
-      onClick={() => { setOpen(!open); }}><span className="harness-model-name">{profile ? modelLabel(profile.model) : "选择模型"}</span><CaretDown size={12} /></button>
-    {open && createPortal(<div id={menuId} className="harness-model-menu" style={position} role="dialog" aria-label="选择 DeepSeek 模型" ref={menu} onKeyDown={event => {
-      if (event.key === "Tab") { event.preventDefault(); setOpen(false); trigger.current?.focus(); return; }
-      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-      event.preventDefault();
-      const items = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? []);
-      const index = items.indexOf(document.activeElement as HTMLButtonElement);
-      const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : event.key === "ArrowDown" ? (index + 1) % items.length : (index - 1 + items.length) % items.length;
-      items[next]?.focus();
-    }}>
-      <div role="listbox" aria-label="可用模型" className="harness-model-options">{models.map(({ id }) => <button type="button" key={id} role="option" aria-selected={currentModel === id} disabled={saving} onClick={() => void choose(id)}>
-        <span>{modelLabel(id)}</span><span className="harness-model-check">{currentModel === id && <Check size={14} />}</span>
-      </button>)}</div>
-    </div>, document.body)}
-  </div>;
-}
+import { ModelPicker } from "./model-picker";
 
 export function ChatComposer({ value, onChange, onSend, onStop, running, files, onAttach, onRemove, onNewChat, focusKey }: {
   value: string; onChange: (value: string) => void; onSend: (alternate?: boolean) => void; onStop: () => void; running: boolean;

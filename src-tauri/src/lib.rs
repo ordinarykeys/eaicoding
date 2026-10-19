@@ -1,5 +1,6 @@
 mod crypto;
 mod deepseek_account;
+mod deepseek_web;
 mod eagent_tools;
 mod easy_language_sdk;
 mod ecode_parser;
@@ -7,6 +8,8 @@ mod gui_project;
 mod jingyi_search;
 mod llm_proxy;
 mod local_files;
+mod model_providers;
+mod model_runtime;
 mod system_tray;
 mod task_cancel;
 mod window_effects;
@@ -70,6 +73,9 @@ pub fn run() {
                 search_jingyi_module_rust,
                 deepseek_account::deepseek_account_status,
                 deepseek_account::deepseek_account_details,
+                deepseek_account::deepseek_account_notices,
+                deepseek_account::deepseek_account_notice_ack,
+                deepseek_web::deepseek_web_request,
                 deepseek_account::deepseek_account_start,
                 deepseek_account::deepseek_account_cancel,
                 deepseek_account::deepseek_account_logout,
@@ -78,6 +84,13 @@ pub fn run() {
                 deepseek_account::deepseek_platform_open,
                 deepseek_account::deepseek_platform_layout,
                 deepseek_account::deepseek_platform_close,
+                model_providers::model_provider_save,
+                model_providers::model_provider_remove,
+                model_providers::model_provider_status,
+                model_providers::model_provider_logout,
+                model_providers::model_provider_discover,
+                model_runtime::model_runtime_run,
+                model_runtime::model_runtime_reply,
                 llm_proxy_request,
                 llm_proxy_stream,
                 cancel_agent_task,

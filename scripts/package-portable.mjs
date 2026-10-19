@@ -106,6 +106,7 @@ await copyFile(exePath, join(portableRoot, "EAiCoding.exe"));
 await copyFile(join(appRoot, "THIRD_PARTY_NOTICES.md"), join(portableRoot, "THIRD_PARTY_NOTICES.md"));
 await cp(join(appRoot, "third_party/7zip"), join(portableRoot, "licenses/7zip"), { recursive: true });
 await cp(toolsPath, join(portableRoot, "eagent-tools"), { recursive: true });
+await cp(join(srcTauri, "target/model-runtime"), join(portableRoot, "model-runtime"), { recursive: true });
 
 const zipPath = await zipPortable();
 console.log(`portable package: ${portableRoot}`);

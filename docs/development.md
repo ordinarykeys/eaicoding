@@ -4,7 +4,7 @@
 
 ## 安装与运行
 
-建议使用 Node.js 22、npm、Rust stable、WebView2，以及包含 C++ 桌面开发组件和 Windows SDK 的 Visual Studio Build Tools。使用桌面工程能力时，还需准备 README 说明的 `e.zip`，或在设置中选择可用的本机易语言环境。
+建议使用 Node.js 22.19 或更新版本（x64 完整安装，含 LICENSE）、npm、Rust stable、WebView2，以及包含 C++ 桌面开发组件和 Windows SDK 的 Visual Studio Build Tools。使用桌面工程能力时，还需准备 README 说明的 `e.zip`，或在设置中选择可用的本机易语言环境。
 
 ```powershell
 npm ci
@@ -19,6 +19,10 @@ npm run tauri -- dev
 node scripts/prepare-ort.mjs
 ```
 
+`predev` / `prebuild` 还会执行 `npm run prepare:models`，将当前 Node 可执行文件、pi-ai 运行时和实际打包依赖许可复制到 `src-tauri/target/model-runtime/`。Tauri 安装包与便携包均携带此目录；用户无需安装 Node。脚本显式登记 SDK 的静态 OAuth 与 Bedrock 模块，避免单文件产物中的动态路径失效。
+
+`test:model-auth` 在清理过厂商环境变量的子进程中运行：模拟设备码、授权码交换、过期刷新、凭据写入失败、ADC 文件检测，以及向本地 HTTP 服务发送 AWS SigV4 请求。也直接运行随包 Node/host 验证交互和取消；不读取真实凭据、不请求付费模型。
+
 更新 ONNX 依赖时应同时核对所需的 threaded/asyncify 文件名，避免 JS 与 WASM 版本不一致。本地嵌入模型与预建索引在 `public/models/`，不是 DeepSeek 模型权重。
 
 ## 常规检查
@@ -26,6 +30,8 @@ node scripts/prepare-ort.mjs
 ```powershell
 npm run build
 npm run test:agent-runtime
+npm run test:model-providers
+npm run test:model-auth
 npm run test:module-parser
 npm run test:code-highlight
 npm run test:code-work
@@ -89,7 +95,7 @@ npm run test:native-gui -- -EasyLanguageRoot D:\e
 
 ## 可选的真实模型检查
 
-真实服务验证通过应用的 DeepSeek 官方浏览器授权入口完成，再在工作区发送任务。应用不接受 API Key 或自定义服务地址；不要从账号文件提取令牌用于测试。真实授权与推理不属于离线回归，本轮没有使用真实账号执行。
+真实服务验证通过应用的 DeepSeek 官方浏览器授权入口完成，再在工作区发送任务。也可以在模型设置中添加自己的 API 或中转；不要从账号文件提取令牌用于测试。真实授权与推理不属于离线回归，本轮没有使用真实账号执行。
 
 ## 打包与提交
 
@@ -158,3 +164,17 @@ Tauri JS API 固定在 2.10.x、剪贴板插件在 2.3.x，与 Rust 的同一 mi
 账号用量与充值使用独立原生 WebView，官方主帧具备与 Harness 相同的 window.dsh embedded 协议。主界面只发送固定页面枚举、视图标识与边界，不接收 token；禁止非官方主页面导航，网页不能调用应用命令。私有网页数据隔离，退出/凭据失效时关闭。用量和充值主页面留在应用内；与 Harness 一致，页面主动打开的 HTTPS 支付/文档新窗口交给系统浏览器，不携带内嵌会话。模拟界面验证加载/返回/重试和焦点恢复；未用真实账号执行用量查询或支付。
 
 轨迹读取会话中已有消息与工具证据，采用表格加右侧检查器、分页与搜索，不伪造请求性能或用量字段。代码差异使用原生写入锁内的真实快照，按文件汇总本轮首尾；正文从 ToolResult.content 分离，模型观察与历史摘要不重复携带完整源码。每侧上限 1 MiB，缺少可靠快照时不推测完整差异；二进制产物继续走文件展示。差异计算限时 150ms，长文件每页最多 300 行，轨迹每页最多 200 条。
+
+## 0.1.6 Harness 更新与多厂商验证
+
+参考 checkout 为 687f282e8625c6b8d11ff58211a90524be2e4317（0.2.1-rc.2）。窗口参考 AppFrame/SidebarRoot、Modal/SettingsRoot；模型参考 ModelsSection、ProviderEditor、CustomProviderCard、ModelListEditor、ModelSelect、llm-deepseek 与 llm-pi-ai。目录可运行 `node scripts/generate-provider-catalog.mjs ../deepseek-harness` 重建，不需要上游 node_modules。
+
+`npm run test:model-providers` 使用真实 pi-ai 实现与本地 IPC/SSE fixture，覆盖三种 SDK 协议、Gemini、Bedrock、官方 DeepSeek Messages 的文本/工具、重放、输出截断、HTTP 401 和无前端鉴权头传输；通知控制器覆盖过期、堆叠、展示确认和注销清理。`npm run test:agent-runtime` 继续检查超过 64 步、最新源码构建、模块检索和取消。
+
+`npm run test:ui` 使用本地模拟 IPC 与 Edge。CSS 模块类名遵循 Vite 的真实作用域算法，并加载生产 CSS，而非用无样式的假组件验证布局；覆盖提供商双入口草稿、发现、多选、加密存储边界、模型分组搜索、按模型推理强度、无账号 API 路线，以及标题栏同色、40px 遮罩起点和 60px 弹窗安全间距。测试不读取真实账号，不请求商业模型、不安装产品。
+
+主窗口默认 1120×720，最小 960×600，支持调整大小与最大化。界面回归包含新默认尺寸下的设置弹窗安全间距、输入框伸缩和模型选择器可见性；登录窗口仍为 600×700。
+
+第三方 API 元数据保存失败会回滚前端新增/选择；编辑涉及 native 凭据与 IndexedDB 两个存储，若后者失败可重新保存该表单，端点不匹配时后台拒绝发出请求。完整内置认证方式见 [模型认证](model-authentication.md)；未移植 Harness 的全部插件系统。网页工具需要官方账号授权、默认关闭。
+
+0.1.6 已通过前端生产构建、模型认证与协议回归、Agent runtime、Edge 全流程回归，以及 Rust 库测试（34 通过、1 忽略）。Windows release、NSIS 和便携包构建完成；附件校验覆盖版本、x64 PE、归档完整性、SHA256、22 个工具文件及完整模型运行时和许可。安装版与便携版主程序只存在 Tauri 包类型三字节差异。实际从安装包解出的 Node/SDK 已用隔离环境和假凭据启动验证，未安装产品或使用真实账号。

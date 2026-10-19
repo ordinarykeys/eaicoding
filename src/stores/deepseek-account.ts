@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { createBonusNoticeController, type BonusNotice, type AccountBonusBatch } from "@/lib/account-notices";
 
 export interface AccountView {
   signedIn: boolean;
@@ -13,6 +14,9 @@ interface AccountStore {
   view: AccountView;
   ready: boolean;
   busy: boolean;
+  notices: readonly BonusNotice[];
+  noticeShown: (orderId: string) => void;
+  dismissNotice: (orderId: string) => void;
   details: AccountDetails | null;
   detailsLoading: boolean;
   detailsError: string | null;
@@ -34,9 +38,13 @@ const empty: AccountView = { signedIn: false, name: null, contact: null, phase: 
 let revision = 0;
 let readSequence = 0;
 export const useDeepSeekAccount = create<AccountStore>((set, get) => ({
+  notices: [],
+  noticeShown: orderId => noticeController.shown(orderId),
+  dismissNotice: orderId => noticeController.dismiss(orderId),
   view: empty, ready: false, busy: false, details: null, detailsLoading: false, detailsError: null,
   refreshDetails: async () => {
     if (!get().view.signedIn || get().detailsLoading) return;
+    void noticeController.refresh();
     const current = revision;
     set({ detailsLoading: true, detailsError: null });
     try {
@@ -50,7 +58,10 @@ export const useDeepSeekAccount = create<AccountStore>((set, get) => ({
     const sequence = ++readSequence;
     try {
       const view = await invoke<AccountView>("deepseek_account_status");
-      if (revision === before && sequence === readSequence) set({ view, ready: true, ...(!view.signedIn ? { details: null, detailsLoading: false, detailsError: null } : {}) });
+      if (revision === before && sequence === readSequence) {
+        set({ view, ready: true, ...(!view.signedIn ? { details: null, detailsLoading: false, detailsError: null } : {}) });
+        if (view.signedIn) noticeController.begin(); else noticeController.end();
+      }
     } catch (error) {
       if (revision === before && sequence === readSequence) set({ ready: true, view: { ...get().view, error: String(error) } });
     }
@@ -79,6 +90,7 @@ export const useDeepSeekAccount = create<AccountStore>((set, get) => ({
   logout: async () => {
     if (get().busy) return;
     const current = ++revision;
+    noticeController.end();
     set({ busy: true });
     try {
       await invoke("deepseek_account_logout");
@@ -89,3 +101,12 @@ export const useDeepSeekAccount = create<AccountStore>((set, get) => ({
     } finally { if (revision === current) set({ busy: false }); }
   },
 }));
+
+// Session-only notice state and retries, matching Harness. No timers poll the server.
+const noticeController = createBonusNoticeController({
+  ackRetryDelayMs: 1000, ackRetryMaxDelayMs: 60000,
+  read: () => useDeepSeekAccount.getState().view.signedIn
+    ? invoke<AccountBonusBatch>("deepseek_account_notices", { timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60 }) : Promise.resolve(null),
+  acknowledge: (accountId, orderId) => invoke<boolean>("deepseek_account_notice_ack", { accountId, orderId }),
+  publish: notices => useDeepSeekAccount.setState({ notices }),
+});

@@ -1,3 +1,4 @@
+import { useDeepSeekAccount } from "@/stores/deepseek-account";
 import { useChatScroll } from "@/hooks/use-chat-scroll";
 import { ChatComposer } from "@/components/chat-composer";
 import { TrajectoryView } from "@/components/trajectory-view";
@@ -116,6 +117,9 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
   const [isPaused, setIsPaused] = useState(false);
   const { rootRef: scrollRootRef, contentRef: scrollContentRef, showLatest, toLatest } = useChatScroll(activeSessionId, session?.messages);
   const abortRef = useRef<(() => void) | null>(null);
+  const accountRequestRef = useRef(false);
+  const accountSignedIn = useDeepSeekAccount(s => s.view.signedIn);
+  useEffect(() => { if (!accountSignedIn && accountRequestRef.current) abortRef.current?.(); }, [accountSignedIn]);
   // Handle to the running agent, for pause()/resume().
   const runHandleRef = useRef<ReturnType<typeof startAgentRun> | null>(null);
   const streamBufRef = useRef("");
@@ -283,7 +287,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
     if (!mountedRef.current) { sendingRef.current = false; return; }
     if (!config) {
       sendingRef.current = false;
-      toast.error("请先完成 DeepSeek 官方授权登录");
+      toast.error("请先登录 DeepSeek 或添加模型提供商");
       return;
     }
 
@@ -352,6 +356,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
         });
       });
     };
+    accountRequestRef.current = !config.profileId;
     const handle = startAgentRun({
       config,
       mode: "agent",
@@ -411,6 +416,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
       const finalContent = renderTraceForBubble(trace, /*isFinal*/ true);
       updateMessage(sid, assistantMsgId, {
         content: finalContent,
+        providerMessage: trace.steps.at(-1)?.finishReason === "answer" ? trace.steps.at(-1)?.providerMessage : undefined,
         reasoningContent: reasoningBuffer,
         isStreaming: false,
         agentTrace: trace,
@@ -565,22 +571,6 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
           data-empty={!session?.messages.length}
         >
           <header className="flex items-center gap-2 px-4 py-2.5 shrink-0">
-            {!sidebarOpen && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 rounded-lg text-muted-foreground"
-                    aria-label="打开侧栏"
-                    onClick={onToggleSidebar}
-                  >
-                    <SidebarSimple className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>打开侧栏</TooltipContent>
-              </Tooltip>
-            )}
             <ConversationMenu session={session} title={sessionTitle} workspace={workspace} busy={isStreaming} onChooseWorkspace={() => void chooseWorkspace()} />
             {statusLine && (
               <span className="text-xs text-muted-foreground hidden md:flex items-center gap-1">

@@ -7,21 +7,27 @@
 | 层 | 主要入口 | 职责 |
 | --- | --- | --- |
 | 桌面 UI | `src/components/chat-view.tsx`、`chat-composer.tsx` | 对话、文件附件、模型选择、运行状态与取消 |
-| 设置 | `src/components/settings-view.tsx`、`deepseek-profile-card.tsx` | 弹窗导航、账号管理、模型草稿与校验 |
+| 设置 | `src/components/settings-view.tsx`、`model-settings.tsx`、`model-picker.tsx` | 弹窗导航、账号管理、模型草稿与校验 |
 | 状态与存储 | `src/stores/` | IndexedDB 设置、会话、配置迁移及中断恢复 |
 | Agent | `src/services/agent/runner.ts`、`tools.ts` | 组装上下文、原生工具循环、结果检查及交付判定 |
-| LLM | `src/services/llm/index.ts`、`openai.ts` | 仅创建 DeepSeek Chat Completions 适配器，处理 SSE 与工具参数 |
+| LLM | `src/services/llm/index.ts`、`deepseek-messages.ts`、`pi-provider.ts` | 官方 Messages、本地 pi-ai 运行时及自定义 API，处理流、签名及工具参数 |
 | 桌面能力 | `src-tauri/src/` | 文件处理、易语言工具链、模型网络代理、加密和任务取消 |
 | 知识检索 | `src/services/knowledge/`、`agent/knowledge/` | 用户模块库、精易模块检索与本地嵌入模型 |
 | 文本展示 | `code-block.tsx`、`document-preview.tsx`、`use-chat-scroll.ts` | 增量高亮、右侧预览、分页与滚动跟随 |
 
 ## 模型与配置
 
-仅公开 `deepseek-flash`（DeepSeek-V4.1-Flash）和 `deepseek-v4-pro`（DeepSeek-V4-Pro）。目录及旧模型 ID 迁移统一在 `src/lib/deepseek-models.ts`；输入区选择改变实际请求模型。旧协议适配器文件仍可能存在，但桌面模型工厂不会使用其他厂商。
+官方账号公开 `deepseek-flash` 与 `deepseek-v4-pro`，由 `deepseek-models.ts` 统一迁移、显示与四档推理能力。账号请求采用 Harness 的 `/anthropic/v1/messages`，默认高强度；保留 Messages thinking 签名、工具块与立即对应的结果。旧 Chat Completions 适配器仅用于兼容历史调用及协议回归。
 
-请求通过 Rust 网络代理访问官方 `/chat/completions`。`deepseek_account.rs` 实现 PKCE、随机回调端口、状态校验、账号凭据加密保存及过期处理；`x-dsh-auth-token` 只在 Rust 注入，前端不接触 Token。两类网络代理均固定官方 origin 且禁跟随重定向；旧请求的 401 不会清除已换新的凭据。登录页先于工作区挂载，后台读取状态后再显示原生窗口，避免主界面闪现。
+`model-settings.tsx` 按需加载目录，创建/编辑提供商；元数据存 IndexedDB v9，密钥由 `model_providers.rs` 加密存 `model-providers-v1.json`。网络代理按已保存 profile、origin、路径和协议校验并注入凭据；同一厂商的多协议/区域端点分别登记，不把密钥传给未经保存的端点。未保存的发现端点不能沿用旧端点密钥。
 
-默认最大输出为 256000 Token，温度 0.2。设置持久化版本为 v8：清除旧密钥、固定官方接口；保留有效模型参数，旧版官方默认 8192 升级为新默认。显式输出额度约束当前请求，截断恢复不会私自扩大该值。最终答案只进行本地证据和 EPL 结构检查；不再发起独立 Reviewer 请求或重复编译。
+内置 42 个提供商使用 `runtime/model-runtime.mjs` 与随包 Node，复用 Harness 同版 pi-ai 1.1.0 的 provider/auth/stream 实现，覆盖其全部已提供认证方式。Rust `model_runtime.rs` 通过 stdin/stdout 行协议传递本地已登记配置，授权事件只向前端投影通知、提示和模型输出；完整凭据不会经过 webview。OAuth 与结构化云凭据加密存于 `model-grants-v1.json`，SDK 的刷新/登录写入等待 Rust 持久化确认；同一 profile 的保存、删除、登录、刷新和请求由互斥锁串行化。取消会终止本次运行时和回调监听。API 配置与授权是两个本地存储，保存失败会显示错误，重新保存可以修复。
+
+自定义 API 继续使用 pi-ai 窄协议入口与 native fetch；Gemini 保留原生 functionCall/functionResponse 和 thoughtSignature。旧协议配置保持可用，编辑内置提供商后切换完整本地运行时。模型目录保留 api、端点、上下文、输出额度及推理能力；右下角选择同时切换实际提供商和协议。详见 [模型认证](model-authentication.md)。
+
+账号凭据仍由 `deepseek_account.rs` 管理 PKCE、加密、过期与账号网页；API 密钥独立保存。只有官方账号请求的 401 才使该账号过期。无 DeepSeek 账号但有 API 提供商时进入工作区并选择可用的 API 模型。官方默认最大输出 256000，历史有效设置保留；第三方使用模型目录输出额度。截断轮不执行部分工具，不会因切换协议丢失已完成工具证据。
+
+网页工具只在官方账号路线且开关打开时暴露，native 固定官方工具地址、90s 超时、4 MiB 响应限制及取消，读取正文最多 60000 字符。模块库检索仍优先，网页内容只作为数据。账号赠金通知沿用 Harness 的会话内控制器，read/ack 绑定随机授权作用域，注销与账号切换清空旧卡片与重试。
 
 ## 执行与完成
 
@@ -104,7 +110,7 @@ Harness 的 DeepSeek 默认输出额度为 256000，使用 Messages 协议；本
 
 ## 账号菜单与个人中心（0.1.4）
 
-侧栏显示头像和账号名，向上菜单提供设置及退出登录；设置和 Ctrl+, 默认进入个人中心，模型参数仍在模型页。菜单通过 portal 定位，支持方向键和 Escape，关闭恢复账号按钮焦点。菜单、设置和退出确认弹窗出现时隐藏原生浏览器表面。
+侧栏显示头像和账号名，向上菜单提供设置及退出登录；设置和 Ctrl+, 默认进入个人中心，模型页管理提供商与目录，推理强度在输入区选择。菜单通过 portal 定位，支持方向键和 Escape，关闭恢复账号按钮焦点。菜单、设置和退出确认弹窗出现时隐藏原生浏览器表面。
 
 Rust 在锁外并行请求开放平台 `/auth-api/v0/users/current` 与 `/api/v0/users/get_user_summary`；只在固定官方主机注入敏感授权头，拒绝重定向，限制超时和响应体积。前端只收到姓名、联系方式和两类钱包，不收到令牌或原始用户对象。401/40003 清除匹配的授权并通知登录状态更新；返回前再次核对当前授权，前端用请求版本隔离退出和换账号后的迟到结果。
 

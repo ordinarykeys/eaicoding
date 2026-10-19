@@ -8,6 +8,11 @@ import type { UserModuleEntry } from "@/services/knowledge/module-library";
 
 export interface ProviderProfile {
   id: string;
+  authMode?: "account" | "api-key";
+  custom?: boolean;
+  envKey?: string;
+  credentialConfigured?: boolean;
+  reasoningEffort?: string;
   name: string;
   provider: LLMProvider;
   protocol: LLMProtocol;
@@ -21,11 +26,22 @@ export interface ProviderProfile {
 }
 
 export interface ProviderModel {
+  api?: string;
+  baseUrl?: string;
   id: string;
   ownedBy: string | null;
+  name?: string;
+  protocol?: LLMProtocol;
+  maxTokens?: number;
+  reasoning?: boolean;
+  defaultEffort?: string;
+  thinkingLevelMap?: Record<string, string | null>;
+  compat?: Record<string, unknown>;
+  contextWindow?: number;
 }
 
 export const DEFAULT_PROVIDER_PROFILE = {
+  authMode: "account" as const,
   name: "DeepSeek",
   provider: "deepseek" as LLMProvider,
   protocol: "openai-chat-completions" as LLMProtocol,
@@ -49,6 +65,8 @@ interface SettingsState {
   theme: "dark" | "light";
   busyEnterBehavior: "queue" | "steer";
   codeWorkView: boolean;
+  deepseekWebEnabled: boolean;
+  deepseekWebCount: number;
   /** Show floating desktop pet (Clawd crab). */
   petEnabled: boolean;
   /** Pet sound effects enabled. */
@@ -75,13 +93,16 @@ interface SettingsState {
     id: string,
     patch: Partial<Omit<ProviderProfile, "id" | "apiKeyEncrypted">> & { apiKey?: string },
   ) => Promise<void>;
-  removeProfile: (id: string) => void;
+  removeProfile: (id: string) => Promise<void>;
+  selectModel: (profileId: string, model: string) => Promise<void>;
   setActiveProfile: (id: string) => void;
   setProfileModels: (id: string, models: ProviderModel[]) => void;
   setSystemPrompt: (prompt: string) => void;
   setTheme: (theme: "dark" | "light") => void;
   setBusyEnterBehavior: (behavior: "queue" | "steer") => void;
   setCodeWorkView: (enabled: boolean) => void;
+  setDeepseekWebEnabled: (enabled: boolean) => void;
+  setDeepseekWebCount: (count: number) => void;
   setPetEnabled: (enabled: boolean) => void;
   setPetSoundEnabled: (enabled: boolean) => void;
   setPetPosition: (pos: { x: number; y: number } | null) => void;
@@ -139,6 +160,10 @@ export const useSettingsStore = create<SettingsState>()(
       theme: "light",
       busyEnterBehavior: "queue",
       codeWorkView: true,
+      deepseekWebEnabled: false,
+      deepseekWebCount: 10,
+      setDeepseekWebEnabled: (deepseekWebEnabled) => set({ deepseekWebEnabled }),
+      setDeepseekWebCount: (count) => set({ deepseekWebCount: Math.max(1, Math.min(50, Math.round(count) || 10)) }),
       setBusyEnterBehavior: (busyEnterBehavior) => set({ busyEnterBehavior }),
       setCodeWorkView: (codeWorkView) => set({ codeWorkView }),
       petEnabled: true,
@@ -151,74 +176,56 @@ export const useSettingsStore = create<SettingsState>()(
       userModules: [],
 
       addProfile: async (input) => {
-        const apiKeyEncrypted = "";
-        const id = `p_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const profile: ProviderProfile = {
-          id,
-          name: input.name,
-          provider: input.provider,
-          protocol: input.protocol,
-          baseUrl: DEFAULT_PROVIDER_PROFILE.baseUrl,
-          apiKeyEncrypted,
-          model: normalizeDeepSeekModel(input.model),
-          models: deepSeekModelCatalog(),
-          maxTokens: input.maxTokens,
-          temperature: input.temperature,
-        };
-        await set((s) => ({
-          profiles: s.profiles.length > 0 ? [profile, ...s.profiles.slice(1)] : [profile],
-          modelCatalogs: { ...s.modelCatalogs, [id]: deepSeekModelCatalog() },
-          activeProfileId: id,
-        }));
+        const previous = get();
+        const { apiKey, ...metadata } = input;
+        const id = `p_${crypto.randomUUID()}`;
+        await invoke("model_provider_save", { input: { id, provider: input.provider, runtime: input.protocol === "pi-ai", models: input.models, baseUrl: input.baseUrl, protocol: input.protocol, apiKey, envKey: input.envKey, routes: (input.models??[]).filter(m=>m.baseUrl).map(m=>({baseUrl:m.baseUrl,protocol:m.protocol??input.protocol})) } });
+        const profile: ProviderProfile = { ...metadata, id, authMode: "api-key", apiKeyEncrypted: "", credentialConfigured: !!apiKey.trim() };
+        try { await set(s => ({ profiles: [...s.profiles, profile], modelCatalogs: { ...s.modelCatalogs, [id]: input.models ?? [] } })); }
+        catch (error) {
+          try { await set({ profiles: previous.profiles, modelCatalogs: previous.modelCatalogs }); } catch {}
+          await invoke("model_provider_remove", { id }).catch(() => {}); throw error;
+        }
         return id;
       },
-
       updateProfile: async (id, patch) => {
         const previous = get();
-        try {
-        await set((s) => ({
-          profiles: s.profiles.map((profile) => {
-            if (profile.id !== id) return profile;
-            const { apiKey: _omit, ...rest } = patch as { apiKey?: string };
-            return {
-              ...profile,
-              ...rest,
-              model: normalizeDeepSeekModel(patch.model ?? profile.model),
-              models: deepSeekModelCatalog(),
-              baseUrl: DEFAULT_PROVIDER_PROFILE.baseUrl,
-              apiKeyEncrypted: "",
-            };
-          }),
-          modelCatalogs: { ...s.modelCatalogs, [id]: deepSeekModelCatalog() },
-        }));
-        } catch (error) {
-          // Persist returns a Promise at runtime. Restore the active configuration
-          // if IndexedDB rejects the write, and let the editor display the error.
-          try { await set({ profiles: previous.profiles, modelCatalogs: previous.modelCatalogs }); } catch { /* storage is still unavailable */ }
+        const profile = previous.profiles.find(p => p.id === id);
+        if (!profile) throw new Error("模型提供商已删除");
+        const { apiKey, ...rest } = patch;
+        const next = { ...profile, ...rest, apiKeyEncrypted: "" };
+        if (profile.authMode !== "api-key") {
+          next.model = normalizeDeepSeekModel(next.model);
+          next.baseUrl = DEFAULT_PROVIDER_PROFILE.baseUrl;
+          next.models = deepSeekModelCatalog();
+        } else if (apiKey !== undefined || patch.baseUrl !== undefined || patch.protocol !== undefined || patch.envKey !== undefined || patch.models !== undefined) {
+          await invoke("model_provider_save", { input: { id, provider: next.provider, runtime: next.protocol === "pi-ai", models: next.models, baseUrl: next.baseUrl, protocol: next.protocol, apiKey, envKey: next.envKey, routes: (next.models??[]).filter(m=>m.baseUrl).map(m=>({baseUrl:m.baseUrl,protocol:m.protocol??next.protocol})) } });
+          if (apiKey?.trim()) next.credentialConfigured = true;
+        }
+        try { await set(s => ({ profiles: s.profiles.map(p => p.id === id ? next : p), modelCatalogs: { ...s.modelCatalogs, [id]: next.models ?? [] } })); }
+        catch (error) {
+          try { await set({ profiles: previous.profiles, modelCatalogs: previous.modelCatalogs }); } catch { /* storage unavailable */ }
           throw error;
         }
       },
-
-      removeProfile: (id) =>
-        set((s) => {
-          const profiles = s.profiles.filter((profile) => profile.id !== id);
-          const { [id]: _removed, ...modelCatalogs } = s.modelCatalogs;
-          const activeProfileId =
-            s.activeProfileId === id ? profiles[0]?.id ?? null : s.activeProfileId;
-          return { profiles, modelCatalogs, activeProfileId };
-        }),
-
-      setActiveProfile: (id) => set({ activeProfileId: id }),
-      setProfileModels: (id, _models) =>
-        set((s) => ({
-          modelCatalogs: {
-            ...s.modelCatalogs,
-            [id]: deepSeekModelCatalog(),
-          },
-          profiles: s.profiles.map((profile) =>
-            profile.id === id ? { ...profile, models: deepSeekModelCatalog() } : profile,
-          ),
-        })),
+      removeProfile: async (id) => {
+        const previous = get();
+        if (previous.profiles.find(p => p.id === id)?.authMode !== "api-key") throw new Error("DeepSeek 账号入口不能删除");
+        // Remove credentials before settings, as Harness does; retries stay possible.
+        await invoke("model_provider_remove", { id });
+        await set(s => { const profiles = s.profiles.filter(p => p.id !== id); const { [id]: _removed, ...modelCatalogs } = s.modelCatalogs;
+          return { profiles, modelCatalogs, activeProfileId: s.activeProfileId === id ? profiles[0]?.id ?? null : s.activeProfileId }; });
+      },
+      selectModel: async (profileId, model) => {
+        const previous = get();
+        const profile = previous.profiles.find(p => p.id === profileId);
+        if (!profile || !(profile.models ?? []).some(m => m.id === model)) throw new Error("模型不在已保存的目录中");
+        if(previous.activeProfileId===profileId && profile.model===model)return;
+        try { await set(s => ({ activeProfileId: profileId, profiles: s.profiles.map(p => p.id === profileId ? { ...p, model, reasoningEffort: undefined } : p) })); }
+        catch (error) { try { await set({ profiles: previous.profiles, activeProfileId: previous.activeProfileId }); } catch {} throw error; }
+      },
+      setActiveProfile: (activeProfileId) => set({ activeProfileId }),
+      setProfileModels: (id, models) => set(s => ({ modelCatalogs: { ...s.modelCatalogs, [id]: models }, profiles: s.profiles.map(p => p.id === id ? { ...p, models } : p) })),
       setSystemPrompt: (systemPrompt) => set({ systemPrompt }),
       setTheme: (theme) => {
         document.documentElement.classList.toggle("dark", theme === "dark");
@@ -254,15 +261,21 @@ export const useSettingsStore = create<SettingsState>()(
         const { profiles, activeProfileId, systemPrompt } = get();
         const profile = profiles.find((item) => item.id === activeProfileId) ?? profiles[0];
         if (!profile) return null;
-        const account = await invoke<{ signedIn: boolean }>("deepseek_account_status");
-        if (!account.signedIn) throw new Error("请先通过 DeepSeek 官方浏览器授权登录。");
+        if (profile.authMode !== "api-key") {
+          const account = await invoke<{ signedIn: boolean }>("deepseek_account_status");
+          if (!account.signedIn) throw new Error("请先登录 DeepSeek 或在模型设置中添加其他提供商。");
+        }
+        const model = profile.models?.find(m => m.id === profile.model);
         return {
+          profileId: profile.authMode === "api-key" ? profile.id : undefined,
           provider: profile.provider,
-          protocol: "openai-chat-completions",
+          protocol: profile.authMode !== "api-key" ? "anthropic-messages" : profile.protocol === "pi-ai" ? "pi-ai" : model?.protocol ?? profile.protocol,
           apiKey: "",
-          baseUrl: DEFAULT_PROVIDER_PROFILE.baseUrl,
-          model: normalizeDeepSeekModel(profile.model),
-          maxTokens: profile.maxTokens,
+          baseUrl: profile.authMode !== "api-key" ? "https://api.deepseek.com/anthropic" : model?.baseUrl ?? profile.baseUrl,
+          model: profile.authMode === "api-key" ? profile.model : normalizeDeepSeekModel(profile.model),
+          reasoningEffort: model?.reasoning ? profile.reasoningEffort ?? model.defaultEffort : undefined,
+          modelMetadata: model as unknown as Record<string, unknown>,
+          maxTokens: profile.authMode === "api-key" ? model?.maxTokens ?? profile.maxTokens : profile.maxTokens,
           temperature: profile.temperature,
           systemPrompt,
         };
@@ -271,7 +284,7 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: "eaicoding-settings",
       storage: createJSONStorage(() => idbStorage),
-      version: 8,
+      version: 9,
       migrate: (persistedState, fromVersion) => {
         if (!persistedState || typeof persistedState !== "object") {
           return persistedState;
@@ -288,22 +301,11 @@ export const useSettingsStore = create<SettingsState>()(
                 apiKeyEncrypted: "",
               },
             ];
-        const normalizedProfiles = profiles.map((profile) => {
-          // Preserve keys only for profiles already pointing at DeepSeek. Never
-          // send another vendor's saved key to the new default endpoint.
-          const compatible = profile.provider === "deepseek" || /(^|\.)deepseek\.com$/i.test((() => { try { return new URL(profile.baseUrl).hostname; } catch { return ""; } })());
-          // Upgrade the old app default only on the official endpoint. Preserve
-          // custom gateway limits and other explicitly chosen allowances.
-          const officialEndpoint = (() => { try { return new URL(profile.baseUrl).hostname.toLowerCase() === "api.deepseek.com"; } catch { return false; } })();
-          const maxTokens = compatible && Number.isSafeInteger(profile.maxTokens) && profile.maxTokens > 0
-            ? fromVersion < 7 && officialEndpoint && profile.maxTokens === 8192
-              ? DEEPSEEK_DEFAULT_MAX_TOKENS : profile.maxTokens
-            : DEEPSEEK_DEFAULT_MAX_TOKENS;
-          return { ...profile, ...(compatible ? {} : { ...DEFAULT_PROVIDER_PROFILE, apiKeyEncrypted: "" }), maxTokens,
-            baseUrl: DEFAULT_PROVIDER_PROFILE.baseUrl, apiKeyEncrypted: "",
-            provider: "deepseek" as const, protocol: "openai-chat-completions" as const,
-            model: normalizeDeepSeekModel(compatible ? profile.model : DEFAULT_PROVIDER_PROFILE.model),
-            models: deepSeekModelCatalog() };
+        const normalizedProfiles: ProviderProfile[] = profiles.map(profile => {
+          if (profile.authMode === "api-key") return { ...profile, apiKeyEncrypted: "" };
+          const maxTokens = fromVersion < 7 && profile.maxTokens === 8192 && /^https:\/\/api\.deepseek\.com\/?$/.test(profile.baseUrl) ? DEEPSEEK_DEFAULT_MAX_TOKENS : profile.maxTokens || DEEPSEEK_DEFAULT_MAX_TOKENS;
+          return { ...profile, ...DEFAULT_PROVIDER_PROFILE, authMode: "account", apiKeyEncrypted: "", maxTokens, temperature: profile.temperature ?? 0.2,
+            model: normalizeDeepSeekModel(profile.model), models: deepSeekModelCatalog() };
         });
         const activeProfileId =
           state.activeProfileId && profiles.some((profile) => profile.id === state.activeProfileId)
@@ -337,6 +339,8 @@ export const useSettingsStore = create<SettingsState>()(
         theme: s.theme,
         busyEnterBehavior: s.busyEnterBehavior,
         codeWorkView: s.codeWorkView,
+        deepseekWebEnabled: s.deepseekWebEnabled,
+        deepseekWebCount: s.deepseekWebCount,
         petEnabled: s.petEnabled,
         petSoundEnabled: s.petSoundEnabled,
         petPosition: s.petPosition,

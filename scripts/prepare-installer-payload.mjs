@@ -21,6 +21,7 @@ await rm(staging, { recursive: true, force: true });
 await mkdir(staging, { recursive: true });
 await copyFile(executable, join(staging, basename(executable)));
 await cp(join(root, 'src-tauri/resources/eagent-tools'), join(staging, 'eagent-tools'), { recursive: true });
+await cp(join(root, 'src-tauri/target/model-runtime'), join(staging, 'model-runtime'), { recursive: true });
 await copyFile(join(root, 'THIRD_PARTY_NOTICES.md'), join(staging, 'THIRD_PARTY_NOTICES.md'));
 await cp(join(root, 'third_party/7zip'), join(staging, 'licenses/7zip'), { recursive: true });
 await rm(archive, { force: true });

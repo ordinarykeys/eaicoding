@@ -33,7 +33,7 @@
 .account-refresh { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:12px; }
 .account-refresh button { display:inline-flex; align-items:center; gap:6px; flex:none; border:0; background:transparent; color:var(--muted-foreground); padding:4px 8px; border-radius:6px; cursor:pointer; }
 .account-refresh button:disabled { opacity:.5; cursor:default; }
-.account-signout-overlay { position:fixed; inset:0; z-index:60; background:rgb(0 0 0 / 24%); }
+.account-signout-overlay { position:fixed; inset:var(--window-chrome-top,40px) 0 0; z-index:60; background:rgb(0 0 0 / 24%); }
 .account-signout-dialog { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:60; box-sizing:border-box; width:min(420px,calc(100vw - 32px)); border:.5px solid var(--border); border-radius:20px; background:var(--card); color:var(--foreground); box-shadow:0 24px 80px rgb(0 0 0 / 18%); outline:none; }
 .account-signout-dialog header { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:22px 24px 12px; }
 .account-signout-dialog h2 { margin:0; font-size:16px; line-height:24px; font-weight:500; }

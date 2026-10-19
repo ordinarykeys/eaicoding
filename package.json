@@ -1,12 +1,13 @@
 {
   "name": "eaicoding-desktop",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "scripts": {
     "postinstall": "node scripts/prepare-ort.mjs",
-    "predev": "node scripts/prepare-ort.mjs",
-    "prebuild": "node scripts/prepare-ort.mjs",
+    "predev": "node scripts/prepare-ort.mjs && node scripts/prepare-model-runtime.mjs",
+    "prebuild": "node scripts/prepare-ort.mjs && node scripts/prepare-model-runtime.mjs",
+    "prepare:models": "node scripts/prepare-model-runtime.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "build:jingyi-docs": "node scripts/build-jingyi-docs.mjs",
@@ -27,9 +28,12 @@
     "package:release": "node scripts/package-release.mjs",
     "test:module-parser": "node scripts/test-module-parser.mjs",
     "test:native-workbench": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-native-workbench.ps1",
-    "prepare:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-installer.ps1"
+    "prepare:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-installer.ps1",
+    "test:model-providers": "node scripts/test-model-providers.mjs",
+    "test:model-auth": "node scripts/test-model-auth.mjs"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "1.1.0",
     "@huggingface/transformers": "^4.2.0",
     "@phosphor-icons/react": "^2.1.9",
     "@radix-ui/react-dialog": "^1.1.6",

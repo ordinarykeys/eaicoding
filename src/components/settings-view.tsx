@@ -1,4 +1,3 @@
-import { DeepSeekProfileCard } from "@/components/deepseek-profile-card";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
@@ -29,7 +28,6 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
-  DEFAULT_PROVIDER_PROFILE,
   useSettingsStore,
 } from "@/stores/settings";
 import { toast } from "sonner";
@@ -49,18 +47,21 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+const ModelSettings = lazy(() => import("./model-settings").then(module => ({default:module.ModelSettings})));
+
 export function SettingsView({ section, onSectionChange }: { section: string; onSectionChange: (value: string) => void }) {
   const returnFocus = useRef<HTMLElement | null>(null);
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="settings-overlay" />
       <DialogPrimitive.Content className="settings-dialog" aria-modal="true"
+        onInteractOutside={event => { if (event.target instanceof Element && event.target.closest("[data-window-chrome]")) event.preventDefault(); }}
         onOpenAutoFocus={() => { returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
         onCloseAutoFocus={event => {
           if (returnFocus.current?.isConnected) { event.preventDefault(); returnFocus.current.focus(); }
         }}>
         <DialogPrimitive.Description className="sr-only">
-          管理 DeepSeek 官方授权账号、模型、易语言环境、模块库和界面外观。
+          管理 DeepSeek 官方授权账号、第三方模型与中转接口、易语言环境、模块库和界面外观。
         </DialogPrimitive.Description>
         <SettingsPanel section={section} onSectionChange={onSectionChange} />
       </DialogPrimitive.Content>
@@ -77,33 +78,18 @@ function SettingsPanel({ section, onSectionChange }: { section: string; onSectio
     onSectionChange(value);
   };
   const {
-    profiles,
-    activeProfileId,
     easyLanguageRoot,
     easyLanguageGenerateDir,
     easyLanguageCompileDir,
-    addProfile,
-    updateProfile,
     setEasyLanguageRoot,
     setEasyLanguageGenerateDir,
     setEasyLanguageCompileDir,
   } = useSettingsStore(useShallow(state => ({
-    profiles: state.profiles, activeProfileId: state.activeProfileId,
     easyLanguageRoot: state.easyLanguageRoot,
     easyLanguageGenerateDir: state.easyLanguageGenerateDir, easyLanguageCompileDir: state.easyLanguageCompileDir,
-    addProfile: state.addProfile, updateProfile: state.updateProfile,
     setEasyLanguageRoot: state.setEasyLanguageRoot, setEasyLanguageGenerateDir: state.setEasyLanguageGenerateDir,
     setEasyLanguageCompileDir: state.setEasyLanguageCompileDir,
   })));
-
-  const activeProfile =
-    profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0] ?? null;
-
-  useEffect(() => {
-    if (profiles.length === 0) {
-      void addProfile({ ...DEFAULT_PROVIDER_PROFILE, apiKey: "" });
-    }
-  }, [addProfile, profiles.length]);
 
   return (
     <TooltipProvider>
@@ -129,20 +115,7 @@ function SettingsPanel({ section, onSectionChange }: { section: string; onSectio
               <Suspense fallback={<p role="status">正在打开个人中心…</p>}><AccountCenter /></Suspense>
             </TabsContent>}
             {visited.has("providers") && <TabsContent forceMount value="providers" className="settings-pane">
-              {activeProfile ? (
-                <DeepSeekProfileCard
-                  key={activeProfile.id}
-                  active={section === "providers"}
-                  profile={activeProfile}
-                  onUpdate={(patch) => updateProfile(activeProfile.id, patch)}
-                />
-              ) : (
-                <Card className="settings-section-card border-0 shadow-none">
-                  <CardContent className="py-8 text-center text-muted-foreground text-sm">
-                    正在初始化模型配置...
-                  </CardContent>
-                </Card>
-              )}
+              <Suspense fallback={<p role="status">正在打开模型设置…</p>}><ModelSettings /></Suspense>
             </TabsContent>}
             {visited.has("environment") && <TabsContent forceMount value="environment" className="settings-pane">
               <EasyLanguageEnvironmentCard
@@ -190,11 +163,17 @@ function AppearanceSettings() {
 }
 
 function CodingPreferences() {
+  const webEnabled = useSettingsStore(s => s.deepseekWebEnabled);
+  const webCount = useSettingsStore(s => s.deepseekWebCount);
+  const setWebEnabled = useSettingsStore(s => s.setDeepseekWebEnabled);
+  const setWebCount = useSettingsStore(s => s.setDeepseekWebCount);
   const behavior = useSettingsStore(s => s.busyEnterBehavior);
   const setBehavior = useSettingsStore(s => s.setBusyEnterBehavior);
   const codeWorkView = useSettingsStore(s => s.codeWorkView);
   const setCodeWorkView = useSettingsStore(s => s.setCodeWorkView);
   return <section className="settings-coding-preferences">
+    <label className="settings-coding-row"><div><div>启用新版 Web 搜索 API</div><p>通过已登录的 DeepSeek 账号搜索资料、抓取网页；从下次工具调用生效</p></div><input type="checkbox" role="switch" aria-label="启用新版 Web 搜索 API" className="settings-switch" checked={webEnabled} onChange={event => setWebEnabled(event.target.checked)} /></label>
+    {webEnabled && <label className="settings-coding-row"><div><div>每次搜索结果数</div><p>1–50 条，默认 10 条。仅在任务需要时由 AI 调用，模块接口仍优先检索本地模块库。</p></div><input type="number" aria-label="每次搜索结果数" min={1} max={50} value={webCount} onChange={event => setWebCount(Number(event.target.value))} style={{ width: 64 }} /></label>}
     <div className="settings-coding-row"><div><div>繁忙时的发送行为</div><p>智能体运行时 Enter 键和发送按钮的行为；Ctrl+Enter 使用另一行为</p></div>
       <Select value={behavior} onValueChange={value => setBehavior(value as "queue" | "steer")}><SelectTrigger className="settings-busy-selector" aria-label="繁忙时的发送行为"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="queue">排队发送</SelectItem><SelectItem value="steer">插话发送</SelectItem></SelectContent></Select>
     </div>

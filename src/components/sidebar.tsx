@@ -5,7 +5,6 @@ import {
   MagnifyingGlass,
   CaretDown,
   Plus,
-  SidebarSimple,
   Trash,
 } from "@phosphor-icons/react";
 import { useCallback, useRef, useState, useMemo } from "react";
@@ -13,10 +12,7 @@ import { Button } from "@/components/ui/button";
 import { AccountMenu } from "@/components/account-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  Tooltip,
-  TooltipContent,
   TooltipProvider,
-  TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useChatStore } from "@/stores/chat";
 import { getSessionDisplayTitle } from "@/lib/session-title";
@@ -36,7 +32,7 @@ interface SidebarProps {
   maxWidth: number;
 }
 
-export function Sidebar({ onOpenSettings, settingsOpen, onAccountOverlayChange, onClose, width, onResize, minWidth, maxWidth }: SidebarProps) {
+export function Sidebar({ onOpenSettings, settingsOpen, onAccountOverlayChange, width, onResize, minWidth, maxWidth }: SidebarProps) {
   const sessions = useChatStore((s) => s.sessions);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const createSession = useChatStore((s) => s.createSession);
@@ -96,30 +92,8 @@ export function Sidebar({ onOpenSettings, settingsOpen, onAccountOverlayChange, 
   return (
     <TooltipProvider>
       <aside className="claude-sidebar text-sidebar-foreground" style={{ width }}>
-        <div className="flex items-center gap-2 px-3 py-2.5">
-          <Button
-            variant="ghost"
-            className="h-9 flex-1 justify-start gap-2 rounded-lg bg-transparent px-3 text-sm font-medium text-foreground hover:bg-sidebar-accent"
-            onClick={handleNew}
-          >
-            <Plus className="h-4 w-4" weight="bold" />
-            新建任务
-          </Button>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-9 w-9 rounded-lg text-muted-foreground hover:bg-sidebar-accent"
-                aria-label="收起侧栏"
-                onClick={onClose}
-              >
-                <SidebarSimple className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>收起侧栏</TooltipContent>
-          </Tooltip>
-        </div>
+        <div className="sidebar-brand"><img src="/icon.ico" alt="" draggable={false} /><span>EAiCoding</span></div>
+        <div className="sidebar-new-task"><Button variant="ghost" onClick={handleNew}><Plus size={16} />新建任务</Button></div>
 
         <div className="sidebar-quick-actions"><button type="button" onClick={() => onOpenSettings("knowledge")}><Books size={16} />模块库</button></div>
         <div className="sidebar-workspace-heading"><span>工作区</span><button type="button" aria-label="选择工作区新建任务" title="选择工作区新建任务" onClick={() => void chooseWorkspace()}><FolderPlus size={15} /></button></div>

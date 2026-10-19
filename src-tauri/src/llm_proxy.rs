@@ -16,6 +16,8 @@ use crate::deepseek_account::{expire, inference_headers, ACCOUNT_HTTP as HTTP_CL
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmProxyRequest {
+    pub profile_id: Option<String>,
+    pub protocol: Option<String>,
     pub url: String,
     pub method: Option<String>,
     pub headers: Option<HashMap<String, String>>,
@@ -35,6 +37,8 @@ pub struct LlmProxyResponse {
 #[serde(rename_all = "camelCase")]
 pub struct LlmProxyStreamRequest {
     pub request_id: String,
+    pub profile_id: Option<String>,
+    pub protocol: Option<String>,
     pub url: String,
     pub method: Option<String>,
     pub headers: Option<HashMap<String, String>>,
@@ -164,7 +168,23 @@ pub async fn llm_proxy_request(
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .clamp(1, MAX_TIMEOUT_SECS);
 
-    let (headers, token) = inference_headers(&app, url, build_headers(request.headers)?).await?;
+    let (headers, token) = if let Some(id) = request.profile_id.as_deref() {
+        (
+            crate::model_providers::headers(
+                &app,
+                id,
+                url,
+                build_headers(request.headers)?,
+                request.protocol.as_deref(),
+            )
+            .await?,
+            None,
+        )
+    } else {
+        let (headers, token) =
+            inference_headers(&app, url, build_headers(request.headers)?).await?;
+        (headers, Some(token))
+    };
     let mut builder = match method.as_str() {
         "GET" => HTTP_CLIENT.get(url),
         _ => HTTP_CLIENT.post(url),
@@ -181,8 +201,8 @@ pub async fn llm_proxy_request(
         .await
         .map_err(|err| format!("LLM proxy request failed: {err}"))?;
     let status = response.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED {
-        expire(&app, &token).await;
+    if status == reqwest::StatusCode::UNAUTHORIZED && token.is_some() {
+        expire(&app, token.as_deref().unwrap()).await;
         return Err("DeepSeek 登录已失效，请重新登录。".into());
     }
     let status_text = status.canonical_reason().unwrap_or("").to_string();
@@ -232,7 +252,23 @@ async fn llm_proxy_stream_inner(
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .clamp(1, MAX_TIMEOUT_SECS);
 
-    let (headers, token) = inference_headers(&app, url, build_headers(request.headers)?).await?;
+    let (headers, token) = if let Some(id) = request.profile_id.as_deref() {
+        (
+            crate::model_providers::headers(
+                &app,
+                id,
+                url,
+                build_headers(request.headers)?,
+                request.protocol.as_deref(),
+            )
+            .await?,
+            None,
+        )
+    } else {
+        let (headers, token) =
+            inference_headers(&app, url, build_headers(request.headers)?).await?;
+        (headers, Some(token))
+    };
     let mut builder = match method.as_str() {
         "GET" => HTTP_CLIENT.get(url),
         _ => HTTP_CLIENT.post(url),
@@ -252,11 +288,17 @@ async fn llm_proxy_stream_inner(
         .map_err(|_| format!("LLM proxy request timed out after {timeout_secs}s"))?
         .map_err(|err| format!("LLM proxy request failed: {err}"))?;
     let status = response.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED {
-        expire(&app, &token).await;
+    if status == reqwest::StatusCode::UNAUTHORIZED && token.is_some() {
+        expire(&app, token.as_deref().unwrap()).await;
         return Err("DeepSeek 登录已失效，请重新登录。".into());
     }
     let status_text = status.canonical_reason().unwrap_or("").to_string();
+    let response_headers: HashMap<String, String> = response
+        .headers()
+        .iter()
+        .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
+        .collect();
+    app.emit("llm-proxy-stream-start", serde_json::json!({"requestId":request.request_id,"status":status.as_u16(),"statusText":status_text,"headers":response_headers})).map_err(|_| "无法传递模型响应状态")?;
 
     if !status.is_success() {
         let text = response

@@ -58,3 +58,24 @@
 .composer-queue span {color:var(--muted-foreground);flex:none;}
 .composer-queue p {flex:1;min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .composer-queue button {padding:3px 5px;cursor:pointer;color:var(--muted-foreground);}
+
+/* Harness 1017 model-label slot: visual tag only; IDs and catalog stay stable. */
+.harness-model-label { display: inline-flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; }
+.harness-model-badge { display: inline-flex; align-items: center; padding: 0 4px; border-radius: 4px; font-size: 10px; line-height: 16px; font-weight: 500; color: #4771c2; background: #4771c214; }
+.dark .harness-model-badge { color: #a9c3ff; background: #4771c22b; }
+/* Harness model picker structure, mapped to the EAiCoding palette. */
+.harness-model-menu { display:flex;flex-direction:column;max-height:min(360px,calc(100vh - 96px));overflow:hidden; }
+.harness-model-small-icon { display:none; }
+.harness-model-cell,.harness-model-option { box-sizing:border-box;display:flex;align-items:center;gap:6px;width:100%;min-height:34px;padding:5px 7px;border:0;border-radius:6px;background:transparent;color:var(--foreground);font:13px/18px var(--font-sans);text-align:left;cursor:pointer; }
+.harness-model-cell:hover,.harness-model-cell:focus-visible,.harness-model-option:hover,.harness-model-option:focus-visible { background:var(--accent);outline:none; }
+.harness-model-cell-value { flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;color:var(--muted-foreground); }
+.harness-model-cell-value .harness-model-label { max-width:100%; }
+.harness-model-cell-value .harness-model-label > span:first-child { overflow:hidden;text-overflow:ellipsis; }
+.harness-model-effort { flex-shrink:1000;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted-foreground); }
+.harness-model-groups { min-height:0;overflow:auto;overscroll-behavior:contain; }
+.harness-model-group-label { padding:8px 7px 3px;color:var(--muted-foreground);font-size:11px;line-height:18px; }
+.harness-model-option > :first-child { flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis; }
+.harness-model-option .harness-model-label > span:first-child { overflow:hidden;text-overflow:ellipsis; }
+.harness-model-empty { padding:12px 8px;font-size:12px;color:var(--muted-foreground); }
+.harness-model-search > button { display:flex;align-items:center;justify-content:center;width:24px;height:24px;flex:none;border:0;background:transparent;color:inherit;border-radius:50%;cursor:pointer; }
+@media (max-width:1000px) { .harness-model-name { max-width:210px; } }

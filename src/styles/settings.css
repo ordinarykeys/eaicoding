@@ -1,10 +1,11 @@
+:root { --window-chrome-top: 40px; --window-overlay-space: 60px; }
 /* Harness settings shell proportions, using the app's warm theme tokens. */
 .settings-overlay {
   position: fixed;
-  inset: 0;
+  inset: var(--window-chrome-top) 0 0;
   z-index: 50;
   background: rgb(0 0 0 / 24%);
-  backdrop-filter: blur(2px);
+  backdrop-filter: none;
   -webkit-app-region: no-drag;
 }
 
@@ -14,7 +15,7 @@
   top: 50%;
   z-index: 50;
   width: min(800px, calc(100vw - 48px));
-  height: min(800px, calc(100dvh - 48px));
+  height: min(800px, calc(100dvh - 2 * var(--window-overlay-space)));
   transform: translate(-50%, -50%);
   overflow: hidden;
   border: 0;
@@ -168,7 +169,7 @@
 }
 
 @media (max-width: 600px) {
-  .settings-dialog { width: calc(100vw - 24px); height: calc(100dvh - 48px); border-radius: 20px; }
+  .settings-dialog { width: calc(100vw - 24px); height: calc(100dvh - 2 * var(--window-overlay-space)); border-radius: 20px; }
   .settings-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .settings-nav { padding: 18px 16px 12px; gap: 12px; }
   .settings-title { padding: 0; }
@@ -240,3 +241,8 @@
 .settings-coding-row > div:first-child { flex:1;min-width:0; }
 .settings-coding-row p { margin:4px 0 0;color:var(--muted-foreground);font-size:12px;line-height:18px; }
 .settings-coding-row .settings-busy-selector { flex:none;width:auto;height:36px;gap:12px;padding:0 14px;border:0;background:var(--secondary);font-weight:400; }
+.provider-discovery-dialog { position:fixed;z-index:1110;top:50%;left:50%;transform:translate(-50%,-50%);width:min(520px,calc(100vw - 40px));max-height:calc(100vh - 80px);overflow:auto;padding:24px;border-radius:16px;background:var(--popover);color:var(--foreground);box-shadow:0 12px 48px #0003; }
+.provider-discovery-dialog header,.provider-discovery-dialog footer { display:flex;align-items:center;justify-content:space-between;gap:10px; }
+.provider-discovery-dialog h2 { font-size:16px;font-weight:500; }
+.provider-discovery-dialog p { font-size:12px;color:var(--muted-foreground); }
+.provider-discovery-dialog header button { border:0;background:none;cursor:pointer; }

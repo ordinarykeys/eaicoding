@@ -16,4 +16,7 @@ export function deepSeekModelLabel(id: string): string {
   return DEEPSEEK_MODELS.find(model => model.id === normalizeDeepSeekModel(id))!.name;
 }
 
-export const deepSeekModelCatalog = () => DEEPSEEK_MODELS.map(({ id, ownedBy }) => ({ id, ownedBy }));
+export const deepSeekModelCatalog = () => DEEPSEEK_MODELS.map(({ id, name, ownedBy }) => ({
+  id, name, ownedBy, reasoning: true, defaultEffort: "high",
+  thinkingLevelMap: { off: "off", minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
+}));

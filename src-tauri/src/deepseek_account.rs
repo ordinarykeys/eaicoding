@@ -66,6 +66,7 @@ struct StoredGrant {
     contact: Option<String>,
 }
 struct Grant {
+    notice_scope: String,
     token: String,
     name: Option<String>,
     contact: Option<String>,
@@ -143,6 +144,7 @@ impl Inner {
                     return Err(STORAGE_ERROR.into());
                 }
                 self.grant = Some(Grant {
+                    notice_scope: random_secret(),
                     token,
                     name: stored.name,
                     contact: stored.contact,
@@ -382,6 +384,159 @@ pub async fn deepseek_account_details(
     publish(&app);
     Ok(details)
 }
+// Notice identity is an opaque, in-memory sign-in scope, never the grant itself.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountNotice {
+    order_id: String,
+    title: Option<String>,
+    message: String,
+    expires_at: String,
+    #[serde(flatten)]
+    metadata: serde_json::Map<String, Value>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountNoticeBatch {
+    account_id: String,
+    bonuses: Vec<AccountNotice>,
+}
+fn parse_notices(value: Value) -> Result<Vec<AccountNotice>, String> {
+    let rows = value.as_array().ok_or("账号通知格式无效")?;
+    let mut notices = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for row in rows {
+        let order_id = row["order_id"].as_str().ok_or("通知标识无效")?.to_string();
+        let title = match row.get("title") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) => Some(s.clone()),
+            _ => return Err("通知标题无效".into()),
+        };
+        let expires_at = match row.get("expires_at") {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(s)) => s.clone(),
+            _ => return Err("通知时间无效".into()),
+        };
+        let message = row["msg"].as_str().ok_or("通知内容无效")?.to_string();
+        // Metadata stays opaque JSON and is never used to manufacture notice copy.
+        let metadata = ["campaign", "amount", "currency", "granted_at"]
+            .into_iter()
+            .filter_map(|k| row.get(k).map(|v| (k.to_string(), v.clone())))
+            .collect();
+        if seen.insert(order_id.clone()) {
+            notices.push(AccountNotice {
+                order_id,
+                title,
+                message,
+                expires_at,
+                metadata,
+            });
+        }
+    }
+    Ok(notices)
+}
+#[tauri::command]
+pub async fn deepseek_account_notices(
+    app: AppHandle,
+    timezone_offset_seconds: Option<i32>,
+) -> Result<AccountNoticeBatch, String> {
+    let state = app.state::<AccountState>();
+    let (token, scope) = {
+        let mut inner = state.0.lock().await;
+        inner.load(&data_dir(&app)?).await?;
+        let grant = inner.grant.as_ref().ok_or("请先登录 DeepSeek")?;
+        (grant.token.clone(), grant.notice_scope.clone())
+    };
+    let payload = account_read(
+        PLATFORM,
+        "/api/v0/users/get_unnotified_bonuses",
+        &token,
+        timezone_offset_seconds.unwrap_or(0),
+    )
+    .await;
+    let payload = match payload {
+        Ok(value) => value,
+        Err(DetailError::Expired) => {
+            expire(&app, &token).await;
+            return Err("登录已失效".into());
+        }
+        Err(_) => return Err("账号通知暂不可用".into()),
+    };
+    let bonuses = parse_notices(payload)?;
+    let inner = state.0.lock().await;
+    if !inner
+        .grant
+        .as_ref()
+        .is_some_and(|g| g.notice_scope == scope)
+    {
+        return Err("账号已切换".into());
+    }
+    Ok(AccountNoticeBatch {
+        account_id: scope,
+        bonuses,
+    })
+}
+#[tauri::command]
+pub async fn deepseek_account_notice_ack(
+    app: AppHandle,
+    account_id: String,
+    order_id: String,
+) -> Result<bool, String> {
+    if order_id.len() > 4096 {
+        return Err("通知标识过长".into());
+    }
+    let state = app.state::<AccountState>();
+    let token = {
+        let inner = state.0.lock().await;
+        let Some(grant) = inner
+            .grant
+            .as_ref()
+            .filter(|g| g.notice_scope == account_id)
+        else {
+            return Ok(false);
+        };
+        grant.token.clone()
+    };
+    let response = ACCOUNT_HTTP
+        .post(format!("{PLATFORM}/api/v0/users/ack_bonus_notified"))
+        .headers(grant_headers(client_headers(0), &token)?)
+        .json(&json!({"order_id": order_id}))
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|_| "通知确认失败")?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        expire(&app, &token).await;
+        return Ok(false);
+    }
+    if !response.status().is_success() {
+        return Err("通知确认失败".into());
+    }
+    // Bound response size and decode the same business envelope as other account endpoints.
+    let mut response = response;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "通知确认失败")? {
+        if bytes.len() + chunk.len() > 262144 {
+            return Err("通知响应过大".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    match detail_payload(serde_json::from_slice(&bytes).map_err(|_| "通知响应无效")?) {
+        Ok(_) => Ok(state
+            .0
+            .lock()
+            .await
+            .grant
+            .as_ref()
+            .is_some_and(|g| g.notice_scope == account_id)),
+        Err(DetailError::Expired) => {
+            expire(&app, &token).await;
+            Ok(false)
+        }
+        Err(_) => Err("通知确认失败".into()),
+    }
+}
+
 async fn device_id(dir: &Path) -> Result<String, String> {
     let path = dir.join("deepseek-device-v1.json");
     match tokio::fs::read(&path).await {
@@ -610,6 +765,7 @@ async fn commit_authorization(
         )
         .await?;
         inner.grant = Some(Grant {
+            notice_scope: random_secret(),
             token,
             name,
             contact,
@@ -1031,11 +1187,15 @@ pub async fn deepseek_platform_close(app: AppHandle, id: String) -> Result<(), S
 
 /// Resize the single trusted renderer, avoiding a brief workspace flash before login.
 #[tauri::command]
-pub async fn deepseek_account_present(app: AppHandle) -> Result<(), String> {
-    let signed_in = deepseek_account_status(app.clone())
-        .await
-        .map(|v| v.signed_in)
-        .unwrap_or(false);
+pub async fn deepseek_account_present(
+    app: AppHandle,
+    workspace_mode: Option<bool>,
+) -> Result<(), String> {
+    let signed_in = workspace_mode.unwrap_or(false)
+        || deepseek_account_status(app.clone())
+            .await
+            .map(|v| v.signed_in)
+            .unwrap_or(false);
     if let Some(window) = app.get_webview_window("main") {
         window.set_fullscreen(false).map_err(|_| "无法调整窗口")?;
         window.unmaximize().map_err(|_| "无法调整窗口")?;
@@ -1050,7 +1210,7 @@ pub async fn deepseek_account_present(app: AppHandle) -> Result<(), String> {
             .map_err(|_| "无法调整窗口")?;
         window
             .set_size(if signed_in {
-                tauri::LogicalSize::new(1280, 820)
+                tauri::LogicalSize::new(1120, 720)
             } else {
                 tauri::LogicalSize::new(600, 700)
             })

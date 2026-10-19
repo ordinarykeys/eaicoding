@@ -20,7 +20,8 @@ function Balance({ wallets, loading }: { wallets: Wallet[] | null | undefined; l
   return <span className="account-amount">{wallets.map(wallet => <span key={wallet.currency}>{formatBalance(wallet.balance, wallet.currency === "CNY" ? "¥" : "$")}</span>)}</span>;
 }
 export default function AccountCenter() {
-  const { view, details, detailsLoading, detailsError, refreshDetails } = useDeepSeekAccount();
+  const { view, details, detailsLoading, detailsError, refreshDetails, start } = useDeepSeekAccount();
+  if (!view.signedIn) return <section className="account-center" aria-label="个人中心"><h2 className="settings-section-title">DeepSeek 账号</h2><p className="account-muted">登录后可查看账号、用量和充值信息。</p><button type="button" className="account-link account-primary" onClick={() => void start()}>登录 DeepSeek</button></section>;
   return <section className="account-center" aria-label="个人中心">
     <div className="account-identity-card">
       <div className="account-identity"><AccountAvatar large /><div><strong>{view.name || view.contact || "已登录 DeepSeek"}</strong><span className="account-muted">{view.contact || (detailsLoading ? "加载中…" : "已通过 DeepSeek 官方授权")}</span></div></div>

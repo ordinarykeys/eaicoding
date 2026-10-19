@@ -1,3 +1,4 @@
+import { webTools } from "./web-tools";
 import { invoke } from "@tauri-apps/api/core";
 import { abortError, invokeTask, throwIfAborted } from "@/services/tauri-task";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -4419,6 +4420,7 @@ const pickSavePath: RegisteredTool = {
 // ---------------------------------------------------------------------------
 
 export const TOOL_REGISTRY: Record<string, RegisteredTool> = {
+  ...Object.fromEntries(webTools.map(tool => [tool.definition.name, tool])),
   [listWorkspaceFiles.definition.name]: listWorkspaceFiles,
   [scanEasyLanguageEnv.definition.name]: scanEasyLanguageEnv,
   [searchJingyiModule.definition.name]: searchJingyiModule,
@@ -4454,7 +4456,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = Object.values(TOOL_REGISTRY).m
 /** Public entrypoint used by the agent runner. Always returns a ToolResult,
  *  even for invalid tool names — this lets the model see the failure on the
  *  next turn and recover (instead of crashing the whole run). */
-const READ_ONLY_TOOLS = new Set(["list_workspace_files", "scan_easy_language_env", "search_jingyi_module", "search_user_modules", "ask_user_choice", "read_file", "parse_efile", "export_efile_to_ecode", "summarize_ecode_project", "analyze_ecode_project", "inspect_ecode_context", "update_plan", "pick_file"]);
+const READ_ONLY_TOOLS = new Set(["web_search", "web_fetch", "list_workspace_files", "scan_easy_language_env", "search_jingyi_module", "search_user_modules", "ask_user_choice", "read_file", "parse_efile", "export_efile_to_ecode", "summarize_ecode_project", "analyze_ecode_project", "inspect_ecode_context", "update_plan", "pick_file"]);
 export const isReadOnlyTool = (name: string) => READ_ONLY_TOOLS.has(name);
 
 const TOOL_EXEC_TIMEOUT_MS = 420_000;

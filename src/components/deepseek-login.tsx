@@ -5,7 +5,7 @@ import { CircleNotch, Minus, X } from "@phosphor-icons/react";
 import { useDeepSeekAccount } from "@/stores/deepseek-account";
 import "@/styles/login.css";
 
-export function DeepSeekLogin() {
+export function DeepSeekLogin({ onConfigureModels }: { onConfigureModels?: () => void }) {
   const { view, busy, start, cancel, logout } = useDeepSeekAccount();
   const [feedback, setFeedback] = useState("");
   const waiting = view.phase === "waiting-browser";
@@ -42,6 +42,7 @@ export function DeepSeekLogin() {
         </> : <>
           <button className="login-primary" disabled={busy} onClick={() => { setFeedback(""); void start(); }}>{view.phase === "failed" ? "重新登录 DeepSeek" : "登录 DeepSeek"}</button>
           <p className="login-caption">使用 DeepSeek 账号在官方浏览器页面授权</p>
+          {onConfigureModels && <button type="button" className="login-text-button" onClick={onConfigureModels}>使用其他模型提供商</button>}
           {view.error && <button className="login-back" disabled={busy} onClick={() => { setFeedback(""); void logout(); }}>清除登录状态后重试</button>}
         </>}
       </div>

@@ -1,8 +1,11 @@
-export type LLMProvider = "deepseek";
+export type LLMProvider = string;
 
-export type LLMProtocol = "openai-chat-completions";
+export type LLMProtocol = "openai-chat-completions" | "openai-responses" | "anthropic-messages" | "google-generative-ai" | "bedrock-converse" | "pi-ai";
 
 export interface LLMConfig {
+  profileId?: string;
+  reasoningEffort?: string;
+  modelMetadata?: Record<string, unknown>;
   provider: LLMProvider;
   protocol: LLMProtocol;
   /** Kept for legacy provider fixtures; desktop account requests leave this empty. */
@@ -29,6 +32,7 @@ export interface ChatMessage {
   /** Pending tool calls emitted by assistant during this turn */
   toolCalls?: ToolCall[];
   /** Provider replay state for the current tool sequence; never shown as answer text. */
+  providerMessage?: unknown;
   reasoningContent?: string;
   /** Optional structured trace produced by the agent runner */
   agentTrace?: AgentTrace;
@@ -50,7 +54,7 @@ export interface StreamCallbacks {
   onToken: (token: string) => void;
   /** Provider-supplied reasoning deltas, rendered separately from the answer. */
   onReasoningToken?: (token: string) => void;
-  onComplete: (fullText: string, metadata?: { reasoningContent?: string }) => void;
+  onComplete: (fullText: string, metadata?: { reasoningContent?: string; providerMessage?: unknown }) => void;
   onError: (error: Error) => void;
   /** Native provider tool call, when the upstream API supports function tools. */
   onToolCall?: (call: ToolCall) => void;
@@ -162,6 +166,7 @@ export interface AgentStep {
   index: number;
   /** Visible reasoning / answer tokens streamed from the assistant. */
   assistantText: string;
+  providerMessage?: unknown;
   reasoningContent?: string;
   /** Tool calls emitted by the assistant on this step (may be empty). */
   toolCalls: ToolCall[];

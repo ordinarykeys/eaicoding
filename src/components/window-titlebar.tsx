@@ -1,6 +1,7 @@
 import { type PointerEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useChatStore } from "@/stores/chat";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { CopySimple, Minus, Square, X } from "@phosphor-icons/react";
+import { CopySimple, Minus, Square, X, SidebarSimple, Plus } from "@phosphor-icons/react";
 
 type WindowResizeDirection =
   | "East"
@@ -101,7 +102,7 @@ export function WindowResizeHandles() {
   );
 }
 
-export function WindowTitlebar() {
+export function WindowTitlebar({ sidebarOpen, onToggleSidebar }: { sidebarOpen?: boolean; onToggleSidebar?: () => void }) {
   const { appWindow, isMaximized, refreshMaximized } = useMaximizedState();
 
   const minimize = () => {
@@ -123,12 +124,14 @@ export function WindowTitlebar() {
     <header
       data-tauri-drag-region
       onDoubleClick={toggleMaximize}
-      className="window-titlebar flex h-10 shrink-0 select-none items-center justify-between bg-background text-foreground"
+      data-window-chrome
+      className="window-titlebar flex h-10 shrink-0 select-none items-center justify-between text-foreground"
     >
       <div
         data-tauri-drag-region
         className="flex min-w-0 flex-1 items-center gap-2.5 px-3"
       >
+        {onToggleSidebar ? <div className="window-leading-controls no-window-drag"><button type="button" aria-label={sidebarOpen ? "收起侧栏" : "打开侧栏"} onClick={onToggleSidebar}><SidebarSimple size={18} /></button>{!sidebarOpen && <button type="button" aria-label="新建任务" onClick={() => useChatStore.getState().createSession()}><Plus size={18} /></button>}</div> : <>
         <img
           data-tauri-drag-region
           src="/icon.ico"
@@ -144,6 +147,7 @@ export function WindowTitlebar() {
             EAiCoding
           </div>
         </div>
+        </>}
       </div>
 
       <div className="no-window-drag flex h-full items-center">
