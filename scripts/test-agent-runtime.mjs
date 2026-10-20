@@ -306,10 +306,10 @@ try {
     if (cmd === 'llm_proxy_stream') {
       moduleRound++;
       const messages = args.request.body.messages;
-      assert(!JSON.stringify(messages).includes('auto_jingyi_') || messages.some(m => m.tool_calls?.some(c => c.function?.name === 'search_user_modules')));
+      assert(!messages.some(m => m.tool_calls?.some(c => c.id?.startsWith('auto_jingyi_'))), 'automatic lookup must not impersonate model tool calls');
       if (moduleRound === 1) {
         assert(messages[0].content.includes('鱼刺类.多线程6'));
-        assert(messages.some(m => m.role === 'tool' && m.content.includes('module_paths')));
+        assert(messages.some(m => m.role === 'user' && m.content.includes('应用自动预检工具结果') && m.content.includes('module_paths')));
         return response(JSON.stringify({ tool_calls: [{ name: 'generate_gui_project', arguments: { project: { windows: [] } } }, { name: 'compile_efile', arguments: { target_path: 'D:/fixture/login.e' } }] }));
       }
       return response('窗口已生成并编译通过：D:/fixture/login.exe');
@@ -419,6 +419,62 @@ try {
   assert(progress.every(item => item.trace.toolCallCount === 2));
   clearMocks();
   console.log('PASS fragmented/interleaved native tools, Reasoner replay, all-round tool definitions and immediate Markdown completion');
+
+  // Exercise the actual official adapter through the runner, not the OpenAI route.
+  const messagesResponse = (round, calls = [], text = '') => {
+    const events = [{ type: 'message_start', message: { stop_reason: null } }];
+    events.push({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: `思考 ${round}：` } });
+    events.push({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '依据工具结果继续。' } });
+    events.push({ type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: `signature-${round}` } });
+    events.push({ type: 'content_block_stop', index: 0 });
+    for (const [index, call] of calls.entries()) {
+      events.push({ type: 'content_block_start', index: index + 1, content_block: { type: 'tool_use', id: call.id, name: call.name, input: {} } });
+      events.push({ type: 'content_block_delta', index: index + 1, delta: { type: 'input_json_delta', partial_json: JSON.stringify(call.arguments) } });
+      events.push({ type: 'content_block_stop', index: index + 1 });
+    }
+    if (text) {
+      events.push({ type: 'content_block_start', index: calls.length + 1, content_block: { type: 'text', text } });
+      events.push({ type: 'content_block_stop', index: calls.length + 1 });
+    }
+    events.push({ type: 'message_delta', delta: { stop_reason: calls.length ? 'tool_use' : 'end_turn' } }, { type: 'message_stop' });
+    return sse(events);
+  };
+  let thinkingRounds = 0;
+  const officialConfig = { ...config, protocol: 'anthropic-messages', baseUrl: 'https://api.deepseek.com/anthropic', reasoningEffort: 'high' };
+  api.useSettingsStore.setState({ userModules: [uploaded] });
+  mockIPC((cmd, args) => {
+    if (cmd === 'generate_gui_project') { assert.deepEqual(args.modulePaths, [uploadedPath]); return { success: true, output_path: 'D:/fixture/thinking.e' }; }
+    if (cmd === 'compile_efile') return { success: true, output_path: 'D:/fixture/thinking.exe' };
+    if (cmd !== 'llm_proxy_stream') throw new Error(cmd);
+    const body = args.request.body;
+    assert.equal(body.thinking.type, 'enabled');
+    const assistant = body.messages.filter(message => message.role === 'assistant');
+    for (const message of assistant) assert(message.content.some(block => block.type === 'thinking'), 'DeepSeek rejects tool continuations missing thinking');
+    for (const [index, message] of assistant.entries()) assert.deepEqual(message.content[0], { type: 'thinking', thinking: `思考 ${index + 1}：依据工具结果继续。`, signature: `signature-${index + 1}` });
+    if (++thinkingRounds === 1) {
+      assert.equal(assistant.length, 0, 'automatic knowledge lookup is runtime evidence, never a fabricated model tool call');
+      assert(JSON.stringify(body.messages).includes(uploadedPath));
+      return messagesResponse(1, [{ id: 'thinking-plan', name: 'update_plan', arguments: { items: [{ title: '生成并编译窗口', status: 'in_progress' }] } }]);
+    }
+    if (thinkingRounds === 2) return messagesResponse(2, [
+      { id: 'thinking-gui', name: 'generate_gui_project', arguments: { project: { windows: [] } } },
+      { id: 'thinking-compile', name: 'compile_efile', arguments: { target_path: 'D:/fixture/thinking.e' } },
+    ]);
+    assert.equal(thinkingRounds, 3);
+    return messagesResponse(3, [], '窗口已生成并编译通过：D:/fixture/thinking.exe');
+  }, { shouldMockEvents: true });
+  const thinkingTrace = await api.startAgentRun({ config: officialConfig, userInput: '帮我写多线程窗口', history: [], sessionId: null }).promise;
+  assert.equal(thinkingTrace.outcome, 'answer', thinkingTrace.finalAnswer);
+  assert.equal(thinkingRounds, 3);
+  assert.equal(thinkingTrace.steps[0].toolCalls[0].name, 'search_user_modules');
+  api.useSettingsStore.setState({ userModules: [] });
+  clearMocks();
+  const persisted = JSON.parse(JSON.stringify(thinkingTrace));
+  const oldThinkingMessage = { id: 'old-thinking', role: 'assistant', content: persisted.finalAnswer, reasoningContent: '', agentTrace: persisted };
+  const recovered = api.shapeHistoryForLLM([oldThinkingMessage, { id: 'new-1', role: 'assistant', content: '后续答复一' }, { id: 'new-2', role: 'assistant', content: '后续答复二' }])[0];
+  assert.equal(recovered.reasoningContent, '思考 3：依据工具结果继续。', 'older summarized replies recover durable reasoning from saved trace');
+  assert.deepEqual(recovered.providerMessage, persisted.steps.at(-1).providerMessage);
+  console.log('PASS official thinking: automatic module evidence, two native tool rounds, compilation and persisted older-history recovery');
 
   for (const malformed of [
     sse([delta({ tool_calls: [{ index: 0, id: 'partial', function: { name: 'update_plan', arguments: '{"items":' } }] })]),

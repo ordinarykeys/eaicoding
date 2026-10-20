@@ -98,6 +98,8 @@ try {
       };
       let data;
       if (latest.url.includes("/messages")) {
+        // Real official thinking responses carry reasoning before text/tools.
+        const offset = official ? 1 : 0;
         data =
           sse({
             type: "message_start",
@@ -111,9 +113,15 @@ try {
               usage: { input_tokens: 8, output_tokens: 0 },
             },
           }) +
+          (official ?
+            sse({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "先检查" } }) +
+            sse({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "真实工具证据。" } }) +
+            sse({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "fixture-" } }) +
+            sse({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "signed" } }) +
+            sse({ type: "content_block_stop", index: 0 }) : "") +
           sse({
             type: "content_block_start",
-            index: 0,
+            index: offset,
             content_block:
               mode === "tool"
                 ? { type: "tool_use", ...tool }
@@ -121,7 +129,7 @@ try {
           }) +
           sse({
             type: "content_block_delta",
-            index: 0,
+            index: offset,
             delta:
               mode === "tool"
                 ? {
@@ -130,7 +138,7 @@ try {
                   }
                 : { type: "text_delta", text: "已完成。" },
           }) +
-          sse({ type: "content_block_stop", index: 0 }) +
+          sse({ type: "content_block_stop", index: offset }) +
           sse({
             type: "message_delta",
             delta: {
@@ -451,6 +459,25 @@ try {
   assert.equal(replay[0].signature, "fixture-signature");
   assert.equal(replay[1].text, "执行当前工具");
   assert.equal(replay[2].id, "current-call", "stale replay cannot replace live tool calls");
+  mode = "tool";
+  const thinkingTool = await run("deepseek-messages");
+  assert.ifError(thinkingTool.error);
+  assert.equal(thinkingTool.metadata.reasoningContent, "先检查真实工具证据。");
+  const thinkingHistory = JSON.parse(JSON.stringify([
+    { id: "thinking", role: "assistant", content: "", timestamp: 1, toolCalls: thinkingTool.calls, ...thinkingTool.metadata },
+    { id: "result", role: "tool", toolCallId: thinkingTool.calls[0].id, content: "保留真实结果", timestamp: 2 },
+  ]));
+  mode = "text";
+  assert.ifError((await run("deepseek-messages", thinkingHistory)).error);
+  assert.deepEqual(latest.body.messages[0].content[0], { type: "thinking", thinking: "先检查真实工具证据。", signature: "fixture-signed" });
+  for (const metadata of [undefined, { deepseekModel: "different-model", deepseekBlocks: thinkingTool.metadata.providerMessage.deepseekBlocks }, { deepseekModel: config.model, deepseekBlocks: "broken" }]) {
+    const degraded = JSON.parse(JSON.stringify(thinkingHistory));
+    degraded[0].providerMessage = metadata;
+    assert.ifError((await run("deepseek-messages", degraded)).error);
+    assert.deepEqual(latest.body.messages[0].content[0], { type: "thinking", thinking: "先检查真实工具证据。" }, "durable reasoning survives absent/foreign/malformed replay without reusing its signature");
+    assert.equal(latest.body.messages[0].content.at(-1).id, thinkingTool.calls[0].id);
+  }
+  console.log("PASS real signed thinking/tool SSE, JSON persistence and durable reasoning after native replay degrades");
   const beforeInvalid = latest;
   assert.match((await run("deepseek-messages", [replayHistory[1]])).error.message, /缺少对应调用/);
   assert.equal(latest, beforeInvalid, "reject unmatched tool history before network I/O");

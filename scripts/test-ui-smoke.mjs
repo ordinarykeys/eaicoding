@@ -1767,7 +1767,8 @@ try {
       )
       .messages.at(-1),
   );
-  assert.equal(storedReasoning.reasoningContent, "");
+  assert.equal(storedReasoning.reasoningContent, storedReasoning.agentTrace.steps.at(-1).reasoningContent,
+    "final reasoning must survive the cleared stream buffer for later model replay");
   assert.match(
     storedReasoning.agentTrace.steps.at(-1).reasoningContent,
     /等待用户提供具体需求/,

@@ -198,3 +198,13 @@ DeepSeek 错误解析只投影 JSON 错误消息并隐藏 Bearer / sk 凭据；H
 原生菜单回归：`npm run test:native-menu` 编译独立 identifier 的 WebView2 验证程序，使用临时浏览器数据目录；通过 Windows 原生菜单项坐标验证全部编辑动作、实际按键和 textarea 撤销/剪贴板历史，以及关于和退出取消。输入注入前检查前台进程，仅关闭本次创建的测试进程。`-SkipBuild` 只适用于已按测试配置编译的 debug 程序；不会启动安装器、读取真实凭据或调用付费模型。
 
 0.1.8 已通过上述前端、协议、Edge 和真实 Windows 菜单回归；release、NSIS 与便携包已完成，校验覆盖版本、x64 PE、SHA256、归档完整性、22 个工具文件及完整 Node/SDK 运行时许可。安装版与便携版主程序只存在 Tauri 包类型标记差异；从安装包实际解出的运行时已用隔离环境和假凭据启动验证。
+
+## 0.1.9 思考模式工具续调
+
+对照 Harness `687f282` 的 `llm-deepseek/src/serialize.ts`、`replay.ts`、`tests/runtime.e2e.ts` 和 `tests/adapter.e2e.ts`：推理文本是持久内容，签名是可降级且限定模型的原生重放信息。不能因原生重放失效而删除推理，更不能用空字符串或编造内容补齐思考。
+
+`runtimeToolResultToMessage` 将应用自动预查结果作为带调用参数、工具名和实际结果的用户上下文观察传入；执行轨迹仍记录真实调用。只有模型发起的工具使用原生 assistant/tool_result 协议。DeepSeek 基线替换保留思考块，文本和工具以当前消息为准；其他协议的整消息重放仍失效处理。
+
+最终回复从最后一个 answer 步骤保存推理，不使用已被 onStep 清空的界面缓冲。历史整理从已存的最终回答轨迹恢复旧记录，压缩正文时保留推理和重放；不会把之前工具步骤的推理冒充最终回答的推理。自检修正也记录 providerMessage。历史原本没有保存的思考不补造。
+
+`npm run test:model-providers` 使用含 thinking 初始内容、thinking_delta、分片 signature_delta 的官方协议 SSE，覆盖工具续调、JSON 恢复、丢失/损坏/跨模型重放，以及当前调用不能被旧调用覆盖。`npm run test:agent-runtime` 使用真实 DeepSeek Messages 适配器经过自动用户库检索、两轮原生工具和模拟编译交付，并验证旧回复的推理恢复。新增 fixture 在修复前分别复现了推理缺失和自动工具续调失败，全程不请求商业模型。

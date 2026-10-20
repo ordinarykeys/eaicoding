@@ -244,6 +244,19 @@ function toolResultToMessage(result: ToolResult): ChatMessage {
   };
 }
 
+/** Automatic preflight tools are application observations, not model-authored
+ *  assistant turns. Fabricated tool_use turns have no provider thinking state. */
+function runtimeToolResultToMessage(call: ToolCall, result: ToolResult): ChatMessage {
+  const observation = toolResultToMessage(result);
+  return {
+    id: observation.id, role: "user", timestamp: observation.timestamp,
+    content: `【应用自动预检工具结果】\n${JSON.stringify({
+      invocation: { name: call.name, arguments: call.arguments },
+      observation: JSON.parse(observation.content),
+    })}`,
+  };
+}
+
 /** Strip a non-textual / non-tool history field out so we can re-send messages
  *  to the LLM. We keep role + content for normal messages, and add structured
  *  envelopes for tool messages (so e.g. OpenAI/Anthropic adapters can map
@@ -253,6 +266,15 @@ function shapeHistoryForLLM(history: ChatMessage[]): ChatMessage[] {
   const recent = new Set(history.filter(m => m.role === "assistant").slice(-2).map(m => m.id));
   for (const message of history.slice(-24)) {
     if (message.role === "system") continue; // reset; we inject our own system
+    // Recover old saved sessions where onStep cleared the UI reasoning buffer.
+    // Only the final answer's state belongs to this aggregated assistant message.
+    const lastStep = message.agentTrace?.steps.at(-1);
+    const answerStep = lastStep?.finishReason === "answer" ? lastStep : undefined;
+    const replay = message.providerMessage ?? answerStep?.providerMessage;
+    // DeepSeek replays thinking separately from the summarized text. Whole-
+    // message replay from other adapters would undo the older-answer summary.
+    const keepReplay = !message.agentTrace || recent.has(message.id)
+      || (replay && typeof replay === "object" && "deepseekBlocks" in replay);
     shaped.push({
       id: message.id,
       role: message.role,
@@ -264,8 +286,8 @@ function shapeHistoryForLLM(history: ChatMessage[]): ChatMessage[] {
       toolCallId: message.toolCallId,
       toolName: message.toolName,
       toolCalls: message.toolCalls,
-      reasoningContent: !message.agentTrace || recent.has(message.id) ? message.reasoningContent : undefined,
-      providerMessage: !message.agentTrace || recent.has(message.id) ? message.providerMessage : undefined,
+      reasoningContent: message.reasoningContent || answerStep?.reasoningContent,
+      providerMessage: keepReplay ? replay : undefined,
     });
   }
   return shaped;
@@ -1881,14 +1903,6 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
       const stepStart = Date.now();
       const toolCalls = uploadedEcParseTargets.map(makeParseEFileToolCall);
       const assistantText = "先解析用户上传的 .ec 模块公开接口，再基于该模块写代码。";
-      conversation.push({
-        id: `a_${nanoid(8)}`,
-        role: "assistant",
-        content: JSON.stringify({ thought: assistantText, tool_calls: toolCalls }),
-        timestamp: Date.now(),
-        toolCalls,
-      });
-
       const toolResults: ToolResult[] = [];
       for (const call of toolCalls) {
         options.onStatus?.(`解析上传模块`);
@@ -1902,7 +1916,7 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
         });
         toolResults.push(result);
         rememberModules(call, result);
-      conversation.push(toolResultToMessage(result));
+        conversation.push(runtimeToolResultToMessage(call, result));
         trace.toolCallCount += 1;
       }
 
@@ -1933,14 +1947,6 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
       const stepStart = Date.now();
       const call = makeJingyiSearchToolCall(selectedEvidenceQuery);
       const assistantText = "根据用户已选择的实现方式，先补齐精易模块知识库证据。";
-      conversation.push({
-        id: `a_${nanoid(8)}`,
-        role: "assistant",
-        content: JSON.stringify({ thought: assistantText, tool_calls: [call] }),
-        timestamp: Date.now(),
-        toolCalls: [call],
-      });
-
       options.onStatus?.(`查询所选实现证据`);
       publishPendingTool(stepIndex, stepStart, assistantText, [call], [], call.id);
       const result = await executeTool(call.name, call.id, call.arguments, {
@@ -1951,7 +1957,7 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
         signal,
       });
       rememberModules(call, result);
-      conversation.push(toolResultToMessage(result));
+      conversation.push(runtimeToolResultToMessage(call, result));
       if (selectedImplementation) {
         conversation.push(makeSelectedImplementationReminder(selectedImplementation));
       }
@@ -1982,14 +1988,6 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
         ...makeJingyiSearchToolCall(options.userInput), name: "search_user_modules",
       } : makeJingyiSearchToolCall(options.userInput);
       const assistantText = availableModules.length ? "先查询已上传模块，获取任务相关的真实接口和依赖路径。" : "先查询本地精易模块知识库，获取真实 API 证据和可选实现路线。";
-      conversation.push({
-        id: `a_${nanoid(8)}`,
-        role: "assistant",
-        content: JSON.stringify({ thought: assistantText, tool_calls: [call] }),
-        timestamp: Date.now(),
-        toolCalls: [call],
-      });
-
       options.onStatus?.(availableModules.length ? "查询已上传模块" : "查询精易模块");
       publishPendingTool(stepIndex, stepStart, assistantText, [call], [], call.id);
       const result = await executeTool(call.name, call.id, call.arguments, {
@@ -2000,7 +1998,7 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
         signal,
       });
       rememberModules(call, result);
-      conversation.push(toolResultToMessage(result));
+      conversation.push(runtimeToolResultToMessage(call, result));
       trace.toolCallCount += 1;
 
       const step: AgentStep = {
@@ -2371,7 +2369,7 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
           stepIndex < maxSteps
         ) {
           answerSelfCheckRevisionCount += 1;
-          const step = { ...makeAnswerSelfCheckRetryStep(stepIndex, assistantText, stepStart), reasoningContent };
+          const step = { ...makeAnswerSelfCheckRetryStep(stepIndex, assistantText, stepStart), reasoningContent, providerMessage };
           trace.steps.push(step);
           options.onStep?.(step, trace);
 
@@ -2392,7 +2390,7 @@ export function startAgentRun(options: AgentRunOptions): AgentRunHandle {
           continue;
         }
         if (!selfCheck.pass) {
-          const step = { ...makeAnswerSelfCheckRetryStep(stepIndex, assistantText, stepStart), reasoningContent };
+          const step = { ...makeAnswerSelfCheckRetryStep(stepIndex, assistantText, stepStart), reasoningContent, providerMessage };
           trace.steps.push(step);
           options.onStep?.(step, trace);
 
@@ -2431,7 +2429,11 @@ ${selfCheck.followup}
           .find((call): call is ToolCall => Boolean(call));
         if (baselineCall) {
           parsed.toolCalls = [baselineCall];
-          providerMessage = undefined;
+          // DeepSeek rebuilds calls from this turn while replaying thinking.
+          // Other adapters can replay the whole native envelope, so invalidate it.
+          if (options.config.provider !== "deepseek" || options.config.protocol !== "anthropic-messages") {
+            providerMessage = undefined;
+          }
           parsed.thought =
             "改动导出的易语言源码前，先对原始 .e 工程执行未修改基线构建，确认工具链和依赖状态。";
         }
@@ -2659,7 +2661,7 @@ ${selfCheck.followup}
         stepIndex < maxSteps
       ) {
         answerSelfCheckRevisionCount += 1;
-        const step = { ...makeAnswerSelfCheckRetryStep(stepIndex, assistantText, stepStart), reasoningContent };
+        const step = { ...makeAnswerSelfCheckRetryStep(stepIndex, assistantText, stepStart), reasoningContent, providerMessage };
         trace.steps.push(step);
         options.onStep?.(step, trace);
 
@@ -2680,7 +2682,7 @@ ${selfCheck.followup}
         continue;
       }
       if (!selfCheck.pass) {
-        const step = { ...makeAnswerSelfCheckRetryStep(stepIndex, assistantText, stepStart), reasoningContent };
+        const step = { ...makeAnswerSelfCheckRetryStep(stepIndex, assistantText, stepStart), reasoningContent, providerMessage };
         trace.steps.push(step);
         options.onStep?.(step, trace);
 

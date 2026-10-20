@@ -21,6 +21,27 @@ type Block = {
   content?: string;
 };
 
+/** Like Harness, reasoning is durable content; signatures are model-specific replay metadata. */
+function thinkingBlocks(message: ChatMessage, model: string): Block[] {
+  if (message.role !== "assistant") return [];
+  const saved = message.providerMessage as { deepseekModel?: string; deepseekBlocks?: unknown } | undefined;
+  const native: Block[] = Array.isArray(saved?.deepseekBlocks)
+    ? saved.deepseekBlocks.filter((block): block is Block =>
+        block?.type === "thinking" && typeof block.thinking === "string")
+    : [];
+  const nativeReasoning = native.map(block => block.thinking).join("");
+  // Older sessions may only have the native blocks. Never discard their text
+  // just because the signature is unusable after a model switch.
+  if (native.length && (!message.reasoningContent || message.reasoningContent === nativeReasoning)) {
+    return native.map(block => ({
+      type: "thinking", thinking: block.thinking,
+      ...(saved?.deepseekModel === model && typeof block.signature === "string"
+        ? { signature: block.signature } : {}),
+    }));
+  }
+  return message.reasoningContent ? [{ type: "thinking", thinking: message.reasoningContent }] : [];
+}
+
 /** Keep the server's useful validation message without dumping response bodies or credentials. */
 function errorDetail(text: string): string {
   let detail = "";
@@ -50,9 +71,6 @@ export class DeepSeekMessagesProvider extends BaseLLMProvider {
     try {
       const history: { role: string; content: Block[] }[] = [];
       for (const message of messages.filter((m) => m.role !== "system")) {
-        const saved = message.providerMessage as
-          | { deepseekBlocks?: Block[]; deepseekModel?: string }
-          | undefined;
         const content: Block[] =
           message.role === "tool"
             ? [
@@ -63,10 +81,7 @@ export class DeepSeekMessagesProvider extends BaseLLMProvider {
                 },
               ]
             : [
-                // Replay only provider-owned thinking/signatures. Text and calls
-                // come from the current history, including synthesized tool turns.
-                ...(message.role === "assistant" && saved?.deepseekModel === this.config.model
-                  ? saved.deepseekBlocks?.filter(b => b.type === "thinking").map(b => ({ ...b })) ?? [] : []),
+                ...thinkingBlocks(message, this.config.model),
                 ...(message.content
                   ? [{ type: "text", text: message.content }]
                   : []),

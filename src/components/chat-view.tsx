@@ -411,7 +411,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
       updateMessage(sid, assistantMsgId, {
         content: finalContent,
         providerMessage: trace.steps.at(-1)?.finishReason === "answer" ? trace.steps.at(-1)?.providerMessage : undefined,
-        reasoningContent: reasoningBuffer,
+        reasoningContent: trace.steps.at(-1)?.finishReason === "answer" ? trace.steps.at(-1)?.reasoningContent : reasoningBuffer,
         isStreaming: false,
         agentTrace: trace,
         activeToolCallId: undefined,
@@ -738,9 +738,13 @@ const MessageBubble = memo(function MessageBubble({
   const trace = message.agentTrace;
   const pendingChoice = !isUser ? trace?.pendingUserChoice : undefined;
   const displayContent = message.content;
+  // Settled reasoning is saved both on the message (replay) and the final
+  // trace step (execution history). Render that final step only once.
+  const additionalReasoning = message.reasoningContent !== trace?.steps.at(-1)?.reasoningContent
+    ? message.reasoningContent : undefined;
   const reasoning = [
     ...(trace?.steps.map(step => step.reasoningContent).filter(Boolean) ?? []),
-    message.reasoningContent,
+    additionalReasoning,
   ].filter(Boolean).join("\n\n");
 
   return (
