@@ -208,3 +208,13 @@ DeepSeek 错误解析只投影 JSON 错误消息并隐藏 Bearer / sk 凭据；H
 最终回复从最后一个 answer 步骤保存推理，不使用已被 onStep 清空的界面缓冲。历史整理从已存的最终回答轨迹恢复旧记录，压缩正文时保留推理和重放；不会把之前工具步骤的推理冒充最终回答的推理。自检修正也记录 providerMessage。历史原本没有保存的思考不补造。
 
 `npm run test:model-providers` 使用含 thinking 初始内容、thinking_delta、分片 signature_delta 的官方协议 SSE，覆盖工具续调、JSON 恢复、丢失/损坏/跨模型重放，以及当前调用不能被旧调用覆盖。`npm run test:agent-runtime` 使用真实 DeepSeek Messages 适配器经过自动用户库检索、两轮原生工具和模拟编译交付，并验证旧回复的推理恢复。新增 fixture 在修复前分别复现了推理缺失和自动工具续调失败，全程不请求商业模型。
+
+## 0.1.10 会话与队列回归
+
+对照 Harness `687f282` 的 QueueDock、submission-policy 和 ReasoningRow：运行状态按会话读取，单条排队直接预览，多条默认折叠，指定发送使用 steer；本项目还允许停止后直接启动指定队列消息。
+
+`npm run test:ui` 的 IPC fixture 按 requestId 保存独立 SSE 状态，可以同时维持两个真实适配器请求。覆盖新任务不继承思考状态、并行输出归属、停止隔离、两种完成顺序、后台自动续队和会话草稿；还检查配置读取期间创建新任务、删除运行中任务和迟到事件。队列回归覆盖原位编辑、删除、指定插话、空输入 Ctrl+Enter 发送全部及停止后的指定发送。长连续推理在 960/1120 宽度、折叠/展开、右侧工作区开关下均检查 viewport 与页面的 scrollWidth，不能只隐藏全局滚动条。
+
+截图 `.tmp/ui-validation/harness-queue-single.png` 展示生产样式下的单条队列。通用流式滚动回归仍检查代码节点复用、高度不收缩、跟随不倒退和上翻保留阅读位置；模拟测试不评估真实商业模型延迟。
+
+0.1.10 已通过生产前端构建、Agent runtime、模型协议与 Edge 全流程回归。Windows release、NSIS 和便携包已构建；校验通过版本、x64 PE、归档完整性、SHA256、22 个工具文件、第三方许可及完整模型运行时。安装版与便携版主程序只存在 Tauri 包类型标记差异，实际解包的 Node/SDK 已在隔离环境用假凭据成功启动。

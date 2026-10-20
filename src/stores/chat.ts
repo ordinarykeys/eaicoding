@@ -42,7 +42,7 @@ export const useChatStore = create<ChatState>()(
         set((s) => ({
           sessions: [
             session,
-            ...s.sessions.filter((item) => item.messages.length > 0),
+            ...s.sessions,
           ],
           activeSessionId: id,
         }));

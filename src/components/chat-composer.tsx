@@ -6,10 +6,11 @@ import { useSettingsStore } from "@/stores/settings";
 
 import { ModelPicker } from "./model-picker";
 
-export function ChatComposer({ value, onChange, onSend, onStop, running, files, onAttach, onRemove, onNewChat, focusKey }: {
+export function ChatComposer({ value, onChange, onSend, onStop, running, hasQueue = false, files, onAttach, onRemove, onNewChat, focusKey }: {
   value: string; onChange: (value: string) => void; onSend: (alternate?: boolean) => void; onStop: () => void; running: boolean;
   files: string[]; onAttach: () => void; onRemove: (path: string) => void; onNewChat: () => void;
   focusKey?: string | null;
+  hasQueue?: boolean;
 }) {
   const editor = useRef<HTMLTextAreaElement>(null);
   const menuRoot = useRef<HTMLDivElement>(null);
@@ -49,10 +50,10 @@ export function ChatComposer({ value, onChange, onSend, onStop, running, files, 
     <div className="harness-composer" data-composer-card>
       {files.length > 0 && <div className="harness-composer-files">{files.map(path => <div className="harness-file-chip" key={path}><FilePlus size={14} /><span>{path.split(/[\\/]/).pop()}</span><button type="button" aria-label={`移除附件 ${path.split(/[\\/]/).pop()}`} onClick={() => onRemove(path)}><X size={12} /></button></div>)}</div>}
       <textarea ref={editor} className="harness-composer-input" aria-label="消息输入框" value={value} rows={1}
-        placeholder={files.length ? "说明这些易语言工程或模块需要怎样修改…" : "描述易语言功能、窗口界面或需要修复的问题…"}
+        placeholder={hasQueue && running ? "Cmd/Ctrl+Enter 插话发送全部排队消息" : files.length ? "说明这些易语言工程或模块需要怎样修改…" : "描述易语言功能、窗口界面或需要修复的问题…"}
         onChange={event => onChange(event.target.value)} onKeyDown={event => {
           if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-          if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (!empty) onSend(event.ctrlKey || event.metaKey); }
+          if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (!empty || (hasQueue && (event.ctrlKey || event.metaKey))) onSend(event.ctrlKey || event.metaKey); }
         }} />
       <div className="harness-composer-row">
         <div className="harness-composer-tools">

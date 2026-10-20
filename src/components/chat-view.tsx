@@ -1,5 +1,6 @@
 import { useDeepSeekAccount } from "@/stores/deepseek-account";
 import { useChatScroll } from "@/hooks/use-chat-scroll";
+import { QueueDock, type QueuedMessage } from "@/components/queue-dock";
 import { ChatComposer } from "@/components/chat-composer";
 import { TrajectoryView } from "@/components/trajectory-view";
 import { TurnReview } from "@/components/turn-review";
@@ -47,7 +48,7 @@ import { CodeBlock } from "@/components/code-block";
 import { DocumentPreview } from "@/components/document-preview";
 import { DocumentPreviewContext, documentLanguage, fileName, isTextPath, type PreviewDocument } from "@/components/document-preview-context";
 import { useChatStore, useActiveSession } from "@/stores/chat";
-import { setChatPersistThrottling } from "@/stores/chat-storage";
+import { flushChatStorage, setChatPersistThrottling } from "@/stores/chat-storage";
 import { useSettingsStore } from "@/stores/settings";
 import { startAgentRun } from "@/services/agent/runner";
 import { DesktopPet, emitPet } from "@/components/desktop-pet";
@@ -92,13 +93,32 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
   const [conversationView, setConversationView] = useState<"chat" | "trajectory">("chat");
   const [reviewMessageId, setReviewMessageId] = useState<string | null>(null);
 
-  const [input, setInput] = useState("");
-  const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [pendingMessages, setPendingMessages] = useState<{ id: string; sessionId: string; text: string; files: string[] }[]>([]);
-  const drainQueue = useRef(true);
-  const activeRunSession = useRef<string | null>(null);
-  const [statusLine, setStatusLine] = useState<string | null>(null);
+  // A run and its inbox belong to one conversation, including while hidden.
+  const runs = useRef(new Map<string, {
+    status: string | null;
+    handle: ReturnType<typeof startAgentRun> | null;
+    accountRequest: boolean;
+    cancelled: boolean;
+    cancelFrame?: () => void;
+  }>());
+  const [runRevision, setRunRevision] = useState(0);
+  const mountedRef = useRef(false);
+  const notifyRuns = useCallback(() => { if (mountedRef.current) setRunRevision(value => value + 1); }, []);
+  const blockedQueues = useRef(new Set<string>());
+  const [pendingMessages, setPendingMessages] = useState<QueuedMessage[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, { text: string; files: string[] }>>({});
+  const draftKey = activeSessionId ?? "";
+  const input = drafts[draftKey]?.text ?? "";
+  const attachedFiles = drafts[draftKey]?.files ?? [];
+  const setInput = useCallback((text: string) => setDrafts(previous => ({ ...previous,
+    [draftKey]: { text, files: previous[draftKey]?.files ?? [] },
+  })), [draftKey]);
+  const setAttachedFiles = useCallback((value: string[] | ((files: string[]) => string[])) => setDrafts(previous => ({ ...previous,
+    [draftKey]: { text: previous[draftKey]?.text ?? "", files: typeof value === "function" ? value(previous[draftKey]?.files ?? []) : value },
+  })), [draftKey]);
+  const currentRun = activeSessionId ? runs.current.get(activeSessionId) : undefined;
+  const isStreaming = Boolean(currentRun);
+  const statusLine = currentRun?.status;
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | null>(null);
   const [previewVisible, setPreviewVisible] = useState(false);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("start");
@@ -107,20 +127,14 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
   const workspace = session?.workspacePath ?? defaultWorkspace;
   const [openedDocuments, setOpenedDocuments] = useState<PreviewDocument[]>([]);
   const [previewWidth, setPreviewWidth] = useState(520);
-  // P4 approval gate + pause/resume UI state.
-  const [isPaused, setIsPaused] = useState(false);
   const { rootRef: scrollRootRef, contentRef: scrollContentRef, showLatest, toLatest } = useChatScroll(activeSessionId, session?.messages);
-  const abortRef = useRef<(() => void) | null>(null);
-  const accountRequestRef = useRef(false);
   const accountSignedIn = useDeepSeekAccount(s => s.view.signedIn);
-  useEffect(() => { if (!accountSignedIn && accountRequestRef.current) abortRef.current?.(); }, [accountSignedIn]);
-  // Handle to the running agent, for pause()/resume().
-  const runHandleRef = useRef<ReturnType<typeof startAgentRun> | null>(null);
-  const streamBufRef = useRef("");
-  const sendingRef = useRef(false);
-  const rafRef = useRef<number | null>(null);
-  const mountedRef = useRef(false);
-  const isStreamingRef = useRef(isStreaming);
+  useEffect(() => {
+    if (accountSignedIn) return;
+    for (const run of runs.current.values()) {
+      if (run.accountRequest) { run.cancelled = true; run.handle?.abort(); }
+    }
+  }, [accountSignedIn]);
   const sessionTitle = session ? getSessionDisplayTitle(session) : "EAiCoding";
   const visibleMessages = useMemo(
     () => session?.messages.filter((m) => m.role !== "tool") ?? [],
@@ -168,20 +182,32 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
   }, [previewItems, selectedPreviewId]);
 
   useEffect(() => {
-    isStreamingRef.current = isStreaming;
-  }, [isStreaming]);
-
-  useEffect(() => {
     mountedRef.current = true;
+    const unsubscribe = useChatStore.subscribe((state, previous) => {
+      if (state.sessions === previous.sessions) return;
+      const ids = new Set(state.sessions.map(item => item.id));
+      for (const [sid, run] of runs.current) {
+        if (ids.has(sid)) continue;
+        run.cancelled = true; run.cancelFrame?.(); run.handle?.abort();
+        runs.current.delete(sid);
+        blockedQueues.current.delete(sid);
+      }
+      if (state.sessions.length < previous.sessions.length) {
+        setPendingMessages(items => items.filter(item => ids.has(item.sessionId)));
+        setDrafts(items => Object.fromEntries(Object.entries(items).filter(([id]) => !id || ids.has(id))));
+        notifyRuns();
+      }
+    });
     return () => {
       mountedRef.current = false;
-      abortRef.current?.();
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
+      unsubscribe();
+      for (const run of runs.current.values()) {
+        run.cancelled = true; run.cancelFrame?.(); run.handle?.abort();
       }
+      runs.current.clear();
+      setChatPersistThrottling(false);
     };
-  }, []);
+  }, [notifyRuns]);
 
   useEffect(() => {
     setOpenedDocuments([]); setSelectedPreviewId(null); setWorkspaceTab("start"); setWorkspaceFocused(false); setPreviewVisible(false);
@@ -190,7 +216,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
 
   useEffect(() => { void invoke<string>("default_workspace").then(setDefaultWorkspace).catch(error => toast.error(`读取默认工作区失败：${String(error)}`)); }, []);
   const chooseWorkspace = async () => {
-    if (isStreamingRef.current) return;
+    if (useChatStore.getState().activeSessionId && runs.current.has(useChatStore.getState().activeSessionId!)) return;
     try {
       const selected = await openDialog({ directory: true, multiple: false, title: "选择会话工作区", ...(workspace ? { defaultPath: workspace } : {}) });
       if (typeof selected !== "string") return;
@@ -248,7 +274,7 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
       const message = err instanceof Error ? err.message : String(err);
       toast.error(t("chat.attachFailed", { message }));
     }
-  }, [isStreaming, t]);
+  }, [isStreaming, t, setAttachedFiles]);
 
   // ------------------------------------------------------------------------
   // Send / agent loop
@@ -262,298 +288,196 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
   }) => {
     const text = options.text.trim();
     const files = options.files ?? [];
-    const targetSessionId = options.sessionId ?? useChatStore.getState().activeSessionId;
     if (!text && files.length === 0) return;
-    if (isStreamingRef.current || sendingRef.current) {
-      return;
-    }
-    sendingRef.current = true;
-
-    let config;
-    try {
-      config = await resolveLLMConfig();
-    } catch (err) {
-      sendingRef.current = false;
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error(`读取模型配置失败：${message}`);
-      return;
-    }
-    if (!mountedRef.current) { sendingRef.current = false; return; }
-    if (!config) {
-      sendingRef.current = false;
-      toast.error("请先登录 DeepSeek 或添加模型提供商");
-      return;
-    }
-
-    options.onAccepted?.();
-    let userContent = text;
-
-    if (files.length > 0) {
-      const fileLines = files.map((fp) => {
-        const ext = fp.split(".").pop()?.toLowerCase() ?? "";
-        if (ext === "e") return `- ${fp} （.e 二进制源程序）`;
-        if (ext === "ec") return `- ${fp} （.ec 模块文件，可用 parse_efile 读取公开接口）`;
-        if (ext === "epl") return `- ${fp} （.epl 文本源码）`;
-        return `- ${fp}`;
-      }).join("\n");
-      const fileBlock = `用户上传了以下本地文件，请用工具读取后再分析（.e/.ec 用 parse_efile，文本文件用 read_file）：\n${fileLines}`;
-      userContent = text ? `${fileBlock}\n\n用户补充说明：${text}` : fileBlock;
-    }
-
-    let sid = targetSessionId;
-    if (!sid) {
-      sid = createSession(deriveSessionTitle(userContent));
-    }
-
-    toLatest();
-    setIsStreaming(true);
-    drainQueue.current = false;
-    isStreamingRef.current = true;
-    activeRunSession.current = sid;
-    // Coalesce persistence writes during streaming; the finally block below
-    // disables throttling, which flushes the final answer to disk.
-    setChatPersistThrottling(true);
-    setStatusLine("正在思考");
-    emitPet({ state: "thinking", bubble: "Thinking..." });
-
-    appendMessage(sid, { role: "user", content: userContent });
-    const assistantMsgId = appendMessage(sid, {
-      role: "assistant",
-      content: "",
-      isStreaming: true,
-    });
-
-    const sessionSnapshot = useChatStore
-      .getState()
-      .sessions.find((sx) => sx.id === sid);
-    const runWorkspace = sessionSnapshot?.workspacePath ?? workspace;
-    if (runWorkspace && !sessionSnapshot?.workspacePath) useChatStore.getState().setWorkspace(sid, runWorkspace);
-    const history = (sessionSnapshot?.messages ?? []).filter(
-      (m) => m.id !== assistantMsgId,
-    );
-    const historyWithoutTrigger = history.slice(0, -1);
-
-    streamBufRef.current = "";
-
+    const store = useChatStore.getState();
+    const sid = options.sessionId ?? store.activeSessionId ?? store.createSession(deriveSessionTitle(text));
+    if (runs.current.has(sid) || !useChatStore.getState().sessions.some(item => item.id === sid)) return;
+    // Lock before awaiting configuration: only this conversation becomes busy.
+    const run = { status: "正在思考" as string | null, handle: null as ReturnType<typeof startAgentRun> | null,
+      accountRequest: false, cancelled: false, cancelFrame: () => {} };
+    runs.current.set(sid, run);
+    blockedQueues.current.add(sid);
+    notifyRuns();
+    let assistantMsgId: string | undefined;
     let acceptingTokens = true;
+    let streamBuffer = "";
     let reasoningBuffer = "";
+    let tokenFrame: number | null = null;
+    const visible = () => mountedRef.current && useChatStore.getState().activeSessionId === sid;
     const cancelTokenFrame = () => {
-      if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+      if (tokenFrame !== null) { cancelAnimationFrame(tokenFrame); tokenFrame = null; }
     };
+    run.cancelFrame = cancelTokenFrame;
     const publishTokens = () => {
-      if (rafRef.current !== null) return;
-      rafRef.current = requestAnimationFrame(() => {
-        rafRef.current = null;
-        if (!acceptingTokens || !mountedRef.current) return;
-        updateMessage(sid!, assistantMsgId, {
-          content: streamBufRef.current, reasoningContent: reasoningBuffer, isStreaming: true,
-        });
+      if (tokenFrame !== null) return;
+      tokenFrame = requestAnimationFrame(() => {
+        tokenFrame = null;
+        if (!acceptingTokens || run.cancelled || !mountedRef.current || !assistantMsgId) return;
+        updateMessage(sid, assistantMsgId, { content: streamBuffer, reasoningContent: reasoningBuffer, isStreaming: true });
       });
     };
-    accountRequestRef.current = !config.profileId;
-    const handle = startAgentRun({
-      config,
-      mode: "agent",
-      userInput: userContent,
-      history: historyWithoutTrigger,
-      sessionId: sid,
-      workspaceRoot: runWorkspace,
-      allowDialog: true,
-      onStatus: (status) => setStatusLine(status.replace(/^第 \d+\/\d+ 步：/, "").replace("模型推理中", "正在思考").replace(/^执行 ([a-z_]+)/, (_match, name: string) => toolLabel(name))),
-      onAssistantStart: () => {
-        cancelTokenFrame(); streamBufRef.current = ""; reasoningBuffer = "";
-        updateMessage(sid!, assistantMsgId, { content: "", reasoningContent: "", activeToolCallId: undefined });
-      },
-      onAssistantToken: (token) => {
-        if (!acceptingTokens) return;
-        streamBufRef.current += token;
-        publishTokens();
-      },
-      onReasoningToken: (token) => {
-        if (!acceptingTokens) return;
-        reasoningBuffer += token;
-        publishTokens();
-      },
-      onToolProgress: (_step, runningTrace, activeToolCallId) => {
-        cancelTokenFrame();
-        streamBufRef.current = ""; reasoningBuffer = "";
-        updateMessage(sid!, assistantMsgId, { content: "", reasoningContent: "", isStreaming: true, agentTrace: runningTrace, activeToolCallId });
-      },
-      onStep: (step, runningTrace) => {
-        cancelTokenFrame();
-        streamBufRef.current = ""; reasoningBuffer = "";
-        updateMessage(sid!, assistantMsgId, {
-          content: renderTraceForBubble(runningTrace, /*isFinal*/ false),
-          reasoningContent: "",
-          isStreaming: true,
-          agentTrace: runningTrace,
-          activeToolCallId: undefined,
-        });
-        if (step.finishReason === "tool_call") {
-          emitPet({
-            state: "building",
-            bubble: "处理中",
-          });
-        } else if (step.finishReason === "error") {
-          emitPet({ state: "error", bubble: "Error" });
-        }
-      },
-    });
-    abortRef.current = handle.abort;
-    runHandleRef.current = handle;
-
     try {
+      let config;
+      try { config = await resolveLLMConfig(); }
+      catch (error) { throw new Error(`读取模型配置失败：${error instanceof Error ? error.message : String(error)}`); }
+      if (!mountedRef.current || run.cancelled || !useChatStore.getState().sessions.some(item => item.id === sid)) return;
+      if (!config) { if (visible()) toast.error("请先登录 DeepSeek 或添加模型提供商"); return; }
+      run.accountRequest = !config.profileId;
+      if (run.accountRequest && !useDeepSeekAccount.getState().view.signedIn) return;
+      const userContent = messageWithFiles(text, files);
+      options.onAccepted?.();
+      if (visible()) { toLatest(); emitPet({ state: "thinking", bubble: "Thinking..." }); }
+      setChatPersistThrottling(true);
+      appendMessage(sid, { role: "user", content: userContent });
+      assistantMsgId = appendMessage(sid, { role: "assistant", content: "", isStreaming: true });
+      const sessionSnapshot = useChatStore.getState().sessions.find(item => item.id === sid);
+      const runWorkspace = sessionSnapshot?.workspacePath ?? defaultWorkspace;
+      if (runWorkspace && !sessionSnapshot?.workspacePath) useChatStore.getState().setWorkspace(sid, runWorkspace);
+      const history = (sessionSnapshot?.messages ?? []).filter(message => message.id !== assistantMsgId).slice(0, -1);
+      const handle = startAgentRun({
+        config, mode: "agent", userInput: userContent, history, sessionId: sid, workspaceRoot: runWorkspace, allowDialog: true,
+        onStatus: status => {
+          if (run.cancelled) return;
+          run.status = status.replace(/^第 \d+\/\d+ 步：/, "").replace("模型推理中", "正在思考").replace(/^执行 ([a-z_]+)/, (_match, name: string) => toolLabel(name));
+          notifyRuns();
+        },
+        onAssistantStart: () => {
+          cancelTokenFrame(); streamBuffer = ""; reasoningBuffer = "";
+          updateMessage(sid, assistantMsgId!, { content: "", reasoningContent: "", activeToolCallId: undefined });
+        },
+        onAssistantToken: token => { if (acceptingTokens && !run.cancelled) { streamBuffer += token; publishTokens(); } },
+        onReasoningToken: token => { if (acceptingTokens && !run.cancelled) { reasoningBuffer += token; publishTokens(); } },
+        onToolProgress: (_step, runningTrace, activeToolCallId) => {
+          cancelTokenFrame(); streamBuffer = ""; reasoningBuffer = "";
+          updateMessage(sid, assistantMsgId!, { content: "", reasoningContent: "", isStreaming: true, agentTrace: runningTrace, activeToolCallId });
+        },
+        onStep: (step, runningTrace) => {
+          cancelTokenFrame(); streamBuffer = ""; reasoningBuffer = "";
+          updateMessage(sid, assistantMsgId!, { content: renderTraceForBubble(runningTrace, false), reasoningContent: "", isStreaming: true,
+            agentTrace: runningTrace, activeToolCallId: undefined });
+          if (visible()) {
+            if (step.finishReason === "tool_call") emitPet({ state: "building", bubble: "处理中" });
+            else if (step.finishReason === "error") emitPet({ state: "error", bubble: "Error" });
+          }
+        },
+      });
+      run.handle = handle;
+      notifyRuns();
       const trace = await handle.promise;
-      drainQueue.current = trace.outcome === "answer";
-      acceptingTokens = false;
-      cancelTokenFrame();
-      const finalContent = renderTraceForBubble(trace, /*isFinal*/ true);
+      if (trace.outcome === "answer" && !run.cancelled) blockedQueues.current.delete(sid);
+      acceptingTokens = false; cancelTokenFrame();
       updateMessage(sid, assistantMsgId, {
-        content: finalContent,
+        content: renderTraceForBubble(trace, true),
         providerMessage: trace.steps.at(-1)?.finishReason === "answer" ? trace.steps.at(-1)?.providerMessage : undefined,
         reasoningContent: trace.steps.at(-1)?.finishReason === "answer" ? trace.steps.at(-1)?.reasoningContent : reasoningBuffer,
-        isStreaming: false,
-        agentTrace: trace,
-        activeToolCallId: undefined,
+        isStreaming: false, agentTrace: trace, activeToolCallId: undefined,
       });
-
-      if (!mountedRef.current) return;
+      if (!visible()) return;
       if (trace.outcome === "answer") {
-        if (trace.toolCallCount > 0) {
-          toast.success("处理完成");
-          emitPet({ state: "happy", bubble: "Done" });
-        } else {
-          emitPet({ state: "happy", bubble: "Answered" });
-        }
+        if (trace.toolCallCount > 0) toast.success("处理完成");
+        emitPet({ state: "happy", bubble: trace.toolCallCount > 0 ? "Done" : "Answered" });
       } else if (trace.outcome === "max_steps") {
-        toast.warning("本轮已达到执行上限");
-        emitPet({ state: "notification", bubble: "Max steps" });
+        toast.warning("本轮已达到执行上限"); emitPet({ state: "notification", bubble: "Max steps" });
       } else if (trace.outcome === "aborted") {
-        toast.info("已停止");
-        emitPet({ state: "idle", bubble: "Stopped" });
+        toast.info("已停止"); emitPet({ state: "idle", bubble: "Stopped" });
       } else if (trace.outcome === "needs_input") {
-        toast.info("请选择一个方案继续");
-        emitPet({ state: "notification", bubble: "请选择" });
+        toast.info("请选择一个方案继续"); emitPet({ state: "notification", bubble: "请选择" });
       } else {
-        toast.error("执行失败，请查看回复中的原因");
-        emitPet({ state: "error", bubble: "Error" });
+        toast.error("执行失败，请查看回复中的原因"); emitPet({ state: "error", bubble: "Error" });
       }
-    } catch (err) {
-      acceptingTokens = false;
-      drainQueue.current = false;
-      cancelTokenFrame();
-      const message = err instanceof Error ? err.message : String(err);
-      updateMessage(sid, assistantMsgId, {
-        content: `执行已中断：${message}`,
-        reasoningContent: reasoningBuffer,
-        isStreaming: false,
-        activeToolCallId: undefined,
-      });
-      if (mountedRef.current) {
-        toast.error(`执行已中断：${message}`);
-        emitPet({ state: "error", bubble: "Interrupted" });
-      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (assistantMsgId) updateMessage(sid, assistantMsgId, { content: `执行已中断：${message}`, reasoningContent: reasoningBuffer,
+        isStreaming: false, activeToolCallId: undefined });
+      if (visible()) { toast.error(message); emitPet({ state: "error", bubble: "Interrupted" }); }
     } finally {
-      acceptingTokens = false;
-      abortRef.current = null;
-      sendingRef.current = false;
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-
-      // Disabling throttling flushes the pending (final) state to disk, so a
-      // refresh right after completion still restores the finished answer.
-      setChatPersistThrottling(false);
-      if (mountedRef.current) {
-        setIsStreaming(false);
-        isStreamingRef.current = false;
-        setStatusLine(null);
-        setIsPaused(false);
-      }
-      // Clear the pause state when a run finishes or stops.
-      runHandleRef.current = null;
+      acceptingTokens = false; cancelTokenFrame();
+      if (runs.current.get(sid) === run) runs.current.delete(sid);
+      setChatPersistThrottling(runs.current.size > 0);
+      void flushChatStorage();
+      notifyRuns();
     }
-  }, [
-    resolveLLMConfig,
-    toLatest,
-    createSession,
-    appendMessage,
-    updateMessage,
-    workspace,
-    t,
-  ]);
+  }, [resolveLLMConfig, toLatest, appendMessage, updateMessage, defaultWorkspace, notifyRuns]);
+
+  const steerMessages = useCallback((items: QueuedMessage[]) => {
+    if (!items.length) return false;
+    const sid = items[0].sessionId;
+    const run = runs.current.get(sid);
+    const correction = items.map(item => messageWithFiles(item.text, item.files)).join("\n\n");
+    if (run?.cancelled || !run?.handle?.steer(correction)) { toast.error("当前暂时无法插话，请稍后重试"); return false; }
+    appendMessage(sid, { role: "user", content: correction });
+    const ids = new Set(items.map(item => item.id));
+    setPendingMessages(previous => previous.filter(item => !ids.has(item.id)));
+    return true;
+  }, [appendMessage]);
 
   const handleSend = useCallback(async (alternate = false) => {
     const text = input.trim();
     const files = attachedFiles;
-    if (!text && files.length === 0) return;
-    if (isStreamingRef.current || sendingRef.current) {
-      const sessionId = useChatStore.getState().activeSessionId;
-      if (!sessionId) return;
+    const sessionId = useChatStore.getState().activeSessionId;
+    if (!text && files.length === 0) {
+      if (alternate && sessionId) steerMessages(pendingMessages.filter(item => item.sessionId === sessionId));
+      return;
+    }
+    if (sessionId && runs.current.has(sessionId)) {
       const preferred = useSettingsStore.getState().busyEnterBehavior;
       const behavior = alternate ? preferred === "queue" ? "steer" : "queue" : preferred;
-      const correction = [files.length ? `用户补充了本地文件，请用工具读取：\n${files.map(path => `- ${path}`).join("\n")}` : "", text].filter(Boolean).join("\n\n");
-      if (behavior === "steer" && activeRunSession.current === sessionId && runHandleRef.current?.steer(correction)) {
-        appendMessage(sessionId, { role: "user", content: correction });
-      } else {
-        setPendingMessages(previous => [...previous, { id: crypto.randomUUID(), sessionId, text, files }]);
-      }
+      const item = { id: crypto.randomUUID(), sessionId, text, files };
+      if (behavior !== "steer" || !steerMessages([item])) setPendingMessages(previous => [...previous, item]);
       setInput(""); setAttachedFiles([]);
       return;
     }
-    drainQueue.current = true;
-    await runAgentMessage({ text, files, onAccepted: () => { setInput(""); setAttachedFiles([]); } });
-  }, [input, attachedFiles, runAgentMessage, appendMessage]);
+    const targetSessionId = sessionId ?? createSession(deriveSessionTitle(text));
+    if (!sessionId) setDrafts(previous => ({ ...previous, "": { text: "", files: [] },
+      [targetSessionId]: previous[draftKey] ?? { text: input, files },
+    }));
+    await runAgentMessage({ text, files, sessionId: targetSessionId, onAccepted: () => setDrafts(previous => {
+      const draft = previous[targetSessionId];
+      // Configuration can resolve after the user has switched tasks or typed more.
+      if (!draft || draft.text.trim() !== text || draft.files !== files) return previous;
+      return { ...previous, [targetSessionId]: { text: "", files: [] } };
+    }) });
+  }, [input, attachedFiles, runAgentMessage, steerMessages, pendingMessages, setInput, setAttachedFiles, draftKey, createSession]);
 
   useEffect(() => {
-    if (isStreaming || sendingRef.current || !drainQueue.current) return;
-    const next = pendingMessages.find(item => item.sessionId === activeSessionId);
-    if (!next) return;
-    drainQueue.current = false;
-    void runAgentMessage({ text: next.text, files: next.files, sessionId: next.sessionId, onAccepted: () => {
-      setPendingMessages(previous => previous.filter(item => item.id !== next.id));
-    } });
-  }, [pendingMessages, isStreaming, activeSessionId, runAgentMessage]);
+    const visited = new Set<string>();
+    for (const next of pendingMessages) {
+      if (visited.has(next.sessionId)) continue;
+      visited.add(next.sessionId);
+      if (runs.current.has(next.sessionId) || blockedQueues.current.has(next.sessionId)) continue;
+      void runAgentMessage({ ...next, onAccepted: () => setPendingMessages(previous => previous.filter(item => item.id !== next.id)) });
+    }
+  }, [pendingMessages, runRevision, runAgentMessage]);
+
+  const sendQueuedMessage = useCallback(async (item: QueuedMessage) => {
+    if (runs.current.has(item.sessionId)) { steerMessages([item]); return; }
+    // The dock action is busy until admission, rather than for the whole run.
+    await new Promise<void>(resolve => {
+      void runAgentMessage({ ...item, onAccepted: () => {
+        setPendingMessages(previous => previous.filter(entry => entry.id !== item.id));
+        resolve();
+      } }).finally(resolve);
+    });
+  }, [runAgentMessage, steerMessages]);
 
   const handleAgentChoice = useCallback(async (choice: string, request: AgentUserChoiceRequest) => {
     const question = request.question.trim();
-    const text = [
-      `我选择：${choice}`,
-      question ? `对应问题：${question}` : "",
-      "请按这个选择继续完成上一轮任务。",
-    ].filter(Boolean).join("\n");
+    const text = [`我选择：${choice}`, question ? `对应问题：${question}` : "", "请按这个选择继续完成上一轮任务。"].filter(Boolean).join("\n");
     await runAgentMessage({ text, files: [] });
   }, [runAgentMessage]);
 
   const handleStop = useCallback(() => {
-    drainQueue.current = false;
-    abortRef.current?.();
-    abortRef.current = null;
-    setStatusLine("正在停止...");
+    const sid = useChatStore.getState().activeSessionId;
+    if (!sid) return;
+    const run = runs.current.get(sid);
+    if (!run) return;
+    blockedQueues.current.add(sid);
+    run.cancelled = true; run.status = "正在停止...";
+    run.cancelFrame?.(); run.handle?.abort();
+    notifyRuns();
     emitPet({ state: "idle", bubble: "Stopping" });
-  }, []);
+  }, [notifyRuns]);
 
-  const handleTogglePause = useCallback(() => {
-    const handle = runHandleRef.current;
-    if (!handle) return;
-    if (handle.isPaused()) {
-      handle.resume();
-      setIsPaused(false);
-      emitPet({ state: "building", bubble: "继续" });
-    } else {
-      handle.pause();
-      setIsPaused(true);
-      emitPet({ state: "idle", bubble: "已暂停" });
-    }
-  }, []);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
   const handleReview = useCallback((id: string) => { setReviewMessageId(id); setWorkspaceTab("review"); setPreviewVisible(true); }, []);
 
   return (
@@ -567,9 +491,9 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
           <header className="flex items-center gap-2 px-4 py-2.5 shrink-0">
             <ConversationMenu session={session} title={sessionTitle} workspace={workspace} busy={isStreaming} onChooseWorkspace={() => void chooseWorkspace()} />
             {statusLine && (
-              <span className="text-xs text-muted-foreground hidden md:flex items-center gap-1">
+              <span className="chat-run-status text-xs text-muted-foreground hidden md:flex items-center gap-1">
                 <GearSix className="h-3.5 w-3.5 animate-spin" />
-                {statusLine}
+                <span>{statusLine}</span>
               </span>
             )}
             {activePreview && (!previewVisible || workspaceTab !== "code") && <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground" aria-label="代码预览" onClick={() => { setWorkspaceTab("code"); setPreviewVisible(true); }}><Code size={16} /></Button>}
@@ -630,11 +554,13 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
           </ScrollArea>
 
           <div className="chat-composer-host relative shrink-0">
-            {pendingMessages.some(item => item.sessionId === activeSessionId) && <div className="composer-queue" aria-label="待发送消息">{pendingMessages.filter(item => item.sessionId === activeSessionId).map(item => <div key={item.id}><span>排队中</span><p>{item.text || item.files.map(fileName).join("、")}</p><button type="button" aria-label="立即发送排队消息" disabled={isStreaming} onClick={() => { drainQueue.current = true; setPendingMessages(previous => [...previous]); }}>发送</button><button type="button" aria-label="编辑排队消息" onClick={() => { setInput(item.text); setAttachedFiles(item.files); setPendingMessages(previous => previous.filter(entry => entry.id !== item.id)); }}>编辑</button><button type="button" aria-label="取消排队消息" onClick={() => setPendingMessages(previous => previous.filter(entry => entry.id !== item.id))}><X size={13} /></button></div>)}</div>}
+            <QueueDock key={activeSessionId} items={pendingMessages.filter(item => item.sessionId === activeSessionId)} running={isStreaming}
+              onSend={sendQueuedMessage} onRemove={id => setPendingMessages(previous => previous.filter(item => item.id !== id))}
+              onEdit={(id, text) => setPendingMessages(previous => previous.map(item => item.id === id ? { ...item, text } : item))} />
             {showLatest && <button type="button" className="chat-jump-latest" onClick={toLatest}><CaretDown size={14} />回到最新</button>}
-            <ChatComposer value={input} onChange={setInput} onSend={alternate => void handleSend(alternate)} onStop={handleStop} running={isStreaming}
+            <ChatComposer value={input} onChange={setInput} onSend={alternate => void handleSend(alternate)} onStop={handleStop} running={isStreaming} hasQueue={pendingMessages.some(item => item.sessionId === activeSessionId)}
               files={attachedFiles} onAttach={() => void handleAttachFile()} onRemove={path => setAttachedFiles(files => files.filter(file => file !== path))}
-              onNewChat={() => { createSession(); setInput(""); setAttachedFiles([]); }}
+              onNewChat={() => { createSession(); }}
               focusKey={activeSessionId} />
           </div>
         </div>
@@ -661,6 +587,16 @@ export function ChatView({ sidebarOpen, onToggleSidebar, settingsOpen = false }:
 
     </DocumentPreviewContext.Provider>
   );
+}
+
+function messageWithFiles(text: string, files: string[]): string {
+  if (!files.length) return text;
+  const lines = files.map(path => {
+    const ext = path.split(".").pop()?.toLowerCase();
+    const hint = ext === "e" ? " （.e 二进制源程序）" : ext === "ec" ? " （.ec 模块文件，可用 parse_efile 读取公开接口）" : ext === "epl" ? " （.epl 文本源码）" : "";
+    return `- ${path}${hint}`;
+  }).join("\n");
+  return `用户上传了以下本地文件，请用工具读取后再分析（.e/.ec 用 parse_efile，文本文件用 read_file）：\n${lines}${text ? `\n\n用户补充说明：${text}` : ""}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -756,7 +692,7 @@ const MessageBubble = memo(function MessageBubble({
     >
       <div
         className={cn(
-          "flex max-w-[85%] flex-col gap-2 text-sm leading-6",
+          "flex min-w-0 max-w-[85%] flex-col gap-2 text-sm leading-6",
           isUser
             ? "user-message-content items-end"
             : "assistant-message-content bg-transparent px-0 text-foreground",
@@ -794,7 +730,7 @@ const MessageBubble = memo(function MessageBubble({
 function ReasoningDisclosure({ text, running }: { text: string; running: boolean }) {
   const [open, setOpen] = useState(false);
   const summary = text.split(/\r?\n/).filter(line => line.trim()).at(-1)?.replace(/[*`#]/g, "");
-  return <div className="assistant-reasoning" data-running={running}>
+  return <div className="assistant-reasoning" data-running={running} data-expanded={open}>
     <button type="button" className="assistant-reasoning-toggle" aria-expanded={open} onClick={() => setOpen(value => !value)}>
       <Brain size={15} /><span>{running ? "思考中" : "思考过程"}</span>
       {!open && <span className="assistant-reasoning-summary">{summary}</span>}

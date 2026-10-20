@@ -52,11 +52,24 @@
   .harness-composer-row { gap: 6px; }
 }
 
-.composer-queue {max-width:952px;margin:0 auto 8px;padding:4px 12px;border-radius:10px;background:var(--card);font-size:12px;}
-.composer-queue > div {display:flex;align-items:center;gap:8px;padding:6px 0;}
-.composer-queue span {color:var(--muted-foreground);flex:none;}
-.composer-queue p {flex:1;min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.composer-queue button {padding:3px 5px;cursor:pointer;color:var(--muted-foreground);}
+.composer-queue { box-sizing: border-box; flex: none; width: calc(100% - 24px); max-width: 928px; margin: 0 auto -3px; padding: 0 4px; }
+.composer-queue-panel { position: relative; isolation: isolate; overflow: hidden; width: 100%; padding: 2px 0; border-radius: 12px 12px 0 0; background: color-mix(in srgb, var(--card) 88%, var(--secondary)); box-shadow: inset 0 .5px 0 var(--border), inset .5px 0 0 var(--border), inset -.5px 0 0 var(--border); }
+.composer-queue-header { display: flex; align-items: center; gap: 10px; width: 100%; height: 36px; padding: 4px 12px; text-align: left; cursor: pointer; font: 13px/24px var(--font-sans); }
+.composer-queue-header > span { flex: 1; min-width: 0; }
+.composer-queue-header > svg, .composer-queue-lead { flex: none; color: var(--muted-foreground); }
+.composer-queue-list { max-height: 180px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.composer-queue-row { box-sizing: border-box; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; padding: 4px 5px 4px 12px; }
+.composer-queue-row + .composer-queue-row { box-shadow: inset 0 1px 0 var(--border); }
+.composer-queue-preview { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--foreground); font: 13px/24px var(--font-sans); }
+.composer-queue-actions { display: flex; flex: none; align-items: center; gap: 10px; }
+.composer-queue-actions button { display: grid; flex: none; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--muted-foreground); cursor: pointer; }
+.composer-queue button:hover:not(:disabled) { background: var(--accent); }
+.composer-queue button:disabled { cursor: default; opacity: .45; }
+.composer-queue button:focus-visible, .composer-queue-editor:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.composer-queue-editor { flex: 1; min-width: 0; max-height: 120px; padding: 2px 4px; resize: vertical; border: .5px solid var(--border); border-radius: 4px; background: transparent; color: var(--foreground); font: 13px/24px var(--font-sans); }
+.composer-queue-files { display: flex; flex: 0 1 auto; gap: 4px; min-width: 0; max-width: 55%; overflow: hidden; }
+.composer-queue-files > span { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 180px; height: 24px; padding: 0 6px; overflow: hidden; white-space: nowrap; border: .5px solid var(--border); border-radius: 4px; color: var(--muted-foreground); font-size: 12px; }
+.composer-queue-files svg { flex: none; }
 
 /* Harness 1017 model-label slot: visual tag only; IDs and catalog stay stable. */
 .harness-model-label { display: inline-flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; }

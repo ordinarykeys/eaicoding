@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "0.1.9"
+version = "0.1.10"
 description = "易语言 AI Coding Agent"
 authors = ["eaicoding"]
 edition = "2021"

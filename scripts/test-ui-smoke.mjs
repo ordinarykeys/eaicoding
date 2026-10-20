@@ -48,6 +48,7 @@ window.isTauri = true;
 window.fixtureEmit = emit;
 window.fixtureIpc = [];
 window.fixtureRequests = [];
+window.fixtureStreams = new Map();
 window.fixtureAccountView = { signedIn: false, name: null, contact: null, phase: 'signed-out', error: null, attemptId: null };
 window.fixtureAccountNumber = 0;
 const writeSettings = idbStorage.setItem.bind(idbStorage);
@@ -146,7 +147,10 @@ mockIPC((cmd, args) => {
     if (window.fixtureStreamMode) {
       window.fixturePendingRequest = args.request;
       void emit("llm-proxy-stream-start",{requestId:args.request.requestId,status:200,statusText:"OK",headers:{"content-type":"text/event-stream"}});
-      return new Promise(resolve => { window.fixtureResolveStream = resolve; });
+      return new Promise(resolve => {
+        window.fixtureResolveStream = resolve;
+        window.fixtureStreams.set(args.request.requestId, { resolve, blocks: new Map() });
+      });
     }
     return { status: 200, statusText: 'OK', text: fixtureSse({type:'content_block_start',index:0,content_block:{type:'text',text:''}})+fixtureSse({type:'content_block_delta',index:0,delta:{type:'text_delta',text:'开发步骤已整理。'}})+fixtureSse({type:'content_block_stop',index:0})+fixtureSse({type:'message_delta',delta:{stop_reason:'end_turn'}})+fixtureSse({type:'message_stop'}) };
   }
@@ -166,19 +170,21 @@ window.__TAURI_INTERNALS__.invoke=(cmd,args,options)=>fixtureInvoke(cmd,cmd==='p
 mockWindows('main');
 const fixtureSse = value => 'data: ' + JSON.stringify(value) + '\\n\\n';
 window.fixtureMessageBlocks = new Map();
-window.fixtureEmitBlock=async(type,text)=>{
- const index=window.fixtureMessageBlocks.get(type)??window.fixtureMessageBlocks.size;
+window.fixtureEmitBlock=async(type,text,requestId=window.fixturePendingRequest.requestId)=>{
+ const blocks=window.fixtureStreams.get(requestId).blocks;
+ const index=blocks.get(type)??blocks.size;
  let data='';
- if(!window.fixtureMessageBlocks.has(type)){window.fixtureMessageBlocks.set(type,index);data+=fixtureSse({type:'content_block_start',index,content_block:type==='text'?{type:'text',text:''}:{type:'thinking',thinking:''}});}
+ if(!blocks.has(type)){blocks.set(type,index);data+=fixtureSse({type:'content_block_start',index,content_block:type==='text'?{type:'text',text:''}:{type:'thinking',thinking:''}});}
  data+=fixtureSse({type:'content_block_delta',index,delta:type==='text'?{type:'text_delta',text}:{type:'thinking_delta',thinking:text}});
- await emit('llm-proxy-stream-chunk',{requestId:window.fixturePendingRequest.requestId,text:data});
+ await emit('llm-proxy-stream-chunk',{requestId,text:data});
 };
-window.fixtureEmitToken=content=>window.fixtureEmitBlock('text',content);
-window.fixtureEmitReasoning=content=>window.fixtureEmitBlock('thinking',content);
-window.fixtureFinishStream=async()=>{
- const data=[...window.fixtureMessageBlocks.values()].map(index=>fixtureSse({type:'content_block_stop',index})).join('')+fixtureSse({type:'message_delta',delta:{stop_reason:'end_turn'}})+fixtureSse({type:'message_stop'});
- await emit('llm-proxy-stream-chunk',{requestId:window.fixturePendingRequest.requestId,text:data});
- window.fixtureResolveStream({status:200,statusText:'OK',text:''});window.fixtureStreamMode=false;window.fixtureMessageBlocks.clear();
+window.fixtureEmitToken=(content,requestId)=>window.fixtureEmitBlock('text',content,requestId);
+window.fixtureEmitReasoning=(content,requestId)=>window.fixtureEmitBlock('thinking',content,requestId);
+window.fixtureFinishStream=async(requestId=window.fixturePendingRequest.requestId,keepStreaming=false)=>{
+ const stream=window.fixtureStreams.get(requestId);
+ const data=[...stream.blocks.values()].map(index=>fixtureSse({type:'content_block_stop',index})).join('')+fixtureSse({type:'message_delta',delta:{stop_reason:'end_turn'}})+fixtureSse({type:'message_stop'});
+ await emit('llm-proxy-stream-chunk',{requestId,text:data});
+ window.fixtureStreamMode=keepStreaming;stream.resolve({status:200,statusText:'OK',text:''});window.fixtureStreams.delete(requestId);
 };
 await writeSettings('eaicoding-settings', JSON.stringify({ version: 5, state: {
   profiles: [{ id: 'default', name: 'DeepSeek', provider: 'deepseek', protocol: 'openai-chat-completions', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', models: [{ id: 'deepseek-chat' }, { id: 'deepseek-reasoner' }], apiKeyEncrypted: '', maxTokens: 8192, temperature: 0.2 }],
@@ -1878,6 +1884,209 @@ try {
   console.log(
     "PASS busy queue admission/drain, separate Stop, Ctrl+Enter steering and greeting-to-steering continuation",
   );
+
+  const originalSession = await page.evaluate(() => window.fixtureChat.getState().activeSessionId);
+  await page.getByRole("button", { name: "新建任务", exact: true }).click();
+  await page.evaluate(() => { window.fixtureStreamMode = true; window.fixturePendingRequest = null; });
+  await input.fill("你好");
+  await input.press("Enter");
+  await page.waitForFunction(() => Boolean(window.fixturePendingRequest));
+  await page.evaluate(() => {
+    window.fixtureQueueRequest = window.fixturePendingRequest.requestId;
+    return window.fixtureEmitReasoning("VeryLongReasoningWithoutSpaces".repeat(400));
+  });
+  const longReasoning = page.locator(".assistant-reasoning-toggle").last();
+  await longReasoning.waitFor();
+  const assertChatWidth = async () => {
+    const widths = await page.evaluate(() => {
+      const viewport = document.querySelector(".chat-message-scroll [data-radix-scroll-area-viewport]");
+      return { page: [document.documentElement.scrollWidth, document.documentElement.clientWidth], chat: [viewport.scrollWidth, viewport.clientWidth] };
+    });
+    for (const [label, [scroll, client]] of Object.entries(widths)) assert(scroll <= client + 1, label + " must not overflow horizontally: " + scroll + "/" + client);
+  };
+  for (const width of [1120, 960]) {
+    await page.setViewportSize({ width, height: 720 });
+    await assertChatWidth();
+    await longReasoning.click();
+    await assertChatWidth();
+    await longReasoning.click();
+    await page.getByRole("button", { name: "打开工作区", exact: true }).click();
+    await assertChatWidth();
+    await longReasoning.click();
+    await assertChatWidth();
+    await longReasoning.click();
+    await page.getByRole("button", { name: "收起工作区", exact: true }).click();
+  }
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await input.fill("你好呀");
+  await input.press("Enter");
+  const queueDock = page.getByLabel("待发送消息", { exact: true });
+  await queueDock.waitFor();
+  assert.equal(await queueDock.locator(".composer-queue-header").count(), 0, "one queued row has no count header");
+  assert.equal(await queueDock.getByRole("button", { name: "插话发送排队消息", exact: true }).isEnabled(), true);
+  assert.match(await input.getAttribute("placeholder"), /插话发送全部排队消息/);
+  await page.screenshot({ path: path.join(screenshots, "harness-queue-single.png") });
+  await input.fill("你好啊"); await input.press("Enter");
+  await input.fill("再见"); await input.press("Enter");
+  const queueHeader = queueDock.getByRole("button", { name: "3 条排队消息", exact: true });
+  await queueHeader.waitFor();
+  assert.equal(await queueHeader.getAttribute("aria-expanded"), "false");
+  await queueHeader.click();
+  await queueDock.getByRole("button", { name: "编辑排队消息", exact: true }).nth(1).click();
+  await queueDock.getByRole("textbox", { name: "编辑排队消息内容", exact: true }).fill("你是谁");
+  await queueDock.getByRole("button", { name: "保存排队消息", exact: true }).click();
+  await queueDock.getByRole("button", { name: "取消排队消息", exact: true }).nth(2).click();
+  await queueDock.getByRole("button", { name: "插话发送排队消息", exact: true }).nth(1).click();
+  assert.equal(await queueDock.locator(".composer-queue-row").count(), 1, "only the clicked row is steered");
+  assert.match(await queueDock.textContent(), /你好呀/);
+  await page.evaluate(async () => {
+    await window.fixtureEmitToken("旧回答");
+    await window.fixtureFinishStream(window.fixtureQueueRequest, true);
+  });
+  await page.waitForFunction(() => window.fixturePendingRequest.requestId !== window.fixtureQueueRequest);
+  assert.match(await page.evaluate(() => JSON.stringify(window.fixturePendingRequest.body.messages)), /你是谁/);
+  assert.doesNotMatch(await page.evaluate(() => JSON.stringify(window.fixturePendingRequest.body.messages)), /你好呀/);
+  await page.evaluate(async () => { await window.fixtureEmitToken("已按插话修改。"); await window.fixtureFinishStream(); });
+  await queueDock.waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
+  console.log("PASS Harness queue single/multiple layout, inline edit, remove, enabled selected-row steering, ordered drain and long reasoning width with workspace open/closed");
+
+  // Keep two native streams alive so every session transition is observable.
+  await page.getByRole("button", { name: "新建任务", exact: true }).click();
+  await page.evaluate(() => { window.fixtureStreamMode = true; window.fixturePendingRequest = null; window.fixtureSessionA = window.fixtureChat.getState().activeSessionId; });
+  await input.fill("你好"); await input.press("Enter");
+  await page.waitForFunction(() => Boolean(window.fixturePendingRequest));
+  await page.evaluate(() => { window.fixtureRequestA = window.fixturePendingRequest.requestId; });
+  await input.fill("你是谁"); await input.press("Enter");
+  await input.fill("A任务未发送草稿");
+  await page.getByRole("button", { name: "新建任务", exact: true }).click();
+  assert.equal(await page.locator(".chat-run-status").count(), 0, "a new session has no inherited thinking status");
+  assert.equal(await page.getByRole("button", { name: "停止生成", exact: true }).count(), 0);
+  assert.equal(await queueDock.count(), 0);
+  assert.equal(await input.inputValue(), "");
+  await page.evaluate(() => { window.fixtureSessionB = window.fixtureChat.getState().activeSessionId; window.fixturePendingRequest = null; });
+  await input.fill("你好啊"); await input.press("Enter");
+  await page.waitForFunction(() => Boolean(window.fixturePendingRequest));
+  await page.evaluate(async () => {
+    window.fixtureRequestB = window.fixturePendingRequest.requestId;
+    await window.fixtureEmitToken("A独立输出", window.fixtureRequestA);
+    await window.fixtureEmitToken("B独立输出", window.fixtureRequestB);
+  });
+  await page.getByText("B独立输出", { exact: true }).waitFor();
+  assert.equal(await page.getByText("A独立输出", { exact: true }).count(), 0);
+  await page.getByRole("button", { name: "停止生成", exact: true }).click();
+  await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
+  await input.fill("B任务未发送草稿");
+  await page.evaluate(() => window.fixtureChat.getState().setActiveSession(window.fixtureSessionA));
+  await page.getByRole("button", { name: "停止生成", exact: true }).waitFor();
+  assert.equal(await input.inputValue(), "A任务未发送草稿");
+  await page.getByText("A独立输出", { exact: true }).waitFor();
+  await page.evaluate(async () => {
+    window.fixtureChat.getState().setActiveSession(window.fixtureSessionB);
+    await window.fixtureFinishStream(window.fixtureRequestB, true);
+    await window.fixtureFinishStream(window.fixtureRequestA, true);
+  });
+  await page.waitForFunction(() => ![window.fixtureRequestA, window.fixtureRequestB].includes(window.fixturePendingRequest.requestId));
+  assert.equal(await input.inputValue(), "B任务未发送草稿");
+  assert.equal(await page.getByRole("button", { name: "停止生成", exact: true }).count(), 0, "background queue does not make B busy");
+  await page.evaluate(async () => { await window.fixtureEmitToken("A后台队列完成"); await window.fixtureFinishStream(); });
+  await page.waitForFunction(() => window.fixtureChat.getState().sessions.find(s => s.id === window.fixtureSessionA).messages.some(m => m.content === "A后台队列完成" && !m.isStreaming));
+  await page.evaluate(() => window.fixtureChat.getState().setActiveSession(window.fixtureSessionA));
+  await queueDock.waitFor({ state: "hidden" });
+  assert.equal(await input.inputValue(), "A任务未发送草稿");
+
+  // Completing A must also leave a running B untouched.
+  await page.evaluate(() => { window.fixtureStreamMode = true; window.fixturePendingRequest = null; });
+  await input.fill("你好"); await input.press("Enter");
+  await page.waitForFunction(() => Boolean(window.fixturePendingRequest));
+  await page.evaluate(() => { window.fixtureRequestA = window.fixturePendingRequest.requestId; window.fixtureChat.getState().setActiveSession(window.fixtureSessionB); window.fixturePendingRequest = null; });
+  await input.fill("你好"); await input.press("Enter");
+  await page.waitForFunction(() => Boolean(window.fixturePendingRequest));
+  await page.evaluate(async () => {
+    window.fixtureRequestB = window.fixturePendingRequest.requestId;
+    await window.fixtureEmitToken("A先完成", window.fixtureRequestA);
+    await window.fixtureFinishStream(window.fixtureRequestA, true);
+  });
+  await page.waitForFunction(() => !window.fixtureChat.getState().sessions.find(s => s.id === window.fixtureSessionA).messages.at(-1).isStreaming);
+  await page.getByRole("button", { name: "停止生成", exact: true }).waitFor();
+  await page.evaluate(async () => { await window.fixtureEmitToken("B后完成", window.fixtureRequestB); await window.fixtureFinishStream(window.fixtureRequestB); });
+  await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
+
+  await page.evaluate(() => { window.fixtureStreamMode = true; window.fixturePendingRequest = null; });
+  await input.fill("你好"); await input.press("Enter");
+  await page.waitForFunction(() => Boolean(window.fixturePendingRequest));
+  await page.evaluate(() => { window.fixtureQueueRequest = window.fixturePendingRequest.requestId; });
+  await input.fill("你好呀"); await input.press("Enter");
+  await input.fill("你是谁"); await input.press("Enter");
+  await input.press("Control+Enter");
+  await queueDock.waitFor({ state: "hidden" });
+  await page.evaluate(async () => { await window.fixtureEmitToken("旧答案"); await window.fixtureFinishStream(window.fixtureQueueRequest, true); });
+  await page.waitForFunction(() => window.fixturePendingRequest.requestId !== window.fixtureQueueRequest);
+  const allSteered = await page.evaluate(() => JSON.stringify(window.fixturePendingRequest.body.messages));
+  assert.match(allSteered, /你好呀/); assert.match(allSteered, /你是谁/);
+  await page.evaluate(async () => { await window.fixtureEmitToken("全部插话已接收"); await window.fixtureFinishStream(); });
+  await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
+
+  await page.evaluate(() => { window.fixtureStreamMode = true; window.fixturePendingRequest = null; });
+  await input.fill("你好"); await input.press("Enter");
+  await page.waitForFunction(() => Boolean(window.fixturePendingRequest));
+  await page.evaluate(() => { window.fixtureQueueRequest = window.fixturePendingRequest.requestId; });
+  await input.fill("你好呀"); await input.press("Enter");
+  await input.fill("你是谁"); await input.press("Enter");
+  await page.getByRole("button", { name: "停止生成", exact: true }).click();
+  await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
+  await page.evaluate(() => window.fixtureFinishStream(window.fixtureQueueRequest, true));
+  await queueDock.getByRole("button", { name: "2 条排队消息", exact: true }).click();
+  await queueDock.getByRole("button", { name: "发送排队消息", exact: true }).nth(1).click();
+  await page.waitForFunction(() => window.fixturePendingRequest.requestId !== window.fixtureQueueRequest);
+  assert.match(await page.evaluate(() => JSON.stringify(window.fixturePendingRequest.body.messages.at(-1))), /你是谁/);
+  assert.equal(await queueDock.locator(".composer-queue-row").count(), 1);
+  assert.equal(await queueDock.getByRole("button", { name: "插话发送排队消息", exact: true }).isEnabled(), true, "manual admission releases queue actions before the run finishes");
+  await page.evaluate(async () => { await window.fixtureEmitToken("指定消息完成"); await window.fixtureFinishStream(); });
+  await queueDock.waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
+  await page.evaluate(() => { window.fixtureStreamMode = true; window.fixturePendingRequest = null; });
+  await input.fill("你好"); await input.press("Enter");
+  await page.waitForFunction(() => Boolean(window.fixturePendingRequest));
+  await input.fill("你好呀"); await input.press("Enter");
+  await input.fill("你是谁"); await input.press("Enter");
+  assert.equal(await queueDock.getByRole("button", { name: "2 条排队消息", exact: true }).getAttribute("aria-expanded"), "false", "a new queue resets its collapsed state after the previous queue drained");
+  await queueDock.getByRole("button", { name: "2 条排队消息", exact: true }).click();
+  await queueDock.getByRole("button", { name: "取消排队消息", exact: true }).first().click();
+  await queueDock.getByRole("button", { name: "取消排队消息", exact: true }).click();
+  await page.getByRole("button", { name: "停止生成", exact: true }).click();
+  await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
+  await page.evaluate(() => window.fixtureFinishStream());
+  console.log("PASS empty-input Ctrl+Enter steers all queued messages; stopped queue keeps rows and manually sends the selected item");
+
+  // Configuration resolves after another empty conversation was created.
+  await page.evaluate(() => {
+    window.fixtureOriginalResolve = window.fixtureSettings.getState().resolveLLMConfig;
+    window.fixtureSettings.setState({ resolveLLMConfig: () => new Promise(resolve => {
+      window.fixtureResolveConfig = async () => resolve(await window.fixtureOriginalResolve());
+    }) });
+    window.fixtureStreamMode = true; window.fixturePendingRequest = null;
+    window.fixtureConfigSession = window.fixtureChat.getState().createSession();
+  });
+  await input.fill("你好"); await input.press("Enter");
+  await page.waitForFunction(() => Boolean(window.fixtureResolveConfig));
+  await page.getByRole("button", { name: "新建任务", exact: true }).click();
+  await input.fill("新任务配置期间的草稿");
+  await page.evaluate(async () => {
+    window.fixtureSettings.setState({ resolveLLMConfig: window.fixtureOriginalResolve });
+    await window.fixtureResolveConfig();
+  });
+  await page.waitForFunction(() => Boolean(window.fixturePendingRequest));
+  assert.equal(await input.inputValue(), "新任务配置期间的草稿");
+  assert.equal(await page.locator(".chat-run-status").count(), 0);
+  assert.equal(await page.evaluate(() => window.fixtureChat.getState().sessions.some(s => s.id === window.fixtureConfigSession)), true);
+  await page.evaluate(() => window.fixtureChat.getState().deleteSession(window.fixtureConfigSession));
+  await page.waitForFunction(() => !window.fixtureChat.getState().sessions.some(s => s.messages.some(m => m.isStreaming)));
+  await page.evaluate(async () => { await window.fixtureEmitToken("删除任务后的迟到数据"); await window.fixtureFinishStream(); });
+  assert.equal(await input.inputValue(), "新任务配置期间的草稿");
+  console.log("PASS async configuration/new-session race, retained new draft and deleted-session cancellation without late recreation");
+  await page.evaluate(id => window.fixtureChat.getState().setActiveSession(id), originalSession);
+  console.log("PASS independent concurrent sessions, per-session drafts/output/status/stop, background queue drain and either completion order");
 
   await page.evaluate(() => {
     const state = window.fixtureChat.getState();
